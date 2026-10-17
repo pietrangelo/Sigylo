@@ -14,18 +14,24 @@ function fakeRelay(status: number, body: unknown, calls: Call[] = []): Relay {
 const id = new Uint8Array(16).fill(1);
 
 describe('relay client', () => {
-  it('deposits base64url fields and returns the expiry', async () => {
+  it('deposits base64url fields and returns the id the relay chose', async () => {
     const calls: Call[] = [];
-    const result = await fakeRelay(201, { expires_at: 42 }, calls).deposit(id, Uint8Array.of(1, 2), 'burn_after_reading', 3600, new Uint8Array(32));
-    expect(result).toEqual({ ok: true, value: 42 });
+    const result = await fakeRelay(201, { id: encode(id), expires_at: 42 }, calls).deposit(Uint8Array.of(1, 2), 'burn_after_reading', 3600, new Uint8Array(32));
+    expect(result).toEqual({ ok: true, value: { id, expiresAt: 42 } });
     expect(calls[0]!.url).toBe('/api/secrets');
     expect(JSON.parse(calls[0]!.init.body as string)).toEqual({
-      id: encode(id),
       payload: 'AQI',
       retention: 'burn_after_reading',
       lifetime_seconds: 3600,
       revocation_token: encode(new Uint8Array(32)),
     });
+  });
+
+  it('posts a request and returns the id the relay chose', async () => {
+    const calls: Call[] = [];
+    const result = await fakeRelay(201, { id: encode(id), expires_at: 7 }, calls).postRequest(Uint8Array.of(9), 3600);
+    expect(result).toEqual({ ok: true, value: { id, expiresAt: 7 } });
+    expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ recipient_key: 'CQ', lifetime_seconds: 3600 });
   });
 
   it('decodes an opened envelope', async () => {
@@ -50,6 +56,15 @@ describe('relay client', () => {
       expect(await fakeRelay(200, { payload: 'not base64!', burned: true }).open(id)).toEqual({ ok: false, error: 'Unexpected' });
       expect(await fakeRelay(200, { payload: 'AQI' }).open(id)).toEqual({ ok: false, error: 'Unexpected' });
       expect(await fakeRelay(500, { error: '<script>' }).open(id)).toEqual({ ok: false, error: 'Unexpected' });
+    });
+
+    it('never sends an id of its own and refuses a receipt without a proper one', async () => {
+      const calls: Call[] = [];
+      await fakeRelay(201, { id: encode(id), expires_at: 42 }, calls).deposit(Uint8Array.of(1), 'until_expiry', 300, new Uint8Array(32));
+      expect(JSON.parse(calls[0]!.init.body as string)).not.toHaveProperty('id');
+      for (const receipt of [{ expires_at: 42 }, { id: 'AAEC', expires_at: 42 }, { id: encode(id) }]) {
+        expect(await fakeRelay(201, receipt).deposit(Uint8Array.of(1), 'until_expiry', 300, new Uint8Array(32))).toEqual({ ok: false, error: 'Unexpected' });
+      }
     });
 
     it('reports network failures without throwing', async () => {

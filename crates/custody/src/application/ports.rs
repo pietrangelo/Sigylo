@@ -16,7 +16,8 @@ use crate::core::{
 /// * [`Vault::answer_request`] consumes the request and stores the answer
 ///   under the request's id in one atomic step, at most once;
 /// * ids are unique across deposits: a second deposit under a live id fails
-///   with [`CustodyError::AlreadyExists`].
+///   with [`CustodyError::AlreadyExists`] (ids come from an [`IdSource`], so
+///   this only guards against a broken random source).
 // Workers run on one thread, so the futures need not be `Send`.
 #[allow(async_fn_in_trait)]
 pub trait Vault {
@@ -39,6 +40,16 @@ pub trait Vault {
 
     /// Physically removes everything expired. Returns how many rows went.
     async fn purge_expired(&self) -> Result<u64, CustodyError>;
+}
+
+/// Fresh, unguessable ids for deposits and requests.
+///
+/// The custodian picks every id itself and never takes one from a client:
+/// otherwise whoever read a burn-after-reading secret first could deposit a
+/// copy (or a forgery, sealed with the key from the link) under the same id,
+/// and the real recipient would open it without noticing anything.
+pub trait IdSource {
+    fn fresh(&self) -> Result<DropId, CustodyError>;
 }
 
 /// One-way digest of revocation tokens (SHA-256).

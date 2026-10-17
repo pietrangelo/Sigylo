@@ -7,7 +7,7 @@ use super::CustodyError;
 /// Largest payload the relay keeps: a 64 KiB padded secret plus envelope header.
 pub const MAX_PAYLOAD_LEN: usize = 72 * 1024;
 
-/// An unguessable 128-bit identifier, chosen by the client.
+/// An unguessable 128-bit identifier, always chosen by the custodian.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DropId([u8; DropId::LEN]);
 
@@ -93,6 +93,14 @@ impl Lifetime {
 /// Seconds since the Unix epoch, as decided by the vault's clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UnixTime(pub i64);
+
+/// What the custodian hands back when it takes something into custody.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Receipt {
+    /// Where the deposit or request now lives: the id the links will carry.
+    pub id: DropId,
+    pub expires_at: UnixTime,
+}
 
 /// The sender's secret for revoking a deposit before it is read.
 #[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]

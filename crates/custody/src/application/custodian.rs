@@ -1,9 +1,9 @@
 //! Use cases of the Custody context.
 
-use super::ports::{TokenDigest, Vault};
+use super::ports::{IdSource, TokenDigest, Vault};
 use crate::core::{
-    CustodyError, Deposit, DropId, Lifetime, Opened, PostedRequest, Request, Retention, RevocationToken, SealedPayload,
-    UnixTime,
+    CustodyError, Deposit, DropId, Lifetime, Opened, PostedRequest, Receipt, RecipientKeyBlob, Request, Retention,
+    RevocationToken, SealedPayload, UnixTime,
 };
 
 /// What a sender hands over when answering a request.
@@ -16,28 +16,30 @@ pub struct Answer {
 
 /// Keeps sealed envelopes on behalf of senders and recipients.
 #[derive(Debug)]
-pub struct Custodian<V, D> {
+pub struct Custodian<V, D, I> {
     vault: V,
     digest: D,
+    ids: I,
 }
 
-impl<V: Vault, D: TokenDigest> Custodian<V, D> {
-    pub fn new(vault: V, digest: D) -> Self {
-        Self { vault, digest }
+impl<V: Vault, D: TokenDigest, I: IdSource> Custodian<V, D, I> {
+    pub fn new(vault: V, digest: D, ids: I) -> Self {
+        Self { vault, digest, ids }
     }
 
-    /// Deposit a sealed secret. The revocation token, if any, is stored only
-    /// as a digest, so a vault dump does not let anyone revoke.
+    /// Deposit a sealed secret under a fresh id. The revocation token, if
+    /// any, is stored only as a digest, so a vault dump does not let anyone revoke.
     pub async fn deposit(
         &self,
-        id: DropId,
         payload: SealedPayload,
         retention: Retention,
         lifetime: Lifetime,
         revocation: Option<&RevocationToken>,
-    ) -> Result<UnixTime, CustodyError> {
+    ) -> Result<Receipt, CustodyError> {
+        let id = self.ids.fresh()?;
         let revocation = revocation.map(|token| self.digest.digest(token));
-        self.vault.deposit(&Deposit { id, payload, retention, lifetime, revocation }).await
+        let expires_at = self.vault.deposit(&Deposit { id, payload, retention, lifetime, revocation }).await?;
+        Ok(Receipt { id, expires_at })
     }
 
     /// Hand the payload to whoever holds the link. Burn-after-reading
@@ -52,8 +54,15 @@ impl<V: Vault, D: TokenDigest> Custodian<V, D> {
         if self.vault.revoke(id, &digest).await? { Ok(()) } else { Err(CustodyError::NotFound) }
     }
 
-    pub async fn post_request(&self, request: Request) -> Result<UnixTime, CustodyError> {
-        self.vault.post_request(&request).await
+    /// Publish a recipient's public key under a fresh id.
+    pub async fn post_request(
+        &self,
+        recipient_key: RecipientKeyBlob,
+        lifetime: Lifetime,
+    ) -> Result<Receipt, CustodyError> {
+        let id = self.ids.fresh()?;
+        let expires_at = self.vault.post_request(&Request { id, recipient_key, lifetime }).await?;
+        Ok(Receipt { id, expires_at })
     }
 
     pub async fn fetch_request(&self, id: &DropId) -> Result<PostedRequest, CustodyError> {
