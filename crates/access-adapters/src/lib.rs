@@ -3,7 +3,7 @@
 //! * [`OpaqueKeys`] — the relay's side of OPAQUE, from one 32-byte secret.
 //! * [`OpaqueDevice`] — the device's side of OPAQUE.
 //! * [`HkdfKeyringKdf`] — export key → keyring key (HKDF-SHA-512).
-//! * [`RandomTokens`], [`Sha256SessionDigest`] — session tokens, login
+//! * [`RandomTokens`], [`HmacSessionDigest`] — session tokens, login
 //!   handles and the digest the store keeps instead of a token.
 //! * `PostgresAccounts` (feature `postgres`) — the account store, reached
 //!   through the `access.*` functions of `supabase/migrations`.
@@ -26,7 +26,7 @@ mod tokens;
 pub use client::OpaqueDevice;
 pub use keyring::HkdfKeyringKdf;
 #[cfg(feature = "postgres")]
-pub use postgres_store::PostgresAccounts;
+pub use postgres_store::{PostgresAccounts, PostgresThrottle};
 pub use server::OpaqueKeys;
 pub use suite::{HARDENING_LANES, HARDENING_MEMORY_KIB, HARDENING_PASSES, Hardening, Suite};
-pub use tokens::{RandomTokens, Sha256SessionDigest};
+pub use tokens::{HmacSessionDigest, RandomTokens};

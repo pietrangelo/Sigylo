@@ -27,10 +27,14 @@ pub trait OpaqueServer {
         request: &CredentialRequest,
     ) -> Result<(CredentialResponse, LoginState), AccessError>;
 
-    /// Checks KE3. [`AccessError::NotAuthentic`] on any mismatch.
+    /// Checks KE3 against the state and the account's record as it is now
+    /// (`None` once the account is gone). A state begun on another record,
+    /// such as the previous owner's of a name that changed hands meanwhile,
+    /// never finishes. [`AccessError::NotAuthentic`] on any mismatch.
     fn finish_login(
         &self,
         account: &AccountId,
+        record: Option<&RegistrationRecord>,
         state: &LoginState,
         finalization: &CredentialFinalization,
     ) -> Result<(), AccessError>;
@@ -149,6 +153,7 @@ pub trait SessionDigester {
 
 /// Limits login attempts per account, wherever they come from: the per-address
 /// limit alone would let a botnet guess one account's password at leisure.
+/// The count must be one for the whole world, not one per data centre.
 #[allow(async_fn_in_trait)]
 pub trait Throttle {
     async fn admit(&self, account: &AccountId) -> bool;
@@ -181,10 +186,11 @@ impl<T: OpaqueServer> OpaqueServer for &T {
     fn finish_login(
         &self,
         account: &AccountId,
+        record: Option<&RegistrationRecord>,
         state: &LoginState,
         finalization: &CredentialFinalization,
     ) -> Result<(), AccessError> {
-        (**self).finish_login(account, state, finalization)
+        (**self).finish_login(account, record, state, finalization)
     }
 }
 
@@ -299,5 +305,13 @@ impl<T: SessionDigester> SessionDigester for &T {
 impl<T: Throttle> Throttle for &T {
     async fn admit(&self, account: &AccountId) -> bool {
         (**self).admit(account).await
+    }
+}
+
+/// Both must admit; the second is asked only when the first did, so a cheap
+/// first filter spares the second its work.
+impl<A: Throttle, B: Throttle> Throttle for (A, B) {
+    async fn admit(&self, account: &AccountId) -> bool {
+        self.0.admit(account).await && self.1.admit(account).await
     }
 }

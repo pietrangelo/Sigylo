@@ -80,6 +80,16 @@ begin
         'relay must not touch access.logins directly';
     assert not has_table_privilege('sigylo_relay', 'access.sessions', 'select,insert,update,delete,truncate'),
         'relay must not touch access.sessions directly';
+    assert not has_table_privilege('sigylo_relay', 'access.attempts', 'select,insert,update,delete,truncate'),
+        'relay must not touch access.attempts directly';
+    assert not has_table_privilege('sigylo_relay', 'access.usage', 'select,insert,update,delete,truncate'),
+        'relay must not touch access.usage directly';
+    assert has_function_privilege('sigylo_relay', 'access.admit(bytea, integer)', 'execute'),
+        'relay must count login attempts';
+    assert not has_function_privilege('sigylo_relay', 'access.ensure_room(bigint, boolean)', 'execute'),
+        'relay must not call the ceiling helper directly';
+    assert not has_function_privilege('sigylo_relay', 'access.capacity_bytes()', 'execute'),
+        'relay must not call the ceiling helper directly';
     assert not has_function_privilege('sigylo_relay', 'access.lifetime(integer)', 'execute'),
         'relay must only reach the documented functions';
     assert not has_schema_privilege('public', 'access', 'usage'),
@@ -102,6 +112,6 @@ begin
         where grant_.grantee not in (objects.owner, 'sigylo_relay'::regrole)
     ), 'only the owner and sigylo_relay may hold privileges in the access schema';
     -- No username, e-mail, address or creation time can hide anywhere.
-    assert (select count(*) from information_schema.columns where table_schema = 'access') = 11,
-        'access tables must keep exactly the 11 documented columns';
+    assert (select count(*) from information_schema.columns where table_schema = 'access') = 17,
+        'access tables must keep exactly the 17 documented columns';
 end $$;

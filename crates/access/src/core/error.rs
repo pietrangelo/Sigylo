@@ -26,6 +26,9 @@ pub enum AccessError {
     Throttled,
     /// The account store could not be reached.
     StoreUnavailable,
+    /// The account store has no room for a new account or a larger keyring
+    /// right now; logins, reads and same-size writes still work.
+    StorageFull,
     /// The relay has no OPAQUE key configured.
     NotConfigured,
     /// A random source failed.
@@ -46,6 +49,7 @@ impl fmt::Display for AccessError {
             Self::Conflict => "keyring changed meanwhile",
             Self::Throttled => "too many login attempts",
             Self::StoreUnavailable => "account store unavailable",
+            Self::StorageFull => "account storage full",
             Self::NotConfigured => "login not configured",
             Self::RandomnessUnavailable => "randomness unavailable",
         })

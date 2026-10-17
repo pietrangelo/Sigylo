@@ -12,9 +12,12 @@ use crate::suite::Suite;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct OpaqueDevice;
 
-fn export_key(mut bytes: impl AsMut<[u8]>) -> Result<ExportKey, AccessError> {
-    let key = ExportKey::from_slice(bytes.as_mut());
-    bytes.as_mut().zeroize();
+/// Copies the export key out of opaque-ke's result and wipes the original
+/// in place: the result types do not wipe themselves, and the array is
+/// `Copy`, so passing it by value would only wipe a copy.
+fn export_key(bytes: &mut [u8]) -> Result<ExportKey, AccessError> {
+    let key = ExportKey::from_slice(bytes);
+    bytes.zeroize();
     key
 }
 
@@ -39,10 +42,11 @@ impl OpaqueClient for OpaqueDevice {
     ) -> Result<(RegistrationRecord, ExportKey), AccessError> {
         let response = opaque_ke::RegistrationResponse::<Suite>::deserialize(response.as_bytes())
             .map_err(|_| AccessError::NotAuthentic)?;
-        let finished = state
+        let mut finished = state
             .finish(&mut rng::fresh()?, password.expose(), response, ClientRegistrationFinishParameters::default())
             .map_err(|_| AccessError::NotAuthentic)?;
-        Ok((RegistrationRecord::from_slice(&finished.message.serialize())?, export_key(finished.export_key)?))
+        let key = export_key(finished.export_key.as_mut_slice());
+        Ok((RegistrationRecord::from_slice(&finished.message.serialize())?, key?))
     }
 
     fn begin_login(&self, password: &Password) -> Result<(CredentialRequest, Self::Login), AccessError> {
@@ -64,6 +68,24 @@ impl OpaqueClient for OpaqueDevice {
             .finish(&mut rng::fresh()?, password.expose(), response, ClientLoginFinishParameters::default())
             .map_err(|_| AccessError::NotAuthentic)?;
         finished.session_key.as_mut_slice().zeroize();
-        Ok((CredentialFinalization::from_slice(&finished.message.serialize())?, export_key(finished.export_key)?))
+        let key = export_key(finished.export_key.as_mut_slice());
+        Ok((CredentialFinalization::from_slice(&finished.message.serialize())?, key?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod adversary {
+        use super::*;
+
+        #[test]
+        fn the_export_key_is_wiped_where_opaque_ke_left_it() {
+            let mut original = [0xA5u8; 64];
+            let key = export_key(&mut original).unwrap();
+            assert_eq!(original, [0; 64]);
+            assert_eq!(key, ExportKey::from_slice(&[0xA5; 64]).unwrap());
+        }
     }
 }
