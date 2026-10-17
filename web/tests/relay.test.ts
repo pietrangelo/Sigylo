@@ -12,6 +12,7 @@ function fakeRelay(status: number, body: unknown, calls: Call[] = []): Relay {
 }
 
 const id = new Uint8Array(16).fill(1);
+const inbox = new Uint8Array(16).fill(2);
 
 describe('relay client', () => {
   it('deposits base64url fields and returns the id the relay chose', async () => {
@@ -27,10 +28,10 @@ describe('relay client', () => {
     });
   });
 
-  it('posts a request and returns the id the relay chose', async () => {
+  it('posts a request and returns its public id and private inbox, both chosen by the relay', async () => {
     const calls: Call[] = [];
-    const result = await fakeRelay(201, { id: encode(id), expires_at: 7 }, calls).postRequest(Uint8Array.of(9), 3600);
-    expect(result).toEqual({ ok: true, value: { id, expiresAt: 7 } });
+    const result = await fakeRelay(201, { id: encode(id), inbox: encode(inbox), expires_at: 7 }, calls).postRequest(Uint8Array.of(9), 3600);
+    expect(result).toEqual({ ok: true, value: { id, inbox, expiresAt: 7 } });
     expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ recipient_key: 'CQ', lifetime_seconds: 3600 });
   });
 
@@ -64,6 +65,17 @@ describe('relay client', () => {
       expect(JSON.parse(calls[0]!.init.body as string)).not.toHaveProperty('id');
       for (const receipt of [{ expires_at: 42 }, { id: 'AAEC', expires_at: 42 }, { id: encode(id) }]) {
         expect(await fakeRelay(201, receipt).deposit(Uint8Array.of(1), 'until_expiry', 300, new Uint8Array(32))).toEqual({ ok: false, error: 'Unexpected' });
+      }
+    });
+
+    it('refuses a request receipt whose inbox is missing, malformed or the public id', async () => {
+      // An inbox equal to the request id would let the request link burn the answer.
+      for (const receipt of [
+        { id: encode(id), expires_at: 7 },
+        { id: encode(id), inbox: 'AAEC', expires_at: 7 },
+        { id: encode(id), inbox: encode(id), expires_at: 7 },
+      ]) {
+        expect(await fakeRelay(201, receipt).postRequest(new Uint8Array([9]), 3600)).toEqual({ ok: false, error: 'Unexpected' });
       }
     });
 

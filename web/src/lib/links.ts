@@ -6,7 +6,7 @@
 //   #/s/<id>/<key>/p     ... that also needs a passphrase
 //   #/x/<id>/<token>     revoke a secret before it is read (sender only)
 //   #/r/<id>/<fpr>       answer a request: seal to the recipient's public key
-//   #/k/<id>/<seed>      the recipient's private link to read the answer
+//   #/k/<inbox>/<seed>   the recipient's private link to read the answer
 //   #/terms, #/privacy   the terms of service and the privacy notice
 
 import { decodeExact, encode } from './base64url';

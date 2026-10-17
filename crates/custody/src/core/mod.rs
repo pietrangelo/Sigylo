@@ -8,6 +8,6 @@ mod values;
 
 pub use error::CustodyError;
 pub use values::{
-    Deposit, DropId, Lifetime, MAX_PAYLOAD_LEN, Opened, PostedRequest, Receipt, RecipientKeyBlob, Request, Retention,
-    RevocationDigest, RevocationToken, SealedPayload, UnixTime,
+    Deposit, DropId, Lifetime, MAX_PAYLOAD_LEN, Opened, PostedRequest, Receipt, RecipientKeyBlob, Request,
+    RequestReceipt, Retention, RevocationDigest, RevocationToken, SealedPayload, UnixTime,
 };

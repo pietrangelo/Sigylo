@@ -29,7 +29,7 @@ mod sql {
     pub const DEPOSIT: &str = "select custody.deposit($1, $2, $3, $4, $5), now()";
     pub const OPEN: &str = "select payload, burned, now() from custody.open($1)";
     pub const REVOKE: &str = "select custody.revoke($1, $2), now()";
-    pub const POST_REQUEST: &str = "select custody.post_request($1, $2, $3), now()";
+    pub const POST_REQUEST: &str = "select custody.post_request($1, $2, $3, $4), now()";
     pub const FETCH_REQUEST: &str = "select recipient_key, expires_at, now() from custody.fetch_request($1)";
     pub const ANSWER_REQUEST: &str = "select custody.answer_request($1, $2, $3, $4), now()";
     pub const PURGE_EXPIRED: &str = "select custody.purge_expired(), now()";
@@ -98,6 +98,7 @@ impl Vault for PostgresVault<'_> {
                 sql::POST_REQUEST,
                 &[
                     &request.id.as_bytes().as_slice(),
+                    &request.inbox.as_bytes().as_slice(),
                     &request.recipient_key.as_bytes(),
                     &(request.lifetime.seconds() as i32),
                 ],

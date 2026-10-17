@@ -19,8 +19,14 @@ export type RelayError =
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: RelayError };
 
-/** Where the relay put a deposit or request, and until when. */
+/** Where the relay put a deposit, and until when. */
 export type Receipt = { id: Uint8Array; expiresAt: number };
+
+/**
+ * Where the relay put a request: the public id for the sender's link, and the
+ * private inbox where the answer will be filed, for the recipient's link only.
+ */
+export type RequestReceipt = { id: Uint8Array; inbox: Uint8Array; expiresAt: number };
 
 type Fetch = (input: string, init: RequestInit) => Promise<Response>;
 
@@ -74,8 +80,8 @@ export class Relay {
     return this.call('POST', `/secrets/${encode(id)}/revoke`, { token: encode(token) }, () => true as const);
   }
 
-  postRequest(publicKey: Uint8Array, lifetimeSeconds: number): Promise<Result<Receipt>> {
-    return this.call('POST', '/requests', { recipient_key: encode(publicKey), lifetime_seconds: lifetimeSeconds }, readReceipt);
+  postRequest(publicKey: Uint8Array, lifetimeSeconds: number): Promise<Result<RequestReceipt>> {
+    return this.call('POST', '/requests', { recipient_key: encode(publicKey), lifetime_seconds: lifetimeSeconds }, readRequestReceipt);
   }
 
   fetchRequest(id: Uint8Array): Promise<Result<{ publicKey: Uint8Array; expiresAt: number }>> {
@@ -95,6 +101,15 @@ function readReceipt(json: unknown): Receipt | null {
   const j = json as { id?: unknown; expires_at?: unknown } | null;
   const id = typeof j?.id === 'string' ? decodeExact(j.id, ID_LEN) : null;
   return id !== null && typeof j?.expires_at === 'number' ? { id, expiresAt: j.expires_at } : null;
+}
+
+function readRequestReceipt(json: unknown): RequestReceipt | null {
+  const receipt = readReceipt(json);
+  const inboxText = (json as { inbox?: unknown } | null)?.inbox;
+  const inbox = typeof inboxText === 'string' ? decodeExact(inboxText, ID_LEN) : null;
+  // An inbox equal to the public id would let the request link reach the answer.
+  if (receipt === null || inbox === null || encode(inbox) === encode(receipt.id)) return null;
+  return { id: receipt.id, inbox, expiresAt: receipt.expiresAt };
 }
 
 function readExpires(json: unknown): number | null {

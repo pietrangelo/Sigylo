@@ -173,6 +173,38 @@ test.describe('adversary', () => {
     await expect(recipient.getByTestId('open-error')).toContainText('Non c');
   });
 
+  test('whoever holds the request link can neither burn nor fetch the answer', async ({ page, request, browser }) => {
+    await page.goto('/');
+    await page.getByTestId('tab-receive').click();
+    await page.getByTestId('create-request').click();
+    const requestLink = await page.getByTestId('request-link').inputValue();
+    const inboxLink = await page.getByTestId('inbox-link').inputValue();
+    const requestId = requestLink.split('/').at(-2)!;
+    expect(inboxLink.split('/').at(-2)).not.toBe(requestId);
+
+    const sender = await freshPage(browser);
+    await sender.goto(requestLink);
+    await sender.getByTestId('secret').fill(SECRET);
+    await sender.getByTestId('answer').click();
+    await expect(sender.getByTestId('answered')).toBeVisible();
+
+    // Someone who read the request link on its way to the sender tries to burn the answer.
+    expect((await request.post(`/api/secrets/${requestId}/open`)).status()).toBe(404);
+
+    const recipient = await freshPage(browser);
+    await recipient.goto(inboxLink);
+    await recipient.getByTestId('reveal').click();
+    await expect(recipient.getByTestId('plaintext')).toHaveValue(SECRET);
+  });
+
+  test('a page on another site cannot call the relay', async ({ request }) => {
+    const payload = 'U0dZAQEA' + 'A'.repeat(400);
+    const data = { payload, retention: 'burn_after_reading', lifetime_seconds: 3600 };
+    const foreign = await request.post('/api/secrets', { data, headers: { Origin: 'https://evil.example' } });
+    expect(foreign.status()).toBe(403);
+    expect(await foreign.json()).toEqual({ error: 'CrossOrigin' });
+  });
+
   test('a link preview bot (GET) cannot burn a secret', async ({ page, request, browser }) => {
     const { link } = await sealSecret(page);
     const id = link.split('/').at(-2)!;

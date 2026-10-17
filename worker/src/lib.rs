@@ -86,7 +86,7 @@ mod runtime {
                 (200, "{}".into())
             }
             Command::PostRequest(cmd) => {
-                (201, api::receipt_body(custodian.post_request(cmd.recipient_key, cmd.lifetime).await?))
+                (201, api::request_receipt_body(custodian.post_request(cmd.recipient_key, cmd.lifetime).await?))
             }
             Command::FetchRequest(id) => (200, api::posted_request_body(custodian.fetch_request(&id).await?)),
             Command::AnswerRequest(id, answer) => (201, api::expires_body(custodian.answer_request(id, answer).await?)),

@@ -102,6 +102,16 @@ pub struct Receipt {
     pub expires_at: UnixTime,
 }
 
+/// What the custodian hands back when it posts a request: the public id for
+/// the sender's link and the private inbox, known only to the recipient's
+/// link, where the answer will be filed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestReceipt {
+    pub id: DropId,
+    pub inbox: DropId,
+    pub expires_at: UnixTime,
+}
+
 /// The sender's secret for revoking a deposit before it is read.
 #[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct RevocationToken([u8; 32]);
@@ -184,7 +194,10 @@ pub struct Opened {
 /// A recipient asking for one secret to be sealed to their public key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
+    /// Public: travels in the request link to the sender.
     pub id: DropId,
+    /// Private: where the answer is filed, known only to the recipient's link.
+    pub inbox: DropId,
     pub recipient_key: RecipientKeyBlob,
     pub lifetime: Lifetime,
 }

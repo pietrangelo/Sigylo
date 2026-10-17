@@ -68,7 +68,8 @@
       }
       requested = {
         request: requestLink(linkOrigin, result.value.id, fingerprint),
-        inbox: inboxLink(linkOrigin, result.value.id, seed),
+        // The answer is filed in the private inbox, never under the public id.
+        inbox: inboxLink(linkOrigin, result.value.inbox, seed),
         expires: result.value.expiresAt,
       };
     } catch (e) {
