@@ -80,7 +80,9 @@ impl<O: OpaqueServer, S: AccountStore, T: Tokens, D: SessionDigester, R: Throttl
         finalization: &CredentialFinalization,
     ) -> Result<Session, AccessError> {
         let (account, state) = self.store.take_login(handle).await?.ok_or(AccessError::NotAuthentic)?;
-        self.opaque.finish_login(&account, &state, finalization)?;
+        // The record as it is now: the name may have changed hands since KE2.
+        let record = self.store.record(&account).await?;
+        self.opaque.finish_login(&account, record.as_ref(), &state, finalization)?;
         let token = self.tokens.session()?;
         let expires_at = self
             .store

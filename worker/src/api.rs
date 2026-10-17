@@ -100,6 +100,7 @@ impl ApiError {
                 AccessError::AlreadyRegistered | AccessError::Conflict => 409,
                 AccessError::KeyringTooLarge => 413,
                 AccessError::Throttled => 429,
+                AccessError::StorageFull => 507,
                 AccessError::StoreUnavailable | AccessError::NotConfigured | AccessError::RandomnessUnavailable => 503,
                 AccessError::InvalidUsername
                 | AccessError::InvalidPassword
@@ -784,6 +785,12 @@ mod tests {
         assert_eq!(ApiError::Access(AccessError::NotConfigured).status(), 503);
         assert_eq!(ApiError::Access(AccessError::KeyringTooLarge).status(), 413);
         assert_eq!(ApiError::Access(AccessError::Conflict).body(), r#"{"error":"Conflict"}"#);
+        // Full account storage reads like full custody, so the client shows one message for both.
+        assert_eq!(ApiError::Access(AccessError::StorageFull).status(), 507);
+        assert_eq!(
+            ApiError::Access(AccessError::StorageFull).body(),
+            ApiError::Custody(CustodyError::StorageFull).body()
+        );
     }
 
     #[test]

@@ -1,8 +1,8 @@
 use super::fakes::{CountingThrottle, FakeStore, SequentialTokens, ToyDigest, ToyKdf, ToyOpaque, block_on};
-use super::{Gatekeeper, Member, SessionDigester, Throttle, Tokens};
+use super::{AccountStore, Gatekeeper, Member, OpaqueServer, SessionDigester, Throttle, Tokens};
 use crate::core::{
-    AccessError, CredentialFinalization, Keyring, KeyringKey, KeyringVersion, LOGIN_WINDOW_SECONDS, Password,
-    SESSION_SECONDS, Session, Username,
+    AccessError, AccountId, CredentialFinalization, Keyring, KeyringKey, KeyringVersion, LOGIN_WINDOW_SECONDS,
+    Password, SESSION_SECONDS, Session, Username,
 };
 
 struct World {
@@ -311,6 +311,47 @@ mod adversary {
         }
         let seen = recorder.0.borrow();
         assert!(seen.iter().all(|a| *a == seen[0]));
+    }
+
+    #[test]
+    fn a_login_begun_before_the_name_changed_hands_cannot_finish() {
+        // close_account races a login/start that already read the old record
+        // and parks its state only after the close; meanwhile someone else
+        // registers the free name. The old owner must not get into it.
+        let world = World::new();
+        world.register("ada", "correct horse battery").unwrap();
+        let (session, _) = world.login("ada", "correct horse battery").unwrap();
+        let account = world.opaque.account_of(&Username::new("ada").unwrap());
+        let old_record = block_on(world.store.record(&account)).unwrap();
+        let (request, pending) = world.device().begin_login(pw("correct horse battery")).unwrap();
+        let (response, state) = world.opaque.begin_login(&account, old_record.as_ref(), &request).unwrap();
+        block_on(world.relay().close_account(&session.token)).unwrap();
+        world.register("ada", "the new owner's password").unwrap();
+        let handle = world.tokens.login_handle().unwrap();
+        block_on(world.store.park_login(&handle, &account, &state, LOGIN_WINDOW_SECONDS)).unwrap();
+        let (finalization, _) = world.device().finish_login(pending, &response).unwrap();
+        assert_eq!(
+            block_on(world.relay().finish_login(&handle, &finalization)).unwrap_err(),
+            AccessError::NotAuthentic
+        );
+    }
+
+    #[test]
+    fn two_throttles_admit_only_what_both_admit() {
+        // A cheap first filter (Cloudflare's, per location) before the global
+        // count: the second is not spent on what the first already refused.
+        let first = CountingThrottle::default();
+        let second = CountingThrottle::default();
+        first.budget.set(1);
+        second.budget.set(5);
+        let both = (&first, &second);
+        let account = AccountId::from_array([1; 32]);
+        assert!(block_on(both.admit(&account)));
+        assert!(!block_on(both.admit(&account)));
+        assert_eq!(second.budget.get(), 4);
+        first.budget.set(1);
+        second.budget.set(0);
+        assert!(!block_on(both.admit(&account)));
     }
 
     #[test]
