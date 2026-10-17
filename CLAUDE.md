@@ -3,7 +3,7 @@
 ## MISSIONE
 Condividere dati segreti (credenziali, chiavi, codici) nel modo più sicuro possibile e più semplice possibile. Il mittente sigilla il segreto nel browser, il server custodisce solo dati illeggibili, il destinatario apre il sigillo una volta (oppure fino alla scadenza scelta) e poi il segreto sparisce.
 
-- **Nome:** Sigylo, da *sigillo / sigillum*: il timbro che per secoli ha garantito che una lettera non fosse stata aperta prima dell'arrivo. Verifiche su marchi (TMview, WIPO, classi di Nizza 9 e 42), domini e handle ancora da fare.
+- **Nome:** Sigylo, da *sigillo / sigillum*: il timbro che per secoli ha garantito che una lettera non fosse stata aperta prima dell'arrivo. Dominio: **sigylo.net** (registrato su Cloudflare il 2026-10-17, unica origine di produzione). Verifiche su marchi (TMview, WIPO, classi di Nizza 9 e 42) e handle ancora da fare.
 - **Lingue:** italiano e inglese fin dal primo commit (`web/src/lib/i18n.ts`), lingua scelta dal browser.
 - **Principio guida:** semplicità prima di tutto. Un campo, due scelte (quando distruggerlo, quando scade), un pulsante. La sicurezza non deve chiedere nulla all'utente.
 
@@ -106,8 +106,8 @@ Tutto avviene sul dispositivo, in Rust compilato a Wasm. Le implementazioni sono
 
 1. Supabase: applicare `supabase/migrations/*.sql`, poi `alter role sigylo_relay login password '<password forte>';`.
 2. Cloudflare: `npx wrangler hyperdrive create sigylo-db --connection-string="postgres://sigylo_relay:<password>@<host>:5432/postgres"` e mettere l'id in `worker/wrangler.toml`.
-3. `(cd web && npm ci && npm run build)` poi `(cd worker && npx wrangler deploy)`.
-4. Disattivare tutte le funzioni Cloudflare che modificano l'HTML (Rocket Loader, Email Obfuscation, Web Analytics automatico): romperebbero CSP e SRI.
+3. `(cd web && npm ci && npm run build)` poi `(cd worker && npx wrangler deploy)`: pubblica su `https://sigylo.net` (custom domain del Worker, `workers.dev` spento), creando record DNS e certificato nella zona.
+4. Nella zona sigylo.net disattivare tutte le funzioni Cloudflare che modificano l'HTML (Rocket Loader, Email Obfuscation, Web Analytics automatico): romperebbero CSP e SRI.
 
 ## 7. RINVIATO (non nell'MVP)
 
@@ -115,4 +115,4 @@ Tutto avviene sul dispositivo, in Rust compilato a Wasm. Le implementazioni sono
 * **Client verificabile:** app Tauri con chiavi in Secure Enclave / TPM, oppure estensione browser firmata.
 * **File e allegati:** suddivisione in chunk cifrati su storage (Supabase Storage o R2).
 * **Blind index:** non serve finché non esistono ricerche lato server.
-* **Naming:** verifiche su marchi, domini e handle.
+* **Naming:** verifiche su marchi e handle (il dominio sigylo.net c'è già).

@@ -3,6 +3,11 @@ name = "sigylo"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-10-01"
 
+# Production origin. The zone lives in the same Cloudflare account; wrangler creates
+# the DNS record and certificate on deploy. workers.dev stays off: one origin only.
+routes = [{ pattern = "sigylo.net", custom_domain = true }]
+workers_dev = false
+
 [build]
 command = "cargo install -q worker-build@0.8.7 --locked && worker-build --release"
 
