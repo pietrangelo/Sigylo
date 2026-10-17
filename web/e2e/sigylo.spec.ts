@@ -1,4 +1,5 @@
 import { expect, test, type Browser, type Page, type Request } from '@playwright/test';
+import { catalogs } from '../src/lib/i18n';
 
 const SECRET = 'password del DB: cavallo-corretto-batteria-graffetta 🔐';
 
@@ -155,4 +156,16 @@ test.describe('adversary', () => {
     await reader.getByTestId('reveal').click();
     await expect(reader.getByTestId('plaintext')).toHaveValue(SECRET);
   });
+});
+
+test('the page speaks the browser language', async ({ browser }) => {
+  for (const [locale, lang] of [['fr-FR', 'fr'], ['es-ES', 'es'], ['de-DE', 'de'], ['en-US', 'en'], ['it-IT', 'it']] as const) {
+    const context = await browser.newContext({ locale });
+    const page = await context.newPage();
+    await page.goto('/');
+    await expect(page.locator('html')).toHaveAttribute('lang', lang);
+    await expect(page.getByText(catalogs[lang].tagline)).toBeVisible();
+    await expect(page.getByTestId('seal')).toHaveText(catalogs[lang].seal);
+    await context.close();
+  }
 });
