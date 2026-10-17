@@ -21,17 +21,21 @@ use crate::core::{
 ///   with [`CustodyError::AlreadyExists`] (ids come from an [`IdSource`], so
 ///   this only guards against a broken random source);
 /// * a file deposit opens only once all its chunks are in; each chunk is
-///   written once, and only before the deposit has been opened;
+///   written once, and only before the deposit has been opened; every chunk
+///   but the last is full ([`crate::ChunkCount::takes`]);
 /// * opening a burn-after-reading file claims it instead of deleting it: from
 ///   then on it cannot be opened again, its chunks go only to the holder of
-///   the claim, each at most once, and the claim lapses after
+///   the claim, each burned at most once, and the claim lapses after
 ///   [`crate::CLAIM_WINDOW_SECONDS`] at most. The deposit goes with its last chunk;
 /// * the vault never holds a chunk's bytes, only the name of its object in
-///   the [`ChunkStore`]; whenever a chunk goes (burned, revoked, expired), its
-///   name joins the garbage until [`Vault::forget_garbage`];
-/// * storing (a deposit, a request or an answer) may fail with
-///   [`CustodyError::StorageFull`] when the vault is out of room, and then
-///   changes nothing; reading never does.
+///   the [`ChunkStore`]. Whenever a chunk goes (burned, revoked, expired), its
+///   name joins the garbage until [`Vault::forget_garbage`], and is handed
+///   out by [`Vault::garbage`] only after [`crate::GARBAGE_GRACE_SECONDS`];
+///   a reserved upload's name waits there [`crate::RESERVATION_SECONDS`];
+/// * the ceiling counts every row, not only the bytes it holds, and the chunk
+///   budget counts the garbage too: storing (a deposit, a request, an answer
+///   or a chunk reservation) may fail with [`CustodyError::StorageFull`],
+///   and then changes nothing; reading never does.
 // Workers run on one thread, so the futures need not be `Send`.
 #[allow(async_fn_in_trait)]
 pub trait Vault {
@@ -43,11 +47,25 @@ pub trait Vault {
     /// The returned [`Opened::claim`] is always `None`: the custodian holds the token.
     async fn open(&self, id: &DropId, claim: &ClaimDigest) -> Result<Option<Opened>, CustodyError>;
 
-    /// Records that chunk `index` of a file deposit that is live and not yet
-    /// opened is the stored object `object`, of `len` bytes. False when there
-    /// is no such deposit or the index is past its count;
-    /// [`CustodyError::AlreadyExists`] when that chunk is already in;
-    /// [`CustodyError::StorageFull`] when the chunks would outgrow their quota.
+    /// Before a chunk is stored: whether the live, unopened file deposit
+    /// takes chunk `index` of `len` bytes (inside its count, not in yet, full
+    /// unless last). If it does, `object` joins the garbage for
+    /// [`crate::RESERVATION_SECONDS`], so it is collected unless
+    /// [`Vault::put_chunk`] records it. False, with nothing written, when it
+    /// does not; [`CustodyError::StorageFull`] when the rows or the chunks
+    /// would outgrow their room.
+    async fn reserve_chunk(
+        &self,
+        id: &DropId,
+        index: ChunkIndex,
+        object: &ObjectName,
+        len: u32,
+    ) -> Result<bool, CustodyError>;
+
+    /// After the store kept it: records that chunk `index` is the reserved
+    /// `object`, of `len` bytes, and takes it out of the garbage. False when
+    /// the reservation is gone or older than [`crate::RESERVATION_FRESH_SECONDS`],
+    /// or the deposit no longer takes that chunk (one already in included).
     async fn put_chunk(
         &self,
         id: &DropId,
@@ -56,8 +74,8 @@ pub trait Vault {
         len: u32,
     ) -> Result<bool, CustodyError>;
 
-    /// Finds one chunk of a complete file: of a burn-after-reading file only
-    /// against its claim, and then at most once (`burned`).
+    /// Finds one chunk of a complete file, of a burn-after-reading file only
+    /// against its claim. Burns nothing: see [`Vault::burn_chunk`].
     async fn open_chunk(
         &self,
         id: &DropId,
@@ -65,14 +83,21 @@ pub trait Vault {
         claim: Option<&ClaimDigest>,
     ) -> Result<Option<ChunkRef>, CustodyError>;
 
-    /// Up to `limit` objects whose chunk is gone and that may still be in the store.
+    /// Burns chunk `index` of a burn-after-reading file claimed with `claim`,
+    /// once it was read from the store. True for exactly one caller, even
+    /// under concurrent burns: only that one may hand the chunk out.
+    async fn burn_chunk(&self, id: &DropId, index: ChunkIndex, claim: &ClaimDigest) -> Result<bool, CustodyError>;
+
+    /// Up to `limit` objects whose chunk is gone, that may still be in the
+    /// store, and whose wait in the garbage is over.
     async fn garbage(&self, limit: u16) -> Result<Vec<ObjectName>, CustodyError>;
 
     /// Drops objects from the garbage once the store deleted them.
     async fn forget_garbage(&self, objects: &[ObjectName]) -> Result<(), CustodyError>;
 
-    /// Deletes a live deposit whose stored digest matches. True if deleted.
-    async fn revoke(&self, id: &DropId, digest: &RevocationDigest) -> Result<bool, CustodyError>;
+    /// Deletes a live deposit whose stored digest matches, and names the
+    /// objects of its chunks (now in the garbage). `None` if nothing was deleted.
+    async fn revoke(&self, id: &DropId, digest: &RevocationDigest) -> Result<Option<Vec<ObjectName>>, CustodyError>;
 
     async fn post_request(&self, request: &Request) -> Result<UnixTime, CustodyError>;
 

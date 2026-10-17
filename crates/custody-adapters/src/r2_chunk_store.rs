@@ -6,9 +6,16 @@
 
 use custody::ObjectName;
 
-/// The R2 key of an object: 32 lowercase hex digits.
+/// The R2 key of an object: 32 lowercase hex digits. Cheap, as a garbage
+/// batch makes a thousand of them inside the Worker's CPU allowance.
 pub fn object_key(object: &ObjectName) -> String {
-    object.as_bytes().iter().map(|b| format!("{b:02x}")).collect()
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut key = String::with_capacity(2 * ObjectName::LEN);
+    for byte in object.as_bytes() {
+        key.push(char::from(HEX[usize::from(byte >> 4)]));
+        key.push(char::from(HEX[usize::from(byte & 0x0F)]));
+    }
+    key
 }
 
 #[cfg(target_arch = "wasm32")]
