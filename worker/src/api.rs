@@ -615,8 +615,25 @@ mod tests {
 
     const ID: &str = "AAECAwQFBgcICQoLDA0ODw"; // bytes 0..16
 
+    /// The smallest envelope a sealer makes.
+    fn envelope() -> Vec<u8> {
+        let mut bytes = b"SGY\x01".to_vec();
+        bytes.resize(custody::MIN_PAYLOAD_LEN, 0x5A);
+        bytes
+    }
+
+    fn payload64() -> String {
+        encode(&envelope())
+    }
+
     fn deposit_json(extra: &str) -> String {
-        format!(r#"{{"payload":"U0dZAQ","retention":"burn_after_reading","lifetime_seconds":3600{extra}}}"#)
+        let payload = payload64();
+        format!(r#"{{"payload":"{payload}","retention":"burn_after_reading","lifetime_seconds":3600{extra}}}"#)
+    }
+
+    fn answer_json(extra: &str) -> String {
+        let payload = payload64();
+        format!(r#"{{"payload":"{payload}","retention":"until_expiry","lifetime_seconds":300{extra}}}"#)
     }
 
     fn request_json(extra: &str) -> String {
@@ -643,7 +660,7 @@ mod tests {
         let cmd = parse_deposit(deposit_json(r#","chunks":10"#).as_bytes()).unwrap();
         assert_eq!(cmd.chunks, Some(ChunkCount::new(10).unwrap()));
         assert!(parse_deposit(deposit_json("").as_bytes()).unwrap().chunks.is_none());
-        let answer = r#"{"payload":"U0dZAQ","retention":"until_expiry","lifetime_seconds":300,"chunks":2}"#;
+        let answer = answer_json(r#","chunks":2"#);
         assert_eq!(parse_answer(answer.as_bytes()).unwrap().chunks, Some(ChunkCount::new(2).unwrap()));
     }
 
@@ -661,9 +678,10 @@ mod tests {
 
     #[test]
     fn opened_bodies_add_chunks_and_claim_only_for_files() {
-        let payload = SealedPayload::new(b"SGY\x01".to_vec()).unwrap();
+        let payload = SealedPayload::new(envelope()).unwrap();
         let text = custody::Opened { payload: payload.clone(), burned: true, chunks: None, claim: None };
-        assert_eq!(opened_body(text), r#"{"payload":"U0dZAQ","burned":true}"#);
+        let b64 = payload64();
+        assert_eq!(opened_body(text), format!(r#"{{"payload":"{b64}","burned":true}}"#));
         let file = custody::Opened {
             payload,
             burned: true,
@@ -671,7 +689,7 @@ mod tests {
             claim: Some(ClaimToken::from_array([0; 32])),
         };
         let claim = encode(&[0; 32]);
-        assert_eq!(opened_body(file), format!(r#"{{"payload":"U0dZAQ","burned":true,"chunks":3,"claim":"{claim}"}}"#));
+        assert_eq!(opened_body(file), format!(r#"{{"payload":"{b64}","burned":true,"chunks":3,"claim":"{claim}"}}"#));
     }
 
     #[test]
@@ -679,7 +697,7 @@ mod tests {
         let cmd = parse_deposit(deposit_json("").as_bytes()).unwrap();
         assert_eq!(cmd.retention, Retention::BurnAfterReading);
         assert_eq!(cmd.lifetime.seconds(), 3600);
-        assert_eq!(cmd.payload.as_bytes(), b"SGY\x01");
+        assert_eq!(cmd.payload.as_bytes(), envelope());
         assert!(cmd.revocation.is_none());
     }
 
@@ -710,7 +728,7 @@ mod tests {
     fn every_route_becomes_a_command() {
         let id = id_segment(ID).unwrap();
         let token = format!(r#"{{"token":"{}"}}"#, encode(&[1; 32]));
-        let answer = r#"{"payload":"U0dZAQ","retention":"until_expiry","lifetime_seconds":300}"#;
+        let answer = answer_json("");
         assert!(matches!(command(Route::Deposit, deposit_json("").as_bytes(), None), Ok(Command::Deposit(_))));
         assert!(matches!(command(Route::Open(id), b"", None), Ok(Command::Open(i)) if i == id));
         assert!(matches!(command(Route::Revoke(id), token.as_bytes(), None), Ok(Command::Revoke(i, _)) if i == id));
@@ -858,7 +876,7 @@ mod tests {
             assert_eq!(parse_deposit(unknown.as_bytes()).unwrap_err(), ApiError::InvalidJson);
             let bad_retention = deposit_json("").replace("burn_after_reading", "forever");
             assert_eq!(parse_deposit(bad_retention.as_bytes()).unwrap_err(), ApiError::InvalidJson);
-            let padded = deposit_json("").replace("U0dZAQ", "U0dZAQ==");
+            let padded = deposit_json("").replace(&payload64(), &format!("{}=", payload64()));
             assert_eq!(parse_deposit(padded.as_bytes()).unwrap_err(), ApiError::InvalidEncoding);
             let forever = deposit_json("").replace("3600", "31536000");
             assert_eq!(
@@ -935,6 +953,22 @@ mod tests {
             {
                 assert!(!route.takes_body(), "{route:?}");
             }
+        }
+
+        #[test]
+        fn payloads_and_chunks_smaller_than_the_sealer_makes_are_refused() {
+            // Each costs a database row: a flood of tiny ones would fill it
+            // while the ceiling counted almost nothing.
+            let tiny = deposit_json("").replace(&payload64(), "U0dZAQ");
+            let too_small = ApiError::Custody(CustodyError::PayloadTooSmall);
+            assert_eq!(parse_deposit(tiny.as_bytes()).unwrap_err(), too_small);
+            let tiny = answer_json("").replace(&payload64(), "U0dZAQ");
+            assert_eq!(parse_answer(tiny.as_bytes()).unwrap_err(), too_small);
+            assert_eq!(too_small.status(), 400);
+            for len in [1, 271, 300, 4096, custody::MAX_CHUNK_LEN - 1] {
+                assert_eq!(parse_chunk(&vec![0; len]).unwrap_err(), ApiError::Custody(CustodyError::InvalidChunk));
+            }
+            assert!(parse_chunk(&[0; custody::MIN_CHUNK_LEN]).is_ok());
         }
 
         #[test]

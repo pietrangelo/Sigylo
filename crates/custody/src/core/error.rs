@@ -6,6 +6,8 @@ pub enum CustodyError {
     InvalidId,
     /// A payload is empty.
     PayloadEmpty,
+    /// A payload is shorter than any envelope ([`crate::MIN_PAYLOAD_LEN`]).
+    PayloadTooSmall,
     /// A payload exceeds [`crate::MAX_PAYLOAD_LEN`].
     PayloadTooLarge,
     /// A lifetime is outside the 5 minutes to 7 days window.
@@ -35,6 +37,7 @@ impl fmt::Display for CustodyError {
         f.write_str(match self {
             Self::InvalidId => "invalid identifier",
             Self::PayloadEmpty => "empty payload",
+            Self::PayloadTooSmall => "payload too small",
             Self::PayloadTooLarge => "payload too large",
             Self::LifetimeOutOfRange => "lifetime out of range",
             Self::InvalidRecipientKey => "invalid recipient key",

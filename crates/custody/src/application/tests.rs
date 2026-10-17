@@ -1,9 +1,18 @@
 use super::fakes::{BrokenIds, FakeStore, FakeVault, SequentialIds, StuckIds, ToyDigest, block_on};
 use super::{Answer, Custodian, IdSource, TokenDigest};
-use crate::core::{CustodyError, Lifetime, RecipientKeyBlob, Retention, RevocationToken, SealedPayload};
+use crate::core::{
+    CustodyError, Lifetime, MIN_PAYLOAD_LEN, RecipientKeyBlob, Retention, RevocationToken, SealedPayload,
+};
 
 fn payload() -> SealedPayload {
-    SealedPayload::new(b"SGY\x01opaque-ciphertext".to_vec()).unwrap()
+    sealed(b"SGY\x01opaque-ciphertext")
+}
+
+/// An envelope-sized payload that starts with `head`.
+fn sealed(head: &[u8]) -> SealedPayload {
+    let mut bytes = head.to_vec();
+    bytes.resize(MIN_PAYLOAD_LEN, 0xA0);
+    SealedPayload::new(bytes).unwrap()
 }
 
 fn token(n: u8) -> RevocationToken {
@@ -127,7 +136,7 @@ mod adversary {
         let c = custodian(&vault);
         let original = block_on(c.deposit(payload(), Retention::BurnAfterReading, Lifetime::ONE_DAY, None)).unwrap();
         block_on(c.open(&original.id)).unwrap();
-        let forgery = SealedPayload::new(b"SGY\x01forged".to_vec()).unwrap();
+        let forgery = sealed(b"SGY\x01forged");
         let refill = block_on(c.deposit(forgery, Retention::BurnAfterReading, Lifetime::ONE_DAY, None)).unwrap();
         assert_ne!(refill.id, original.id);
         assert_eq!(block_on(c.open(&original.id)), Err(CustodyError::NotFound));
@@ -138,7 +147,7 @@ mod adversary {
         let vault = FakeVault::default();
         let c = Custodian::new(&vault, &vault.store, ToyDigest, StuckIds);
         let first = block_on(c.deposit(payload(), Retention::BurnAfterReading, Lifetime::ONE_DAY, None)).unwrap();
-        let evil = SealedPayload::new(b"attacker".to_vec()).unwrap();
+        let evil = sealed(b"attacker");
         let again = block_on(c.deposit(evil, Retention::UntilExpiry, Lifetime::MAX, None));
         assert_eq!(again, Err(CustodyError::AlreadyExists));
         assert_eq!(block_on(c.open(&first.id)).unwrap().payload, payload());
@@ -247,7 +256,9 @@ mod adversary {
 
 mod files {
     use super::*;
-    use crate::core::{CLAIM_WINDOW_SECONDS, ChunkCount, ChunkIndex, ClaimToken, DropId, SealedChunk};
+    use crate::core::{
+        CLAIM_WINDOW_SECONDS, ChunkCount, ChunkIndex, ClaimToken, DropId, MAX_CHUNK_LEN, MIN_CHUNK_LEN, SealedChunk,
+    };
 
     fn count(n: u16) -> ChunkCount {
         ChunkCount::new(n).unwrap()
@@ -258,7 +269,7 @@ mod files {
     }
 
     fn chunk(i: u16) -> SealedChunk {
-        SealedChunk::new(vec![i as u8 + 1; 300]).unwrap()
+        SealedChunk::new(vec![i as u8 + 1; MAX_CHUNK_LEN]).unwrap()
     }
 
     fn deposit_file(c: &TestCustodian<'_>, n: u16, retention: Retention) -> DropId {
@@ -348,7 +359,7 @@ mod files {
             chunks: Some(count(1)),
         };
         let receipt = block_on(c.answer_request(request.id, answer)).unwrap();
-        let junk = SealedChunk::new(vec![0xEE; 300]).unwrap();
+        let junk = SealedChunk::new(vec![0xEE; MIN_CHUNK_LEN]).unwrap();
         assert_eq!(block_on(c.put_chunk(&request.id, at(0), junk)), Err(CustodyError::NotFound));
         block_on(c.put_chunk(&receipt.id, at(0), chunk(0))).unwrap();
         assert_eq!(block_on(c.open_chunk(&request.inbox, at(0), None)), Ok(chunk(0)));
@@ -428,10 +439,25 @@ mod files {
             let c = custodian(&vault);
             let id = deposit_file(&c, 2, Retention::UntilExpiry);
             block_on(c.put_chunk(&id, at(0), chunk(0))).unwrap();
-            let forged = SealedChunk::new(b"forged".to_vec()).unwrap();
+            let forged = SealedChunk::new(vec![0xF0; MAX_CHUNK_LEN]).unwrap();
             assert_eq!(block_on(c.put_chunk(&id, at(0), forged.clone())), Err(CustodyError::AlreadyExists));
             assert_eq!(block_on(c.put_chunk(&id, at(2), forged)), Err(CustodyError::NotFound));
             assert_eq!(vault.stored_chunks(), 1);
+        }
+
+        #[test]
+        fn a_short_chunk_fits_only_the_end_of_a_file() {
+            // Only the last chunk is padded short: anything else is junk that
+            // would cost a row and an object for a few bytes.
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let id = deposit_file(&c, 2, Retention::UntilExpiry);
+            let short = SealedChunk::new(vec![3; MIN_CHUNK_LEN]).unwrap();
+            assert_eq!(block_on(c.put_chunk(&id, at(0), short.clone())), Err(CustodyError::NotFound));
+            assert_eq!((vault.stored_chunks(), vault.store.objects()), (0, 0));
+            block_on(c.put_chunk(&id, at(1), short.clone())).unwrap();
+            block_on(c.put_chunk(&id, at(0), chunk(0))).unwrap();
+            assert_eq!(block_on(c.open_chunk(&id, at(1), None)), Ok(short));
         }
 
         #[test]
