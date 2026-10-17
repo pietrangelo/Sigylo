@@ -5,7 +5,8 @@
 //! 0       3     magic "SGY"
 //! 3       1     version (1)
 //! 4       1     mode: 1 = link key, 2 = recipient (hybrid KEM)
-//! 5       1     flags: bit 0 = passphrase, other bits must be zero
+//! 5       1     flags: bit 0 = passphrase, bit 1 = signed by the sender
+//!                     (recipient mode only), other bits must be zero
 //! [if passphrase]
 //!         16    Argon2id salt
 //!         12    Argon2id memory KiB, iterations, lanes (u32 BE each)
@@ -16,14 +17,20 @@
 //! ```
 //!
 //! Every byte before the ciphertext is the header, and the header is the
-//! AEAD associated data: mode, KDF parameters and encapsulation cannot be
-//! altered without the envelope failing to open.
+//! AEAD associated data: mode, flags, KDF parameters and encapsulation cannot
+//! be altered without the envelope failing to open. In particular nobody can
+//! strip the "signed" flag to pass a signed answer off as unsigned, or the
+//! reverse.
+//!
+//! Envelopes without the signed flag are byte for byte the format of the
+//! first release, so every link handed out before signatures keeps opening.
 
 use super::{Encapsulation, KdfCost, Salt, SealError};
 
 const MAGIC: &[u8; 3] = b"SGY";
 const VERSION: u8 = 1;
 const FLAG_PASSPHRASE: u8 = 0b0000_0001;
+const FLAG_SIGNED: u8 = 0b0000_0010;
 const MODE_LINK_KEY: u8 = 1;
 const MODE_RECIPIENT: u8 = 2;
 /// Poly1305 tag length.
@@ -75,6 +82,8 @@ pub struct PassphraseLock {
 pub struct EnvelopeHeader {
     pub source: KeySource,
     pub passphrase: Option<PassphraseLock>,
+    /// The sealed plaintext is a [`crate::core::SignedPlaintext`].
+    pub signed: bool,
     pub nonce: Nonce,
 }
 
@@ -85,7 +94,14 @@ impl EnvelopeHeader {
         out.extend_from_slice(MAGIC);
         out.push(VERSION);
         out.push(self.source.mode_byte());
-        out.push(if self.passphrase.is_some() { FLAG_PASSPHRASE } else { 0 });
+        let mut flags = 0;
+        if self.passphrase.is_some() {
+            flags |= FLAG_PASSPHRASE;
+        }
+        if self.signed {
+            flags |= FLAG_SIGNED;
+        }
+        out.push(flags);
         if let Some(lock) = &self.passphrase {
             out.extend_from_slice(lock.salt.as_bytes());
             for v in [lock.cost.memory_kib(), lock.cost.iterations(), lock.cost.lanes()] {
@@ -109,7 +125,8 @@ pub struct Envelope {
 
 impl Envelope {
     pub fn new(header: EnvelopeHeader, ciphertext: Vec<u8>) -> Result<Self, SealError> {
-        if ciphertext.len() < TAG_LEN {
+        // Only an answer to a request is signed: link mode has no recipient to bind to.
+        if ciphertext.len() < TAG_LEN || (header.signed && header.source == KeySource::LinkKey) {
             return Err(SealError::MalformedEnvelope);
         }
         Ok(Self { header, ciphertext })
@@ -121,6 +138,11 @@ impl Envelope {
 
     pub fn ciphertext(&self) -> &[u8] {
         &self.ciphertext
+    }
+
+    /// Whether the sender signed the sealed secret.
+    pub fn is_signed(&self) -> bool {
+        self.header.signed
     }
 
     /// Whether opening needs a passphrase (so the UI can ask before fetching).
@@ -142,7 +164,7 @@ impl Envelope {
         }
         let mode = r.byte()?;
         let flags = r.byte()?;
-        if flags & !FLAG_PASSPHRASE != 0 {
+        if flags & !(FLAG_PASSPHRASE | FLAG_SIGNED) != 0 {
             return Err(SealError::MalformedEnvelope);
         }
         let passphrase = if flags & FLAG_PASSPHRASE != 0 {
@@ -158,7 +180,7 @@ impl Envelope {
             _ => return Err(SealError::MalformedEnvelope),
         };
         let nonce = Nonce::from_array(r.array()?);
-        let header = EnvelopeHeader { source, passphrase, nonce };
+        let header = EnvelopeHeader { source, passphrase, signed: flags & FLAG_SIGNED != 0, nonce };
         Self::new(header, bytes[r.pos..].to_vec())
     }
 }
@@ -198,15 +220,21 @@ mod tests {
             source: KeySource::LinkKey,
             passphrase: passphrase
                 .then(|| PassphraseLock { salt: Salt::from_array([7; 16]), cost: KdfCost::RECOMMENDED }),
+            signed: false,
             nonce: Nonce::from_array([3; 24]),
         };
         Envelope::new(header, vec![0xCC; 272]).unwrap()
     }
 
     fn recipient_envelope() -> Envelope {
+        signable_envelope(false)
+    }
+
+    fn signable_envelope(signed: bool) -> Envelope {
         let header = EnvelopeHeader {
             source: KeySource::Recipient(Encapsulation::from_slice(&[5; Encapsulation::LEN]).unwrap()),
             passphrase: None,
+            signed,
             nonce: Nonce::from_array([3; 24]),
         };
         Envelope::new(header, vec![0xCC; 272]).unwrap()
@@ -214,7 +242,7 @@ mod tests {
 
     #[test]
     fn roundtrips_every_shape() {
-        for env in [link_envelope(false), link_envelope(true), recipient_envelope()] {
+        for env in [link_envelope(false), link_envelope(true), recipient_envelope(), signable_envelope(true)] {
             assert_eq!(Envelope::parse(&env.to_bytes()).unwrap(), env);
         }
     }
@@ -227,6 +255,16 @@ mod tests {
         assert_eq!(&bytes[..header.len()], &header[..]);
         assert_eq!(header.len(), 6 + 28 + 24);
         assert!(env.needs_passphrase());
+    }
+
+    #[test]
+    fn the_signed_flag_is_bit_one_and_part_of_the_header() {
+        let signed = signable_envelope(true);
+        assert!(signed.is_signed() && !recipient_envelope().is_signed());
+        assert_eq!(signed.to_bytes()[5], 0b10);
+        let mut unsigned = signed.to_bytes();
+        unsigned[5] = 0;
+        assert_eq!(&unsigned[..], &recipient_envelope().to_bytes()[..]);
     }
 
     mod adversary {
@@ -244,11 +282,23 @@ mod tests {
         #[test]
         fn unknown_version_mode_and_flags_are_rejected() {
             let good = link_envelope(false).to_bytes();
-            for (offset, value) in [(0, b'X'), (3, 2), (3, 0), (4, 0), (4, 3), (5, 0b10), (5, 0x80)] {
+            for (offset, value) in [(0, b'X'), (3, 2), (3, 0), (4, 0), (4, 3), (5, 0b100), (5, 0x80)] {
                 let mut bad = good.clone();
                 bad[offset] = value;
                 assert_eq!(Envelope::parse(&bad), Err(SealError::MalformedEnvelope), "byte {offset}={value}");
             }
+        }
+
+        #[test]
+        fn a_signed_link_envelope_does_not_exist() {
+            let mut bytes = link_envelope(false).to_bytes();
+            bytes[5] = 0b10;
+            assert_eq!(Envelope::parse(&bytes), Err(SealError::MalformedEnvelope));
+            bytes[5] = 0b11;
+            assert_eq!(Envelope::parse(&bytes), Err(SealError::MalformedEnvelope));
+            let mut header = link_envelope(false).header().clone();
+            header.signed = true;
+            assert_eq!(Envelope::new(header, vec![0; TAG_LEN]), Err(SealError::MalformedEnvelope));
         }
 
         #[test]
