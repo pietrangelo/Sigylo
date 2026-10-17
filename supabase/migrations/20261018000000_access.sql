@@ -30,7 +30,7 @@ create table access.accounts (
 create table access.logins (
     handle     bytea       primary key check (octet_length(handle) = 16),
     account    bytea       not null check (octet_length(account) = 32),
-    state      bytea       not null check (octet_length(state) = 128),
+    state      bytea       not null check (octet_length(state) = 168),
     expires_at timestamptz not null
 );
 create index logins_expires_at on access.logins (expires_at);

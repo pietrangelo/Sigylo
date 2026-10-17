@@ -35,7 +35,7 @@ impl World {
     fn register(&self, name: &str, password: &str) -> Result<KeyringKey, AccessError> {
         let username = Username::new(name)?;
         let (request, pending) = self.device().begin_registration(pw(password))?;
-        let response = self.relay().registration_response(&username, &request)?;
+        let response = block_on(self.relay().registration_response(&username, &request))?;
         let (record, key) = self.device().finish_registration(pending, &response)?;
         block_on(self.relay().register(&username, &record))?;
         Ok(key)
@@ -213,6 +213,34 @@ fn failures_of_the_world_surface_as_such() {
 
 mod adversary {
     use super::*;
+
+    #[test]
+    fn a_taken_name_gets_no_oprf_evaluation() {
+        // Otherwise register/start answers OPRF(k_account, guess) for the
+        // victim's own key, and one KE2 lets anyone test guesses offline.
+        let world = World::new();
+        world.register("ada", "correct horse battery").unwrap();
+        let (request, _) = world.device().begin_registration(pw("guess number one")).unwrap();
+        for name in ["ada", "ADA"] {
+            let username = Username::new(name).unwrap();
+            assert_eq!(
+                block_on(world.relay().registration_response(&username, &request)).unwrap_err(),
+                AccessError::AlreadyRegistered
+            );
+        }
+    }
+
+    #[test]
+    fn registrations_spend_the_same_budget_as_logins() {
+        let world = World::new();
+        world.throttle.budget.set(0);
+        let username = Username::new("ada").unwrap();
+        let (request, _) = world.device().begin_registration(pw("correct horse battery")).unwrap();
+        assert_eq!(
+            block_on(world.relay().registration_response(&username, &request)).unwrap_err(),
+            AccessError::Throttled
+        );
+    }
 
     #[test]
     fn a_login_handle_works_once_even_with_the_right_password() {

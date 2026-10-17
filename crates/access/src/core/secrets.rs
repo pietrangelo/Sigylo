@@ -92,12 +92,14 @@ impl fmt::Debug for Password {
 }
 
 /// The relay's half of a login between KE2 and KE3 (it holds the session
-/// key and the expected client MAC). Parked in the store for five minutes.
+/// key and the expected client MAC), sealed by the relay to the account it
+/// belongs to: 128 bytes of state, a 24-byte nonce and a 16-byte tag.
+/// Parked in the store for five minutes.
 #[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct LoginState(Vec<u8>);
 
 impl LoginState {
-    pub const LEN: usize = 128;
+    pub const LEN: usize = 168;
 
     pub fn from_slice(bytes: &[u8]) -> Result<Self, AccessError> {
         if bytes.len() == Self::LEN { Ok(Self(bytes.to_vec())) } else { Err(AccessError::MalformedMessage) }
@@ -130,7 +132,7 @@ mod tests {
     fn fixed_sizes() {
         assert_eq!(SessionToken::from_slice(&[0; 31]), Err(AccessError::MalformedMessage));
         assert_eq!(LoginHandle::from_slice(&[0; 17]), Err(AccessError::MalformedMessage));
-        assert_eq!(LoginState::from_slice(&[0; 127]), Err(AccessError::MalformedMessage));
+        assert_eq!(LoginState::from_slice(&[0; 167]), Err(AccessError::MalformedMessage));
         assert!(ExportKey::from_slice(&[0; 64]).is_ok());
     }
 
