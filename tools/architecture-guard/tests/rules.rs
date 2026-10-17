@@ -122,7 +122,7 @@ mod adversary {
     fn macros_cannot_smuggle_impure_paths() {
         let text = "macro_rules! sneaky { () => { std::net::TcpStream::connect(\"evil:1\") } }";
         assert_eq!(rules_in(text, Ring::Core), vec![Rule::ImpureStd]);
-        let inside = "pub fn f() { println!(\"{:?}\", std::env::var(\"KEY\")); }";
+        let inside = "pub fn f() -> String { format!(\"{:?}\", std::env::var(\"KEY\")) }";
         assert_eq!(rules_in(inside, Ring::Core), vec![Rule::ImpureStd]);
         let ring = "macro_rules! up { () => { crate::application::Sealer::new } }";
         assert_eq!(rules_in(ring, Ring::Core), vec![Rule::RingDirection]);
@@ -135,6 +135,17 @@ mod adversary {
             assert_eq!(rules_in(&text, Ring::Core), vec![Rule::CompileTimeIo], "{mac}");
         }
         assert_eq!(rules_in("include!(\"../../outside.rs\");", Ring::Core), vec![Rule::CompileTimeIo]);
+    }
+
+    #[test]
+    fn console_output_is_rejected() {
+        // Printing is I/O, and the easiest way to leak a key: `dbg!(key.expose())`.
+        for mac in ["println!(\"{x:?}\")", "eprintln!(\"x\")", "print!(\"x\")", "eprint!(\"x\")", "dbg!(x)"] {
+            let text = format!("pub fn f(x: u8) {{ {mac}; }}");
+            assert_eq!(rules_in(&text, Ring::Core), vec![Rule::ConsoleIo], "{mac}");
+        }
+        assert_eq!(rules_in("pub fn f(k: &[u8]) { std::dbg!(k); }", Ring::Application), vec![Rule::ConsoleIo]);
+        assert_eq!(rules_in("pub fn f() -> String { format!(\"ok\") }", Ring::Core), vec![]);
     }
 
     #[test]
