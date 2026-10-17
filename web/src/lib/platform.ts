@@ -2,7 +2,10 @@
 // installable app (a Tauri shell, `vite build --mode app`) the page and the
 // Wasm engine ship with the app, the page has no network access at all, and
 // every relay call goes through one narrow command of the Rust shell, which
-// only knows the relay API on https://sigylo.net.
+// only knows the relay API on https://sigylo.net. A file's sealed chunks
+// cross into the shell and back in base64url; everything else is JSON text.
+
+import { decode, encode } from './base64url';
 
 /** The public site: links made in the app must open for anyone in a browser. */
 export const WEB_ORIGIN = 'https://sigylo.net';
@@ -16,8 +19,11 @@ const API = '/api/';
 export function ipcFetch(invoke: Invoke): Fetch {
   return async (input, init) => {
     if (!input.startsWith(API)) throw new TypeError('not a relay call');
-    const body = init.body ?? null;
-    if (body !== null && typeof body !== 'string') throw new TypeError('relay bodies are JSON text');
+    const raw = init.body ?? null;
+    let body: string | null;
+    if (raw === null || typeof raw === 'string') body = raw;
+    else if (raw instanceof Uint8Array) body = encode(raw);
+    else throw new TypeError('relay bodies are JSON text or a sealed chunk');
     const args: Record<string, unknown> = { method: init.method ?? 'GET', path: input.slice(API.length - 1), body };
     const authorization = new Headers(init.headers).get('Authorization');
     if (authorization !== null) {
@@ -26,12 +32,16 @@ export function ipcFetch(invoke: Invoke): Fetch {
       if (session === undefined) throw new TypeError('unexpected authorization');
       args['session'] = session;
     }
-    const reply = (await invoke('relay', args)) as { status?: unknown; body?: unknown } | null;
+    const reply = (await invoke('relay', args)) as { status?: unknown; body?: unknown; binary?: unknown } | null;
     const status = reply?.status;
-    if (typeof status !== 'number' || !Number.isInteger(status) || status < 200 || status > 599 || typeof reply?.body !== 'string') {
+    const binary = reply?.binary ?? false;
+    if (typeof status !== 'number' || !Number.isInteger(status) || status < 200 || status > 599 || typeof reply?.body !== 'string' || typeof binary !== 'boolean') {
       throw new TypeError('malformed reply from the app shell');
     }
-    return new Response(reply.body, { status, headers: { 'Content-Type': 'application/json' } });
+    if (!binary) return new Response(reply.body, { status, headers: { 'Content-Type': 'application/json' } });
+    const bytes = decode(reply.body);
+    if (bytes === null) throw new TypeError('malformed chunk from the app shell');
+    return new Response(bytes as BodyInit, { status, headers: { 'Content-Type': 'application/octet-stream' } });
   };
 }
 

@@ -27,6 +27,16 @@ binding = "DB"
 id = "c9378333c78c410c8ceffd9b7e19488f"
 localConnectionString = "postgres://sigylo_relay:relay-test-only@127.0.0.1:55432/postgres"
 
+# The sealed chunks of files (opaque ciphertext under random names), in the EU.
+# Create the bucket once:  npx wrangler r2 bucket create sigylo-chunks --jurisdiction eu
+# The scheduled run below deletes the objects of burned, revoked and expired chunks;
+# as a backstop the bucket also gets a lifecycle rule:
+#   npx wrangler r2 bucket lifecycle add sigylo-chunks backstop --expire-days 8 --jurisdiction eu
+[[r2_buckets]]
+binding = "CHUNKS"
+bucket_name = "sigylo-chunks"
+jurisdiction = "eu"
+
 # Throttles POSTs per client address (kept in memory by Cloudflare, never stored by us).
 [[ratelimits]]
 name = "WRITE_LIMITER"
@@ -45,7 +55,8 @@ simple = { limit = 10, period = 60 }
 # bytes, base64url). The deploy workflow creates it once if it is missing;
 # changing it afterwards locks every account out.
 
-# Physically delete expired rows (reads already ignore them).
+# Physically delete expired rows (reads already ignore them), then the R2 objects
+# of every chunk that went.
 [triggers]
 crons = ["*/15 * * * *"]
 

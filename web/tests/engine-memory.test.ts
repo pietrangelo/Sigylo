@@ -28,14 +28,11 @@ function deadStack(): number {
 
 function leftIn(needle: Uint8Array): boolean {
   const heap = new Uint8Array(memory.buffer);
-  // The heap is tens of MiB after Argon2id: jump between candidate first
-  // bytes natively, then compare, so each scan stays well under the timeout.
-  const last = heap.length - needle.length;
-  outer: for (let i = heap.indexOf(needle[0]!); i !== -1 && i <= last; i = heap.indexOf(needle[0]!, i + 1)) {
-    for (let j = 1; j < needle.length; j++) {
-      if (heap[i + j] !== needle[j]) continue outer;
-    }
-    return true;
+  // Jump between occurrences of the first byte: the heap grows to tens of MiB with files.
+  for (let i = heap.indexOf(needle[0]!); i !== -1 && i <= heap.length - needle.length; i = heap.indexOf(needle[0]!, i + 1)) {
+    let j = 1;
+    while (j < needle.length && heap[i + j] === needle[j]) j++;
+    if (j === needle.length) return true;
   }
   return false;
 }
@@ -176,6 +173,41 @@ describe('adversary: Wasm memory after use', () => {
     const short = text('short7!');
     expect(() => engine.beginLogin(short.slice())).toThrow('InvalidPassword');
     expect(leftIn(short)).toBe(false);
+  });
+
+  it('keeps neither the file, its key nor the link key once a file is sealed and opened', () => {
+    // A 1.5 MiB file with a marker in the first chunk, across the chunk
+    // boundary and at the very end.
+    const marker = text('contenuto riservato del file 4c1d');
+    const contents = new Uint8Array(1024 * 1024 + 512 * 1024).fill(0x2e);
+    for (const at of [0, 1024 * 1024 - 10, contents.length - marker.length]) contents.set(marker, at);
+    const sealed = engine.sealFileForLink('bilancio.xlsx', contents.slice(), passphrase.slice());
+    const key = sealed.key;
+    const envelope = sealed.envelope;
+    const chunks = sealed.chunks as Uint8Array[];
+    sealed.free();
+    expect(chunks).toHaveLength(2);
+    expect(leftIn(marker), 'file contents after sealing').toBe(false);
+    expect(leftIn(key), 'link key after sealing').toBe(false);
+
+    const manifest = engine.openLink(envelope, key.slice(), passphrase.slice());
+    const fileKey = manifest.slice(6, 38);
+    const info = engine.fileInfo(manifest.slice());
+    expect([info?.name, info?.size, info?.chunks]).toEqual(['bilancio.xlsx', contents.length, 2]);
+    info?.free();
+    const opened = engine.openFile(manifest.slice(), chunks);
+    expect(opened).toEqual(contents);
+    expect(leftIn(marker), 'file contents after opening').toBe(false);
+    expect(leftIn(fileKey), 'file key after opening').toBe(false);
+    expect(leftIn(key), 'link key after opening').toBe(false);
+  }, 60_000);
+
+  it('wipes the file even when sealing it is refused', () => {
+    const marker = text('file rifiutato per il nome 9e2b');
+    const contents = new Uint8Array(4096).fill(0x2e);
+    contents.set(marker, 100);
+    expect(() => engine.sealFileForLink('evil\u202Efdp.exe', contents.slice(), undefined)).toThrow('InvalidFileName');
+    expect(leftIn(marker)).toBe(false);
   });
 });
 
