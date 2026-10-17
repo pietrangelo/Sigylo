@@ -237,7 +237,9 @@ mod runtime {
         if rate_limited(&env, &req).await {
             return respond(429, r#"{"error":"RateLimited"}"#.into());
         }
-        let body = if req.method() == Method::Post {
+        // A body is read only where the route takes one, and only once its
+        // declared length fits.
+        let body = if route.takes_body() {
             if let Err(error) = api::check_declared_length(&route, req.headers().get("Content-Length")?.as_deref()) {
                 return fail(error);
             }
@@ -265,7 +267,17 @@ mod runtime {
         if let (Ok(client), Ok(store)) = (connect(&env).await, chunk_store(&env)) {
             let custodian = Custodian::new(PostgresVault::new(&client), store, Sha256TokenDigest, RandomIds);
             let _ = custodian.purge_expired().await;
-            let _ = custodian.collect_garbage().await;
+            // Batch after batch, within a few rounds and seconds: the work is
+            // waiting on the database and R2, and stays inside the free
+            // plan's CPU allowance.
+            let deadline = worker::Date::now().as_millis() + api::GARBAGE_MILLIS;
+            let mut rounds = 1;
+            let _ = custodian
+                .collect_garbage(|| {
+                    rounds += 1;
+                    rounds <= api::GARBAGE_ROUNDS && worker::Date::now().as_millis() < deadline
+                })
+                .await;
             if let Ok(keys) = opaque_keys(&env) {
                 let store = PostgresAccounts::new(&client);
                 let digest = keys.session_digest();

@@ -15,6 +15,28 @@ impl<'a> PostgresVault<'a> {
     pub fn new(client: &'a Client) -> Self {
         Self { client }
     }
+
+    /// Reserving and recording a chunk take the same arguments and answer yes or no.
+    async fn chunk_call(
+        &self,
+        statement: &str,
+        id: &DropId,
+        index: ChunkIndex,
+        object: &ObjectName,
+        len: u32,
+    ) -> Result<bool, CustodyError> {
+        // A chunk is at most 1 MiB + 16 bytes, far inside i32.
+        let size = len as i32;
+        let row = self
+            .client
+            .query_one(
+                statement,
+                &[&id.as_bytes().as_slice(), &chunk_index(index), &object.as_bytes().as_slice(), &size],
+            )
+            .await
+            .map_err(vault_error)?;
+        Ok(row.get(0))
+    }
 }
 
 /// Every statement the vault sends.
@@ -28,11 +50,13 @@ impl<'a> PostgresVault<'a> {
 mod sql {
     pub const DEPOSIT: &str = "select custody.deposit($1, $2, $3, $4, $5, $6), now()";
     pub const OPEN: &str = "select payload, burned, chunk_count, now() from custody.open($1, $2)";
-    pub const PUT_CHUNK: &str = "select custody.put_chunk($1, $2, $3, $4), now()";
-    pub const OPEN_CHUNK: &str = "select object, burned, now() from custody.open_chunk($1, $2, $3)";
+    pub const RESERVE_CHUNK: &str = "select custody.reserve_chunk($1, $2, $3, $4), now()";
+    pub const PUT_CHUNK: &str = "select custody.record_chunk($1, $2, $3, $4), now()";
+    pub const OPEN_CHUNK: &str = "select object, burns, now() from custody.find_chunk($1, $2, $3)";
+    pub const BURN_CHUNK: &str = "select custody.burn_chunk($1, $2, $3), now()";
     pub const GARBAGE: &str = "select g, now() from custody.garbage($1) g";
     pub const FORGET_GARBAGE: &str = "select custody.forget_garbage($1), now()";
-    pub const REVOKE: &str = "select custody.revoke($1, $2), now()";
+    pub const REVOKE: &str = "select custody.revoke_with_objects($1, $2), now()";
     pub const POST_REQUEST: &str = "select custody.post_request($1, $2, $3, $4), now()";
     pub const FETCH_REQUEST: &str = "select recipient_key, expires_at, now() from custody.fetch_request($1)";
     pub const ANSWER_REQUEST: &str =
@@ -40,11 +64,13 @@ mod sql {
     pub const PURGE_EXPIRED: &str = "select custody.purge_expired(), now()";
 
     #[cfg(test)]
-    pub const ALL: [&str; 11] = [
+    pub const ALL: [&str; 13] = [
         DEPOSIT,
         OPEN,
+        RESERVE_CHUNK,
         PUT_CHUNK,
         OPEN_CHUNK,
+        BURN_CHUNK,
         GARBAGE,
         FORGET_GARBAGE,
         REVOKE,
@@ -128,6 +154,16 @@ impl Vault for PostgresVault<'_> {
         .transpose()
     }
 
+    async fn reserve_chunk(
+        &self,
+        id: &DropId,
+        index: ChunkIndex,
+        object: &ObjectName,
+        len: u32,
+    ) -> Result<bool, CustodyError> {
+        self.chunk_call(sql::RESERVE_CHUNK, id, index, object, len).await
+    }
+
     async fn put_chunk(
         &self,
         id: &DropId,
@@ -135,17 +171,7 @@ impl Vault for PostgresVault<'_> {
         object: &ObjectName,
         len: u32,
     ) -> Result<bool, CustodyError> {
-        // A chunk is at most 1 MiB + 16 bytes, far inside i32.
-        let size = len as i32;
-        let row = self
-            .client
-            .query_one(
-                sql::PUT_CHUNK,
-                &[&id.as_bytes().as_slice(), &chunk_index(index), &object.as_bytes().as_slice(), &size],
-            )
-            .await
-            .map_err(vault_error)?;
-        Ok(row.get(0))
+        self.chunk_call(sql::PUT_CHUNK, id, index, object, len).await
     }
 
     async fn open_chunk(
@@ -160,7 +186,16 @@ impl Vault for PostgresVault<'_> {
             .query_opt(sql::OPEN_CHUNK, &[&id.as_bytes().as_slice(), &chunk_index(index), &claim])
             .await
             .map_err(vault_error)?;
-        row.map(|row| Ok(ChunkRef { object: object(row.get(0))?, burned: row.get(1) })).transpose()
+        row.map(|row| Ok(ChunkRef { object: object(row.get(0))?, burns: row.get(1) })).transpose()
+    }
+
+    async fn burn_chunk(&self, id: &DropId, index: ChunkIndex, claim: &ClaimDigest) -> Result<bool, CustodyError> {
+        let row = self
+            .client
+            .query_one(sql::BURN_CHUNK, &[&id.as_bytes().as_slice(), &chunk_index(index), &claim.as_bytes().as_slice()])
+            .await
+            .map_err(vault_error)?;
+        Ok(row.get(0))
     }
 
     async fn garbage(&self, limit: u16) -> Result<Vec<ObjectName>, CustodyError> {
@@ -174,13 +209,14 @@ impl Vault for PostgresVault<'_> {
         Ok(())
     }
 
-    async fn revoke(&self, id: &DropId, digest: &RevocationDigest) -> Result<bool, CustodyError> {
+    async fn revoke(&self, id: &DropId, digest: &RevocationDigest) -> Result<Option<Vec<ObjectName>>, CustodyError> {
         let row = self
             .client
             .query_one(sql::REVOKE, &[&id.as_bytes().as_slice(), &digest.as_bytes().as_slice()])
             .await
             .map_err(vault_error)?;
-        Ok(row.get(0))
+        let objects: Option<Vec<&[u8]>> = row.get(0);
+        objects.map(|names| names.into_iter().map(object).collect()).transpose()
     }
 
     async fn post_request(&self, request: &Request) -> Result<UnixTime, CustodyError> {
