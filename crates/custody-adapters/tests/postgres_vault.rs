@@ -94,19 +94,51 @@ async fn revocation_needs_the_right_token() {
 }
 
 #[tokio::test]
-async fn request_is_answered_under_its_own_id() {
+async fn request_is_answered_into_its_private_inbox() {
     databases!(relay, _admin);
     let custodian = custodian(&relay);
-    let id = custodian.post_request(recipient_key(), Lifetime::ONE_DAY).await.unwrap().id;
-    assert_eq!(custodian.fetch_request(&id).await.unwrap().recipient_key, recipient_key());
+    let receipt = custodian.post_request(recipient_key(), Lifetime::ONE_DAY).await.unwrap();
+    assert_ne!(receipt.id, receipt.inbox);
+    assert_eq!(custodian.fetch_request(&receipt.id).await.unwrap().recipient_key, recipient_key());
     let answer = Answer { payload: payload(), retention: Retention::BurnAfterReading, lifetime: Lifetime::ONE_HOUR };
+    custodian.answer_request(receipt.id, answer).await.unwrap();
+    assert_eq!(custodian.fetch_request(&receipt.id).await, Err(CustodyError::NotFound));
+    assert!(custodian.open(&receipt.inbox).await.unwrap().burned);
+}
+
+#[tokio::test]
+async fn a_request_posted_before_inboxes_is_still_answered_under_its_id() {
+    // Requests already live when the inbox column arrived have none: their
+    // recipients' links point at the request id, so the answer goes there.
+    databases!(relay, admin);
+    let id = fresh_id();
+    admin
+        .execute(
+            "insert into custody.requests (id, recipient_key, expires_at) values ($1, $2, now() + interval '1 hour')",
+            &[&id.as_bytes().as_slice(), &recipient_key().as_bytes()],
+        )
+        .await
+        .unwrap();
+    let custodian = custodian(&relay);
+    let answer = Answer { payload: payload(), retention: Retention::UntilExpiry, lifetime: Lifetime::ONE_HOUR };
     custodian.answer_request(id, answer).await.unwrap();
-    assert_eq!(custodian.fetch_request(&id).await, Err(CustodyError::NotFound));
-    assert!(custodian.open(&id).await.unwrap().burned);
+    assert_eq!(custodian.open(&id).await.unwrap().payload, payload());
 }
 
 mod adversary {
     use super::*;
+
+    #[tokio::test]
+    async fn the_request_link_can_neither_read_nor_burn_the_answer() {
+        databases!(relay, _admin);
+        let custodian = custodian(&relay);
+        let receipt = custodian.post_request(recipient_key(), Lifetime::ONE_DAY).await.unwrap();
+        let answer =
+            Answer { payload: payload(), retention: Retention::BurnAfterReading, lifetime: Lifetime::ONE_HOUR };
+        custodian.answer_request(receipt.id, answer).await.unwrap();
+        assert_eq!(custodian.open(&receipt.id).await, Err(CustodyError::NotFound));
+        assert_eq!(custodian.open(&receipt.inbox).await.unwrap().payload, payload());
+    }
 
     #[tokio::test]
     async fn concurrent_reads_of_a_burn_after_reading_secret_get_it_once() {
@@ -128,11 +160,24 @@ mod adversary {
     }
 
     #[tokio::test]
+    async fn the_database_refuses_an_inbox_that_is_the_request_id() {
+        databases!(relay, _admin);
+        let id = fresh_id();
+        let request = Request { id, inbox: id, recipient_key: recipient_key(), lifetime: Lifetime::ONE_DAY };
+        assert!(PostgresVault::new(&relay).post_request(&request).await.is_err());
+    }
+
+    #[tokio::test]
     async fn concurrent_answers_to_one_request_store_exactly_one() {
         databases!(relay, _admin);
         let id = fresh_id();
         PostgresVault::new(&relay)
-            .post_request(&Request { id, recipient_key: recipient_key(), lifetime: Lifetime::ONE_DAY })
+            .post_request(&Request {
+                id,
+                inbox: fresh_id(),
+                recipient_key: recipient_key(),
+                lifetime: Lifetime::ONE_DAY,
+            })
             .await
             .unwrap();
         let mut clients = Vec::new();

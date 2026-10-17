@@ -12,6 +12,6 @@ pub mod core;
 
 pub use crate::core::{
     CustodyError, Deposit, DropId, Lifetime, MAX_PAYLOAD_LEN, Opened, PostedRequest, Receipt, RecipientKeyBlob,
-    Request, Retention, RevocationDigest, RevocationToken, SealedPayload, UnixTime,
+    Request, RequestReceipt, Retention, RevocationDigest, RevocationToken, SealedPayload, UnixTime,
 };
 pub use application::{Answer, Custodian, IdSource, TokenDigest, Vault};

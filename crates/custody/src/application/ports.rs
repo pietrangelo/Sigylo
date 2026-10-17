@@ -14,7 +14,8 @@ use crate::core::{
 /// * [`Vault::open`] on a [`crate::Retention::BurnAfterReading`] deposit
 ///   returns it **at most once**, even under concurrent reads;
 /// * [`Vault::answer_request`] consumes the request and stores the answer
-///   under the request's id in one atomic step, at most once;
+///   under the request's private inbox id (never its public id) in one
+///   atomic step, at most once;
 /// * ids are unique across deposits: a second deposit under a live id fails
 ///   with [`CustodyError::AlreadyExists`] (ids come from an [`IdSource`], so
 ///   this only guards against a broken random source).
@@ -34,7 +35,8 @@ pub trait Vault {
 
     async fn fetch_request(&self, id: &DropId) -> Result<Option<PostedRequest>, CustodyError>;
 
-    /// Atomically consumes the live request `answer.id` and stores `answer`.
+    /// Atomically consumes the live request `answer.id` and stores `answer`
+    /// under that request's inbox id.
     /// `None` when there was no live request to answer.
     async fn answer_request(&self, answer: &Deposit) -> Result<Option<UnixTime>, CustodyError>;
 

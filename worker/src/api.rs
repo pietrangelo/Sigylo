@@ -7,8 +7,8 @@
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use custody::{
-    Answer, CustodyError, DropId, Lifetime, Receipt, RecipientKeyBlob, Retention, RevocationToken, SealedPayload,
-    UnixTime,
+    Answer, CustodyError, DropId, Lifetime, Receipt, RecipientKeyBlob, RequestReceipt, Retention, RevocationToken,
+    SealedPayload, UnixTime,
 };
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
@@ -276,6 +276,24 @@ pub fn receipt_body(receipt: Receipt) -> String {
 }
 
 #[derive(Debug, Serialize)]
+struct RequestReceiptDto {
+    id: String,
+    inbox: String,
+    expires_at: i64,
+}
+
+/// The request's public id (for the sender's link) and its private inbox
+/// (for the recipient's link only), both chosen by the relay.
+pub fn request_receipt_body(receipt: RequestReceipt) -> String {
+    serde_json::to_string(&RequestReceiptDto {
+        id: encode(receipt.id.as_bytes()),
+        inbox: encode(receipt.inbox.as_bytes()),
+        expires_at: receipt.expires_at.0,
+    })
+    .expect("serializable")
+}
+
+#[derive(Debug, Serialize)]
 struct ExpiresDto {
     expires_at: i64,
 }
@@ -355,6 +373,16 @@ mod tests {
     fn receipts_carry_the_relay_chosen_id() {
         let receipt = Receipt { id: id_segment(ID).unwrap(), expires_at: UnixTime(42) };
         assert_eq!(receipt_body(receipt), format!(r#"{{"id":"{ID}","expires_at":42}}"#));
+    }
+
+    #[test]
+    fn request_receipts_carry_the_public_id_and_the_private_inbox() {
+        let inbox = DropId::from_slice(&[9; 16]).unwrap();
+        let receipt = RequestReceipt { id: id_segment(ID).unwrap(), inbox, expires_at: UnixTime(42) };
+        assert_eq!(
+            request_receipt_body(receipt),
+            format!(r#"{{"id":"{ID}","inbox":"{}","expires_at":42}}"#, encode(&[9; 16]))
+        );
     }
 
     #[test]

@@ -6,6 +6,10 @@ begin
         'relay must be able to open';
     assert has_function_privilege('sigylo_relay', 'custody.purge_expired()', 'execute'),
         'relay must be able to purge';
+    assert has_function_privilege('sigylo_relay', 'custody.post_request(bytea, bytea, bytea, integer)', 'execute'),
+        'relay must be able to post a request with its inbox';
+    assert not has_function_privilege('public', 'custody.post_request(bytea, bytea, bytea, integer)', 'execute'),
+        'PUBLIC must not post requests';
     -- ...but has no table privilege at all.
     assert not has_table_privilege('sigylo_relay', 'custody.deposits', 'select,insert,update,delete,truncate'),
         'relay must not touch custody.deposits directly';
@@ -36,6 +40,6 @@ begin
         where grant_.grantee not in (objects.owner, 'sigylo_relay'::regrole)
     ), 'only the owner and sigylo_relay may hold privileges in the custody schema';
     -- No column can hold plaintext metadata such as creation time or client address.
-    assert (select count(*) from information_schema.columns where table_schema = 'custody') = 8,
-        'custody tables must keep exactly the 8 documented columns';
+    assert (select count(*) from information_schema.columns where table_schema = 'custody') = 9,
+        'custody tables must keep exactly the 9 documented columns';
 end $$;

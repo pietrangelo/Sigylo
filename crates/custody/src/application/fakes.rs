@@ -104,7 +104,8 @@ impl Vault for &FakeVault {
         if !self.live(&self.requests, &answer.id) {
             return Ok(None);
         }
-        let expires = self.insert_deposit(answer)?;
+        let inbox = self.requests.borrow()[&answer.id].0.inbox;
+        let expires = self.insert_deposit(&Deposit { id: inbox, ..answer.clone() })?;
         self.requests.borrow_mut().remove(&answer.id);
         Ok(Some(expires))
     }
