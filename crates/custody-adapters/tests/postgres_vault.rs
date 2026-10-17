@@ -692,6 +692,81 @@ mod files {
         }
 
         #[tokio::test]
+        async fn an_unfinished_upload_holds_its_room_for_ten_minutes_only() {
+            // Otherwise anyone could fill the chunk budget with files they never
+            // finish, and keep it full for the longest lifetime.
+            databases!(relay, admin);
+            let custodian = custodian(&relay);
+            let receipt = custodian.deposit_file(payload(), count(2), Retention::UntilExpiry, Lifetime::ONE_DAY, None);
+            let receipt = receipt.await.unwrap();
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+            assert!((receipt.expires_at.0 - now - 86_400).abs() < 60, "the receipt promises the chosen lifetime");
+            let minutes_left = async |id: &DropId| -> f64 {
+                admin
+                    .query_one(
+                        "select extract(epoch from expires_at - now())::float8 / 60 from custody.deposits where id = $1",
+                        &[&id.as_bytes().as_slice()],
+                    )
+                    .await
+                    .unwrap()
+                    .get(0)
+            };
+            assert!(minutes_left(&receipt.id).await <= 10.0);
+            custodian.put_chunk(&receipt.id, at(0), chunk(0)).await.unwrap();
+            assert!(minutes_left(&receipt.id).await <= 10.0);
+            custodian.put_chunk(&receipt.id, at(1), chunk(1)).await.unwrap();
+            assert!(minutes_left(&receipt.id).await > 23.0 * 60.0, "the last chunk restores the chosen lifetime");
+            assert_eq!(custodian.open(&receipt.id).await.unwrap().chunks, Some(count(2)));
+        }
+
+        #[tokio::test]
+        async fn concurrent_chunks_never_overshoot_the_ceiling() {
+            databases!(relay, admin);
+            // Exactly one MiB short of the 5 GiB budget, whatever other tests left.
+            admin
+                .batch_execute(
+                    "insert into custody.deposits (id, payload, burn_after_reading, expires_at, chunk_count)
+                     select decode('fe' || lpad(to_hex(n), 30, '0'), 'hex'), '\\x00', false, now() + interval '1 hour', 10
+                     from generate_series(1, 512) n;
+                     insert into custody.chunks (deposit_id, idx, object, size)
+                     select decode('fe' || lpad(to_hex(n), 30, '0'), 'hex'), i,
+                            decode('dd' || lpad(to_hex(n * 16 + i), 30, '0'), 'hex'), 1048576
+                     from generate_series(1, 512) n, generate_series(0, 9) i
+                     where (n - 1) * 10 + i < 5118;
+                     insert into custody.chunks (deposit_id, idx, object, size)
+                     select decode('fe' || lpad(to_hex(512), 30, '0'), 'hex'), 9, decode('dd' || lpad('ffff', 30, '0'), 'hex'),
+                            5::bigint * 1024 * 1024 * 1024 - 1048576 - (select sum(size) from custody.chunks);",
+                )
+                .await
+                .unwrap();
+            let custodian = custodian(&relay);
+            let mut ids = Vec::new();
+            for _ in 0..16 {
+                let receipt =
+                    custodian.deposit_file(payload(), count(1), Retention::UntilExpiry, Lifetime::ONE_DAY, None);
+                ids.push(receipt.await.unwrap().id);
+            }
+            let mut clients = Vec::new();
+            for _ in 0..16 {
+                clients.push(connect("SIGYLO_TEST_RELAY_URL").await.unwrap());
+            }
+            let outcomes = join_all(clients.iter().zip(&ids).map(|(c, id)| async move {
+                PostgresVault::new(c).put_chunk(id, at(0), &object(0xCC), 1_048_576).await
+            }))
+            .await;
+            admin
+                .batch_execute(
+                    "delete from custody.deposits where chunk_count = 10 and payload = '\\x00';
+                     delete from custody.chunks where substring(object for 1) = '\\xcc';
+                     delete from custody.garbage where substring(object for 1) in ('\\xdd', '\\xcc')",
+                )
+                .await
+                .unwrap();
+            assert_eq!(outcomes.iter().filter(|o| matches!(o, Ok(true))).count(), 1, "{outcomes:?}");
+            assert!(outcomes.iter().all(|o| matches!(o, Ok(true) | Err(CustodyError::StorageFull))), "{outcomes:?}");
+        }
+
+        #[tokio::test]
         async fn the_old_open_function_never_burns_a_file() {
             // The relay live while the migration runs only knows open(bytea).
             databases!(relay, admin);

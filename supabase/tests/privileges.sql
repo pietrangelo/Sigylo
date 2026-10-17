@@ -63,8 +63,8 @@ begin
         where grant_.grantee not in (objects.owner, 'sigylo_relay'::regrole)
     ), 'only the owner and sigylo_relay may hold privileges in the custody schema';
     -- No column can hold plaintext metadata such as creation time or client address.
-    assert (select count(*) from information_schema.columns where table_schema = 'custody') = 16,
-        'custody tables must keep exactly the 16 documented columns';
+    assert (select count(*) from information_schema.columns where table_schema = 'custody') = 17,
+        'custody tables must keep exactly the 17 documented columns';
 end $$;
 
 -- The access schema follows the same layout.
