@@ -48,6 +48,8 @@ pub enum Rule {
     StdAlias,
     /// Compile-time I/O macros (`include!`, `env!`, …) inside a domain.
     CompileTimeIo,
+    /// Console output (`println!`, `dbg!`, …) inside a domain.
+    ConsoleIo,
     /// `#[path]` attributes that could pull files from outside the ring.
     PathAttribute,
     /// A source file that does not parse.

@@ -9,4 +9,4 @@ mod fakes;
 mod tests;
 
 pub use custodian::{Answer, Custodian};
-pub use ports::{TokenDigest, Vault};
+pub use ports::{IdSource, TokenDigest, Vault};

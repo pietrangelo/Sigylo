@@ -146,6 +146,32 @@ test.describe('adversary', () => {
     }
   });
 
+  test('whoever burns a secret cannot refill its link', async ({ page, request, browser }) => {
+    const { link } = await sealSecret(page);
+    const id = link.split('/').at(-2)!;
+    const thief = await freshPage(browser);
+    await thief.goto(link);
+    await thief.getByTestId('reveal').click();
+    await expect(thief.getByTestId('plaintext')).toHaveValue(SECRET);
+    const payload = 'U0dZAQEA' + 'A'.repeat(400);
+
+    // Choosing the id is refused outright; a plain deposit lands elsewhere.
+    const forged = await request.post('/api/secrets', {
+      data: { id, payload, retention: 'burn_after_reading', lifetime_seconds: 3600 },
+    });
+    expect(forged.status()).toBe(400);
+    const elsewhere = await request.post('/api/secrets', {
+      data: { payload, retention: 'burn_after_reading', lifetime_seconds: 3600 },
+    });
+    expect(elsewhere.status()).toBe(201);
+    expect((await elsewhere.json()).id).not.toBe(id);
+
+    const recipient = await freshPage(browser);
+    await recipient.goto(link);
+    await recipient.getByTestId('reveal').click();
+    await expect(recipient.getByTestId('open-error')).toContainText('Non c');
+  });
+
   test('a link preview bot (GET) cannot burn a secret', async ({ page, request, browser }) => {
     const { link } = await sealSecret(page);
     const id = link.split('/').at(-2)!;

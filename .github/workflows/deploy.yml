@@ -1,0 +1,81 @@
+name: Deploy
+
+# Publishes https://sigylo.net from main, and only after CI passed on that exact
+# commit. Pull requests never run this workflow, so no branch or fork ever sees
+# the Cloudflare token. Secrets: CLOUDFLARE_API_TOKEN ("Edit Cloudflare
+# Workers", scoped to this account and the sigylo.net zone) and
+# CLOUDFLARE_ACCOUNT_ID.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  WASM_BINDGEN_VERSION: 0.2.129
+  WORKER_BUILD_VERSION: 0.8.7
+  WRANGLER_VERSION: 4.151.1
+
+jobs:
+  deploy:
+    name: Deploy to sigylo.net
+    # `event == 'push'` matters: a pull request from a fork whose branch is also
+    # called main would otherwise pass the branch filter above.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - name: Hyperdrive is configured
+        run: |
+          if grep -Eq '^id = "0{32}"' worker/wrangler.toml; then
+            echo "::error file=worker/wrangler.toml::the Hyperdrive id is still the placeholder (CLAUDE.md §6)"
+            exit 1
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ env.WASM_BINDGEN_VERSION }}
+      - run: cargo install worker-build@${{ env.WORKER_BUILD_VERSION }} --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci && npm run build
+        working-directory: web
+      - name: Deploy
+        run: npx --yes wrangler@${{ env.WRANGLER_VERSION }} deploy
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # Rocket Loader, Email Obfuscation or an analytics beacon would rewrite the
+      # page and break CSP and SRI (CLAUDE.md §6): the zone must serve the page
+      # byte for byte as built, with the policy from _headers. A new custom
+      # domain can take a few minutes to get its certificate.
+      - name: The zone serves the page exactly as built
+        run: |
+          for attempt in $(seq 30); do
+            curl -fsS https://sigylo.net/ -o served.html && cmp -s served.html web/dist/index.html && break
+            sleep 10
+          done
+          cmp served.html web/dist/index.html
+          policy="$(sed -n 's/^  Content-Security-Policy: //p' web/public/_headers)"
+          curl -fsS -D - -o /dev/null https://sigylo.net/ | tr -d '\r' | grep -iF "content-security-policy: $policy"

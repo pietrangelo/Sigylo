@@ -5,10 +5,10 @@
 //! (the Worker's role); time travel uses the owner connection.
 
 use custody::{
-    Answer, Custodian, CustodyError, Deposit, DropId, Lifetime, RecipientKeyBlob, Request, Retention, RevocationToken,
-    SealedPayload, Vault,
+    Answer, Custodian, CustodyError, Deposit, DropId, IdSource, Lifetime, RecipientKeyBlob, Request, Retention,
+    RevocationToken, SealedPayload, Vault,
 };
-use custody_adapters::{PostgresVault, Sha256TokenDigest};
+use custody_adapters::{PostgresVault, RandomIds, Sha256TokenDigest};
 use futures_util::future::join_all;
 use tokio_postgres::{Client, NoTls};
 
@@ -33,9 +33,11 @@ macro_rules! databases {
 }
 
 fn fresh_id() -> DropId {
-    let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).unwrap();
-    DropId::from_slice(&bytes).unwrap()
+    RandomIds.fresh().unwrap()
+}
+
+fn custodian(relay: &Client) -> Custodian<PostgresVault<'_>, Sha256TokenDigest, RandomIds> {
+    Custodian::new(PostgresVault::new(relay), Sha256TokenDigest, RandomIds)
 }
 
 fn payload() -> SealedPayload {
@@ -58,9 +60,8 @@ async fn expire(admin: &Client, table: &str, id: &DropId) {
 #[tokio::test]
 async fn burn_after_reading_is_returned_once() {
     databases!(relay, _admin);
-    let custodian = Custodian::new(PostgresVault::new(&relay), Sha256TokenDigest);
-    let id = fresh_id();
-    custodian.deposit(id, payload(), Retention::BurnAfterReading, Lifetime::ONE_DAY, None).await.unwrap();
+    let custodian = custodian(&relay);
+    let id = custodian.deposit(payload(), Retention::BurnAfterReading, Lifetime::ONE_DAY, None).await.unwrap().id;
     let opened = custodian.open(&id).await.unwrap();
     assert_eq!((opened.payload, opened.burned), (payload(), true));
     assert_eq!(custodian.open(&id).await, Err(CustodyError::NotFound));
@@ -69,11 +70,11 @@ async fn burn_after_reading_is_returned_once() {
 #[tokio::test]
 async fn until_expiry_is_readable_until_the_database_clock_says_otherwise() {
     databases!(relay, admin);
-    let custodian = Custodian::new(PostgresVault::new(&relay), Sha256TokenDigest);
-    let id = fresh_id();
-    let expires = custodian.deposit(id, payload(), Retention::UntilExpiry, Lifetime::ONE_HOUR, None).await.unwrap();
+    let custodian = custodian(&relay);
+    let receipt = custodian.deposit(payload(), Retention::UntilExpiry, Lifetime::ONE_HOUR, None).await.unwrap();
+    let id = receipt.id;
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
-    assert!((expires.0 - now - 3600).abs() < 60, "expiry is now + lifetime");
+    assert!((receipt.expires_at.0 - now - 3600).abs() < 60, "expiry is now + lifetime");
     for _ in 0..3 {
         assert!(!custodian.open(&id).await.unwrap().burned);
     }
@@ -85,9 +86,8 @@ async fn until_expiry_is_readable_until_the_database_clock_says_otherwise() {
 #[tokio::test]
 async fn revocation_needs_the_right_token() {
     databases!(relay, _admin);
-    let custodian = Custodian::new(PostgresVault::new(&relay), Sha256TokenDigest);
-    let id = fresh_id();
-    custodian.deposit(id, payload(), Retention::UntilExpiry, Lifetime::ONE_DAY, Some(&token(1))).await.unwrap();
+    let custodian = custodian(&relay);
+    let id = custodian.deposit(payload(), Retention::UntilExpiry, Lifetime::ONE_DAY, Some(&token(1))).await.unwrap().id;
     assert_eq!(custodian.revoke(&id, &token(2)).await, Err(CustodyError::NotFound));
     custodian.revoke(&id, &token(1)).await.unwrap();
     assert_eq!(custodian.open(&id).await, Err(CustodyError::NotFound));
@@ -96,9 +96,8 @@ async fn revocation_needs_the_right_token() {
 #[tokio::test]
 async fn request_is_answered_under_its_own_id() {
     databases!(relay, _admin);
-    let custodian = Custodian::new(PostgresVault::new(&relay), Sha256TokenDigest);
-    let id = fresh_id();
-    custodian.post_request(Request { id, recipient_key: recipient_key(), lifetime: Lifetime::ONE_DAY }).await.unwrap();
+    let custodian = custodian(&relay);
+    let id = custodian.post_request(recipient_key(), Lifetime::ONE_DAY).await.unwrap().id;
     assert_eq!(custodian.fetch_request(&id).await.unwrap().recipient_key, recipient_key());
     let answer = Answer { payload: payload(), retention: Retention::BurnAfterReading, lifetime: Lifetime::ONE_HOUR };
     custodian.answer_request(id, answer).await.unwrap();
@@ -112,11 +111,11 @@ mod adversary {
     #[tokio::test]
     async fn concurrent_reads_of_a_burn_after_reading_secret_get_it_once() {
         databases!(relay, _admin);
-        let id = fresh_id();
-        Custodian::new(PostgresVault::new(&relay), Sha256TokenDigest)
-            .deposit(id, payload(), Retention::BurnAfterReading, Lifetime::ONE_DAY, None)
+        let id = custodian(&relay)
+            .deposit(payload(), Retention::BurnAfterReading, Lifetime::ONE_DAY, None)
             .await
-            .unwrap();
+            .unwrap()
+            .id;
         // 16 separate connections race to open the same link.
         let mut clients = Vec::new();
         for _ in 0..16 {
@@ -156,26 +155,46 @@ mod adversary {
 
     #[tokio::test]
     async fn a_live_id_cannot_be_overwritten_but_an_expired_one_is_free() {
+        // Ids come from the custodian's random source; this is the vault's own
+        // guard should that source ever repeat itself.
         databases!(relay, admin);
-        let custodian = Custodian::new(PostgresVault::new(&relay), Sha256TokenDigest);
-        let id = fresh_id();
-        custodian.deposit(id, payload(), Retention::BurnAfterReading, Lifetime::ONE_DAY, None).await.unwrap();
+        let vault = PostgresVault::new(&relay);
+        let deposit = |payload, lifetime| Deposit {
+            id: fresh_id(),
+            payload,
+            retention: Retention::UntilExpiry,
+            lifetime,
+            revocation: None,
+        };
+        let first = deposit(payload(), Lifetime::ONE_DAY);
+        vault.deposit(&first).await.unwrap();
         let evil = SealedPayload::new(b"attacker".to_vec()).unwrap();
-        assert_eq!(
-            custodian.deposit(id, evil.clone(), Retention::UntilExpiry, Lifetime::MAX, None).await,
-            Err(CustodyError::AlreadyExists)
-        );
-        expire(&admin, "deposits", &id).await;
-        custodian.deposit(id, evil.clone(), Retention::UntilExpiry, Lifetime::MIN, None).await.unwrap();
-        assert_eq!(custodian.open(&id).await.unwrap().payload, evil);
+        let overwrite = Deposit { id: first.id, ..deposit(evil.clone(), Lifetime::MAX) };
+        assert_eq!(vault.deposit(&overwrite).await, Err(CustodyError::AlreadyExists));
+        expire(&admin, "deposits", &first.id).await;
+        let reuse = Deposit { id: first.id, ..deposit(evil.clone(), Lifetime::MIN) };
+        vault.deposit(&reuse).await.unwrap();
+        assert_eq!(vault.open(&first.id).await.unwrap().unwrap().payload, evil);
+    }
+
+    #[tokio::test]
+    async fn whoever_burns_a_secret_cannot_refill_its_link() {
+        databases!(relay, _admin);
+        let custodian = custodian(&relay);
+        let original =
+            custodian.deposit(payload(), Retention::BurnAfterReading, Lifetime::ONE_DAY, None).await.unwrap();
+        custodian.open(&original.id).await.unwrap();
+        let forgery = SealedPayload::new(b"SGY\x01 forged".to_vec()).unwrap();
+        let refill = custodian.deposit(forgery, Retention::BurnAfterReading, Lifetime::ONE_DAY, None).await.unwrap();
+        assert_ne!(refill.id, original.id);
+        assert_eq!(custodian.open(&original.id).await, Err(CustodyError::NotFound));
     }
 
     #[tokio::test]
     async fn expired_requests_cannot_be_fetched_or_answered() {
         databases!(relay, admin);
-        let custodian = Custodian::new(PostgresVault::new(&relay), Sha256TokenDigest);
-        let id = fresh_id();
-        custodian.post_request(Request { id, recipient_key: recipient_key(), lifetime: Lifetime::MIN }).await.unwrap();
+        let custodian = custodian(&relay);
+        let id = custodian.post_request(recipient_key(), Lifetime::MIN).await.unwrap().id;
         expire(&admin, "requests", &id).await;
         assert_eq!(custodian.fetch_request(&id).await, Err(CustodyError::NotFound));
         let answer = Answer { payload: payload(), retention: Retention::UntilExpiry, lifetime: Lifetime::ONE_HOUR };

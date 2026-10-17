@@ -1,11 +1,13 @@
 //! The relay's HTTP contract, independent of the Workers runtime so it can
 //! be tested natively: routing, JSON bodies, and error → status mapping.
 //!
-//! All binary fields are base64url without padding. Ids are 16 bytes.
+//! All binary fields are base64url without padding. Ids are 16 bytes and
+//! always chosen by the relay: a deposit or request body that carries one is
+//! refused, so nobody can put something under an id that already had a life.
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use custody::{
-    Answer, CustodyError, DropId, Lifetime, RecipientKeyBlob, Request, Retention, RevocationToken, SealedPayload,
+    Answer, CustodyError, DropId, Lifetime, Receipt, RecipientKeyBlob, Retention, RevocationToken, SealedPayload,
     UnixTime,
 };
 use serde::{Deserialize, Serialize};
@@ -47,7 +49,7 @@ impl ApiError {
             Self::MethodNotAllowed => 405,
             Self::BodyTooLarge | Self::Custody(CustodyError::PayloadTooLarge) => 413,
             Self::Custody(CustodyError::AlreadyExists) => 409,
-            Self::Custody(CustodyError::VaultUnavailable) => 503,
+            Self::Custody(CustodyError::VaultUnavailable | CustodyError::RandomnessUnavailable) => 503,
             Self::InvalidJson | Self::InvalidEncoding | Self::Custody(_) => 400,
         }
     }
@@ -62,6 +64,14 @@ impl ApiError {
 
     pub fn body(&self) -> String {
         serde_json::json!({ "error": self.code() }).to_string()
+    }
+}
+
+/// Refuse a body whose declared length is already too large, before reading it.
+pub fn check_declared_length(content_length: Option<&str>) -> Result<(), ApiError> {
+    match content_length.map(|v| v.trim().parse::<u64>()) {
+        Some(Ok(n)) if n > MAX_BODY_LEN as u64 => Err(ApiError::BodyTooLarge),
+        _ => Ok(()),
     }
 }
 
@@ -119,7 +129,6 @@ impl From<RetentionDto> for Retention {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DepositDto {
-    id: String,
     payload: String,
     retention: RetentionDto,
     lifetime_seconds: u32,
@@ -129,7 +138,6 @@ struct DepositDto {
 /// A validated deposit command.
 #[derive(Debug)]
 pub struct DepositCommand {
-    pub id: DropId,
     pub payload: SealedPayload,
     pub retention: Retention,
     pub lifetime: Lifetime,
@@ -139,7 +147,6 @@ pub struct DepositCommand {
 pub fn parse_deposit(body: &[u8]) -> Result<DepositCommand, ApiError> {
     let dto: DepositDto = parse(body)?;
     Ok(DepositCommand {
-        id: DropId::from_slice(&decode(&dto.id)?)?,
         payload: SealedPayload::new(decode(&dto.payload)?)?,
         retention: dto.retention.into(),
         lifetime: Lifetime::from_seconds(dto.lifetime_seconds)?,
@@ -164,15 +171,20 @@ pub fn parse_revoke(body: &[u8]) -> Result<RevocationToken, ApiError> {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RequestDto {
-    id: String,
     recipient_key: String,
     lifetime_seconds: u32,
 }
 
-pub fn parse_request(body: &[u8]) -> Result<Request, ApiError> {
+/// A validated request command: the recipient's public key and how long it stays.
+#[derive(Debug)]
+pub struct RequestCommand {
+    pub recipient_key: RecipientKeyBlob,
+    pub lifetime: Lifetime,
+}
+
+pub fn parse_request(body: &[u8]) -> Result<RequestCommand, ApiError> {
     let dto: RequestDto = parse(body)?;
-    Ok(Request {
-        id: DropId::from_slice(&decode(&dto.id)?)?,
+    Ok(RequestCommand {
         recipient_key: RecipientKeyBlob::new(decode(&dto.recipient_key)?)?,
         lifetime: Lifetime::from_seconds(dto.lifetime_seconds)?,
     })
@@ -193,6 +205,41 @@ pub fn parse_answer(body: &[u8]) -> Result<Answer, ApiError> {
         retention: dto.retention.into(),
         lifetime: Lifetime::from_seconds(dto.lifetime_seconds)?,
     })
+}
+
+/// Everything a route needs, validated before the vault is touched: a
+/// malformed body never costs a database connection.
+#[derive(Debug)]
+pub enum Command {
+    Deposit(DepositCommand),
+    Open(DropId),
+    Revoke(DropId, RevocationToken),
+    PostRequest(RequestCommand),
+    FetchRequest(DropId),
+    AnswerRequest(DropId, Answer),
+}
+
+pub fn command(route: Route, body: &[u8]) -> Result<Command, ApiError> {
+    Ok(match route {
+        Route::Deposit => Command::Deposit(parse_deposit(body)?),
+        Route::Open(id) => Command::Open(id),
+        Route::Revoke(id) => Command::Revoke(id, parse_revoke(body)?),
+        Route::PostRequest => Command::PostRequest(parse_request(body)?),
+        Route::FetchRequest(id) => Command::FetchRequest(id),
+        Route::AnswerRequest(id) => Command::AnswerRequest(id, parse_answer(body)?),
+    })
+}
+
+#[derive(Debug, Serialize)]
+struct ReceiptDto {
+    id: String,
+    expires_at: i64,
+}
+
+/// The id the relay chose and when it expires.
+pub fn receipt_body(receipt: Receipt) -> String {
+    serde_json::to_string(&ReceiptDto { id: encode(receipt.id.as_bytes()), expires_at: receipt.expires_at.0 })
+        .expect("serializable")
 }
 
 #[derive(Debug, Serialize)]
@@ -236,7 +283,12 @@ mod tests {
     const ID: &str = "AAECAwQFBgcICQoLDA0ODw"; // bytes 0..16
 
     fn deposit_json(extra: &str) -> String {
-        format!(r#"{{"id":"{ID}","payload":"U0dZAQ","retention":"burn_after_reading","lifetime_seconds":3600{extra}}}"#)
+        format!(r#"{{"payload":"U0dZAQ","retention":"burn_after_reading","lifetime_seconds":3600{extra}}}"#)
+    }
+
+    fn request_json(extra: &str) -> String {
+        let key = encode(&[7; RecipientKeyBlob::LEN]);
+        format!(r#"{{"recipient_key":"{key}","lifetime_seconds":3600{extra}}}"#)
     }
 
     #[test]
@@ -260,11 +312,40 @@ mod tests {
     }
 
     #[test]
+    fn request_body_becomes_a_validated_command() {
+        let cmd = parse_request(request_json("").as_bytes()).unwrap();
+        assert_eq!(cmd.recipient_key.as_bytes(), &[7; RecipientKeyBlob::LEN][..]);
+        assert_eq!(cmd.lifetime.seconds(), 3600);
+    }
+
+    #[test]
+    fn receipts_carry_the_relay_chosen_id() {
+        let receipt = Receipt { id: id_segment(ID).unwrap(), expires_at: UnixTime(42) };
+        assert_eq!(receipt_body(receipt), format!(r#"{{"id":"{ID}","expires_at":42}}"#));
+    }
+
+    #[test]
+    fn every_route_becomes_a_command() {
+        let id = id_segment(ID).unwrap();
+        let token = format!(r#"{{"token":"{}"}}"#, encode(&[1; 32]));
+        let answer = r#"{"payload":"U0dZAQ","retention":"until_expiry","lifetime_seconds":300}"#;
+        assert!(matches!(command(Route::Deposit, deposit_json("").as_bytes()), Ok(Command::Deposit(_))));
+        assert!(matches!(command(Route::Open(id), b""), Ok(Command::Open(i)) if i == id));
+        assert!(matches!(command(Route::Revoke(id), token.as_bytes()), Ok(Command::Revoke(i, _)) if i == id));
+        assert!(matches!(command(Route::PostRequest, request_json("").as_bytes()), Ok(Command::PostRequest(_))));
+        assert!(matches!(command(Route::FetchRequest(id), b""), Ok(Command::FetchRequest(i)) if i == id));
+        assert!(
+            matches!(command(Route::AnswerRequest(id), answer.as_bytes()), Ok(Command::AnswerRequest(i, _)) if i == id)
+        );
+    }
+
+    #[test]
     fn error_statuses() {
         assert_eq!(ApiError::Custody(CustodyError::NotFound).status(), 404);
         assert_eq!(ApiError::Custody(CustodyError::AlreadyExists).status(), 409);
         assert_eq!(ApiError::Custody(CustodyError::LifetimeOutOfRange).status(), 400);
         assert_eq!(ApiError::Custody(CustodyError::VaultUnavailable).status(), 503);
+        assert_eq!(ApiError::Custody(CustodyError::RandomnessUnavailable).status(), 503);
         assert_eq!(ApiError::Custody(CustodyError::NotFound).body(), r#"{"error":"NotFound"}"#);
     }
 
@@ -316,6 +397,39 @@ mod tests {
             let huge = vec![b' '; MAX_BODY_LEN + 1];
             assert_eq!(parse_deposit(&huge).unwrap_err(), ApiError::BodyTooLarge);
             assert_eq!(ApiError::BodyTooLarge.status(), 413);
+        }
+
+        #[test]
+        fn the_client_cannot_choose_the_id() {
+            // A reader who burned a secret would otherwise refill its link with
+            // a re-sealed copy or a forgery, and the recipient would not notice.
+            let deposit = deposit_json(&format!(r#","id":"{ID}""#));
+            assert_eq!(parse_deposit(deposit.as_bytes()).unwrap_err(), ApiError::InvalidJson);
+            let request = request_json(&format!(r#","id":"{ID}""#));
+            assert_eq!(parse_request(request.as_bytes()).unwrap_err(), ApiError::InvalidJson);
+        }
+
+        #[test]
+        fn malformed_bodies_are_refused_before_the_vault_is_touched() {
+            let id = id_segment(ID).unwrap();
+            for (route, body) in [
+                (Route::Deposit, &b"{}"[..]),
+                (Route::Revoke(id), b"{\"token\":\"AAEC\"}"),
+                (Route::PostRequest, b"[]"),
+                (Route::AnswerRequest(id), b"null"),
+            ] {
+                assert!(command(route.clone(), body).is_err(), "{route:?}");
+            }
+        }
+
+        #[test]
+        fn a_declared_oversized_body_is_refused_before_it_is_read() {
+            assert_eq!(check_declared_length(Some("104857600")), Err(ApiError::BodyTooLarge));
+            assert_eq!(check_declared_length(Some(&(MAX_BODY_LEN + 1).to_string())), Err(ApiError::BodyTooLarge));
+            assert_eq!(check_declared_length(Some(&MAX_BODY_LEN.to_string())), Ok(()));
+            // Missing or odd headers fall through to the check on the bytes actually read.
+            assert_eq!(check_declared_length(None), Ok(()));
+            assert_eq!(check_declared_length(Some("lots")), Ok(()));
         }
 
         #[test]

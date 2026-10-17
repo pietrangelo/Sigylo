@@ -21,6 +21,8 @@ pub enum CustodyError {
     NotFound,
     /// The vault could not be reached.
     VaultUnavailable,
+    /// No fresh id could be drawn: the random source failed.
+    RandomnessUnavailable,
 }
 
 impl fmt::Display for CustodyError {
@@ -35,6 +37,7 @@ impl fmt::Display for CustodyError {
             Self::AlreadyExists => "identifier already in use",
             Self::NotFound => "not found, expired or already read",
             Self::VaultUnavailable => "vault unavailable",
+            Self::RandomnessUnavailable => "randomness unavailable",
         })
     }
 }

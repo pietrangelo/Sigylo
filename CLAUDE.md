@@ -21,7 +21,7 @@ Condividere dati segreti (credenziali, chiavi, codici) nel modo più sicuro poss
   - un crate `-adapters` dipende da un altro `-adapters` o da uno shell;
   - il `lib.rs` di un dominio non ha `#![forbid(unsafe_code)]` o dichiara moduli diversi da `core` e `application`;
   - `core` raggiunge `application` (anche via `super::super`, o dentro una macro), o un anello raggiunge item della radice del crate;
-  - un dominio usa `std::{fs, net, io, process, env, thread, time, os, path}`, rinomina o importa con glob `std`, usa `include!`/`include_str!`/`include_bytes!`/`env!`/`option_env!` o `#[path]` (anche dentro `cfg_attr`);
+  - un dominio usa `std::{fs, net, io, process, env, thread, time, os, path}`, rinomina o importa con glob `std`, usa `include!`/`include_str!`/`include_bytes!`/`env!`/`option_env!` o `#[path]` (anche dentro `cfg_attr`), o scrive sulla console (`print!`, `println!`, `eprint!`, `eprintln!`, `dbg!`);
   - un file non si analizza (fail closed).
 
 ## 1. STRUTTURA DEL REPOSITORY E COMANDI
@@ -75,20 +75,23 @@ Tutto avviene sul dispositivo, in Rust compilato a Wasm. Le implementazioni sono
 
 **Errori indistinguibili:** chiave sbagliata, passphrase sbagliata, destinatario sbagliato e busta manomessa danno tutti `NotAuthentic`.
 
-**Memoria:** chiavi, seed, passphrase e testo in chiaro sono tipi `Zeroize` con `Debug` oscurato. Limite noto del browser: ciò che passa in una stringa o `Uint8Array` JS può restare in copie del garbage collector.
+**Memoria:** chiavi, seed, passphrase e testo in chiaro sono tipi `Zeroize` con `Debug` oscurato. La shell Wasm li consegna a JavaScript copiandoli direttamente in un `Uint8Array` (mai come `Vec<u8>` o campo di una struct esportata, che wasm-bindgen sposta o libera senza azzerare) e dopo ogni chiamata sovrascrive lo stack usato, dove gli spostamenti lasciano copie che `Zeroize` non raggiunge. `web/tests/engine-memory.test.ts` scansiona la memoria Wasm dopo ogni operazione e fallisce se ci trova un segreto. Limite noto del browser: ciò che passa in una stringa o `Uint8Array` JS può restare in copie del garbage collector.
 
 ## 3. CUSTODIA (contesto Custody) E RELAY CIECO
 
-* **Il relay è cieco:** riceve buste già sigillate (byte opachi), id casuali di 128 bit scelti dal client e, per la revoca, un token di cui conserva solo lo SHA-256. Non registra id, payload o indirizzi.
+* **Il relay è cieco:** riceve buste già sigillate (byte opachi) e, per la revoca, un token di cui conserva solo lo SHA-256. Non registra id, payload o indirizzi.
+* **Gli id li sceglie il relay, mai il client:** 128 bit casuali (port `IdSource`, adapter `RandomIds`), restituiti nella ricevuta `{id, expires_at}`. Una richiesta che porta un proprio `id` viene rifiutata. Altrimenti chi legge per primo un segreto burn-after-reading potrebbe rimetterne una copia, o un falso sigillato con la chiave del link, sotto lo stesso id, e il destinatario lo aprirebbe senza accorgersi di nulla: il sigillo sarebbe rotto.
 * **Regole:** durata da 5 minuti a 7 giorni; `BurnAfterReading` restituisce la busta **al massimo una volta** anche con letture concorrenti; `UntilExpiry` è leggibile fino alla scadenza; inesistente, scaduto, già letto e revocato sono indistinguibili (`404 NotFound`); un id vivo non si sovrascrive; una richiesta riceve al massimo una risposta, salvata sotto lo stesso id.
-* **API (`worker/src/api.rs`):** `POST /api/secrets`, `POST /api/secrets/{id}/open`, `POST /api/secrets/{id}/revoke`, `POST /api/requests`, `GET /api/requests/{id}`, `POST /api/requests/{id}/answer`. Aprire è sempre una POST: anteprime dei link e prefetch (GET) non possono bruciare un segreto. Campi binari in base64url senza padding.
+* **Limite noto della modalità richiesta:** chiunque abbia il link di richiesta può rispondere per primo, e il destinatario non sa chi ha sigillato (il mittente legittimo vede però "richiesta già usata"). L'autenticazione del mittente è rinviata (§7).
+* **API (`worker/src/api.rs`):** `POST /api/secrets`, `POST /api/secrets/{id}/open`, `POST /api/secrets/{id}/revoke`, `POST /api/requests`, `GET /api/requests/{id}`, `POST /api/requests/{id}/answer`. Aprire è sempre una POST: anteprime dei link e prefetch (GET) non possono bruciare un segreto. Campi binari in base64url senza padding. Il corpo si valida (anche la `Content-Length` dichiarata) prima di aprire una connessione al database.
 * **Rate limit:** binding `WRITE_LIMITER` di Cloudflare sulle POST per indirizzo, in memoria di Cloudflare, mai salvato da noi.
 
 ## 4. PERSISTENZA (Supabase PostgreSQL via Hyperdrive)
 
 * Schema `custody` con due tabelle e **8 colonne in tutto** (verificato dai test): niente orari di creazione, niente IP, niente account. Colonne `bytea`, vincoli di lunghezza nel database.
 * Ogni operazione è una funzione `SECURITY DEFINER` con `search_path` vuoto; burn-after-reading è un solo `DELETE … RETURNING` atomico; l'orologio che decide la scadenza è solo `now()` del database.
-* Il Worker si collega come `sigylo_relay`, che può **solo eseguire le funzioni**: nessun privilegio sulle tabelle, quindi una credenziale del relay rubata non può elencare o scaricare i segreti. `PUBLIC` (e quindi `anon`/`authenticated` di Supabase) non ha nulla. RLS attiva e forzata.
+* **Nessuna cache di Hyperdrive:** Hyperdrive memorizza per un minuto le `SELECT` che crede di sola lettura e non vede che `custody.open` cancella; una risposta in cache restituirebbe un segreto già bruciato, revocato o scaduto. La configurazione Hyperdrive si crea con `--caching-disabled` e, in più, ogni statement del vault seleziona anche `now()`, che Hyperdrive non mette mai in cache (test in `postgres_vault.rs`).
+* Il Worker si collega come `sigylo_relay`, che può **solo eseguire le funzioni**: nessun privilegio sulle tabelle, quindi una credenziale del relay rubata non può elencare o scaricare i segreti. Nessun altro ruolo, né `PUBLIC` né `anon`/`authenticated`/`service_role` di Supabase, ha privilegi nello schema `custody` (verificato sulle ACL dai test, con i ruoli Supabase ricreati). RLS attiva e forzata.
 * Disattivati per scelta: Supabase Auth, supabase-js nel browser, Vault/pgsodium (la crittografia non avviene mai nel database), PostgREST sullo schema `custody`.
 * Un cron ogni 15 minuti (`purge_expired`) cancella fisicamente ciò che è scaduto.
 
@@ -104,13 +107,14 @@ Tutto avviene sul dispositivo, in Rust compilato a Wasm. Le implementazioni sono
 
 ## 6. DEPLOY
 
-1. Supabase: applicare `supabase/migrations/*.sql`, poi `alter role sigylo_relay login password '<password forte>';`.
-2. Cloudflare: `npx wrangler hyperdrive create sigylo-db --connection-string="postgres://sigylo_relay:<password>@<host>:5432/postgres"` e mettere l'id in `worker/wrangler.toml`.
-3. `(cd web && npm ci && npm run build)` poi `(cd worker && npx wrangler deploy)`: pubblica su `https://sigylo.net` (custom domain del Worker, `workers.dev` spento), creando record DNS e certificato nella zona.
-4. Nella zona sigylo.net disattivare tutte le funzioni Cloudflare che modificano l'HTML (Rocket Loader, Email Obfuscation, Web Analytics automatico): romperebbero CSP e SRI.
+1. Supabase, in un progetto dedicato solo a Sigylo: applicare `supabase/migrations/*.sql`, poi `alter role sigylo_relay login password '<password forte>';`.
+2. Cloudflare: `npx wrangler hyperdrive create sigylo-db --caching-disabled --connection-string="postgres://sigylo_relay:<password>@<host>:5432/postgres"` e mettere l'id in `worker/wrangler.toml`. `--caching-disabled` è obbligatorio (vedi §4); su una configurazione già creata: `npx wrangler hyperdrive update <id> --caching-disabled`.
+3. Pubblicazione su `https://sigylo.net` (custom domain del Worker, `workers.dev` spento; il primo deploy crea record DNS e certificato nella zona). Di norma la fa `.github/workflows/deploy.yml`: parte solo su `main`, solo dopo che la CI è passata su quello stesso commit, mai da una pull request. Segreti del repository: `CLOUDFLARE_API_TOKEN` (modello "Edit Cloudflare Workers", limitato a questo account e alla zona sigylo.net) e `CLOUDFLARE_ACCOUNT_ID`. A mano: `(cd web && npm ci && npm run build)` poi `(cd worker && npx wrangler deploy)`.
+4. Nella zona sigylo.net disattivare tutte le funzioni Cloudflare che modificano l'HTML (Rocket Loader, Email Obfuscation, Web Analytics automatico): romperebbero CSP e SRI. Dopo ogni deploy il workflow verifica che la pagina servita sia identica byte per byte a `web/dist/index.html` e porti la CSP di `_headers`, e fallisce se la zona la riscrive.
 
 ## 7. RINVIATO (non nell'MVP)
 
+* **Autenticazione del mittente nella modalità richiesta:** firma ML-DSA-65 + Ed25519 o codice di conferma da confrontare fuori banda (vedi il limite noto in §3).
 * **Account e autenticazione:** OPAQUE o challenge firmate con Ed25519 + ML-DSA-65, MEK/chiave di autenticazione derivate con Argon2id + HKDF. L'MVP non ha account: il link è la capacità.
 * **Client verificabile:** app Tauri con chiavi in Secure Enclave / TPM, oppure estensione browser firmata.
 * **File e allegati:** suddivisione in chunk cifrati su storage (Supabase Storage o R2).
