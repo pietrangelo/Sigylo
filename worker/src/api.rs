@@ -20,9 +20,10 @@ use access::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use custody::{
     Answer, ChunkCount, ChunkIndex, ClaimToken, CustodyError, DropId, Lifetime, MAX_CHUNK_LEN, Receipt,
-    RecipientKeyBlob, Retention, RevocationToken, SealedChunk, SealedPayload, UnixTime,
+    RecipientKeyBlob, RequestReceipt, Retention, RevocationToken, SealedChunk, SealedPayload,
 };
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 
 /// Largest JSON request body accepted (a maximal payload in base64 plus JSON).
 pub const MAX_BODY_LEN: usize = 100 * 1024;
@@ -62,6 +63,8 @@ impl Route {
 pub enum ApiError {
     NotFound,
     MethodNotAllowed,
+    /// A browser page of another origin tried to call the relay.
+    CrossOrigin,
     BodyTooLarge,
     InvalidJson,
     InvalidEncoding,
@@ -86,6 +89,7 @@ impl ApiError {
         match self {
             Self::NotFound | Self::Custody(CustodyError::NotFound) => 404,
             Self::MethodNotAllowed => 405,
+            Self::CrossOrigin => 403,
             Self::BodyTooLarge | Self::Custody(CustodyError::PayloadTooLarge) => 413,
             Self::Custody(CustodyError::AlreadyExists) => 409,
             Self::Custody(CustodyError::VaultUnavailable | CustodyError::RandomnessUnavailable) => 503,
@@ -125,6 +129,35 @@ pub fn check_declared_length(route: &Route, content_length: Option<&str>) -> Res
     match content_length.map(|v| v.trim().parse::<u64>()) {
         Some(Ok(n)) if n > route.max_body_len() as u64 => Err(ApiError::BodyTooLarge),
         _ => Ok(()),
+    }
+}
+
+/// Refuse calls from pages of other origins. Browsers attach `Origin` to every
+/// cross-origin request (and to same-origin POSTs), so a page elsewhere cannot
+/// use its visitors' browsers as a botnet against the relay. Clients that send
+/// no `Origin`, such as the app's shell, are not browsers acting for a page.
+pub fn check_origin(origin: Option<&str>, own_origin: &str) -> Result<(), ApiError> {
+    match origin {
+        Some(origin) if origin != own_origin => Err(ApiError::CrossOrigin),
+        _ => Ok(()),
+    }
+}
+
+/// The key a client address is throttled under: an IPv4 address as is, an
+/// IPv6 address by its /64, the network one subscriber usually gets, so
+/// rotating addresses inside it does not buy a fresh allowance. Anything
+/// unparsable shares a single bucket.
+pub fn limiter_key(address: &str) -> String {
+    match address.trim().parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => v4.to_string(),
+        Ok(IpAddr::V6(v6)) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.to_string(),
+            None => {
+                let s = v6.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+            }
+        },
+        Err(_) => "unknown".into(),
     }
 }
 
@@ -452,12 +485,21 @@ pub fn receipt_body(receipt: Receipt) -> String {
 }
 
 #[derive(Debug, Serialize)]
-struct ExpiresDto {
+struct RequestReceiptDto {
+    id: String,
+    inbox: String,
     expires_at: i64,
 }
 
-pub fn expires_body(expires: UnixTime) -> String {
-    serde_json::to_string(&ExpiresDto { expires_at: expires.0 }).expect("serializable")
+/// The request's public id (for the sender's link) and its private inbox
+/// (for the recipient's link only), both chosen by the relay.
+pub fn request_receipt_body(receipt: RequestReceipt) -> String {
+    serde_json::to_string(&RequestReceiptDto {
+        id: encode(receipt.id.as_bytes()),
+        inbox: encode(receipt.inbox.as_bytes()),
+        expires_at: receipt.expires_at.0,
+    })
+    .expect("serializable")
 }
 
 #[derive(Debug, Serialize)]
@@ -556,6 +598,7 @@ pub fn version_body(version: KeyringVersion) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use custody::UnixTime;
 
     const ID: &str = "AAECAwQFBgcICQoLDA0ODw"; // bytes 0..16
 
@@ -638,6 +681,16 @@ mod tests {
     fn receipts_carry_the_relay_chosen_id() {
         let receipt = Receipt { id: id_segment(ID).unwrap(), expires_at: UnixTime(42) };
         assert_eq!(receipt_body(receipt), format!(r#"{{"id":"{ID}","expires_at":42}}"#));
+    }
+
+    #[test]
+    fn request_receipts_carry_the_public_id_and_the_private_inbox() {
+        let inbox = DropId::from_slice(&[9; 16]).unwrap();
+        let receipt = RequestReceipt { id: id_segment(ID).unwrap(), inbox, expires_at: UnixTime(42) };
+        assert_eq!(
+            request_receipt_body(receipt),
+            format!(r#"{{"id":"{ID}","inbox":"{}","expires_at":42}}"#, encode(&[9; 16]))
+        );
     }
 
     #[test]
@@ -741,6 +794,7 @@ mod tests {
         assert_eq!(ApiError::Custody(CustodyError::VaultUnavailable).status(), 503);
         assert_eq!(ApiError::Custody(CustodyError::RandomnessUnavailable).status(), 503);
         assert_eq!(ApiError::Custody(CustodyError::StorageFull).status(), 507);
+        assert_eq!(ApiError::Custody(CustodyError::StorageFull).body(), r#"{"error":"StorageFull"}"#);
         assert_eq!(ApiError::Custody(CustodyError::InvalidChunk).status(), 400);
         assert_eq!(ApiError::Custody(CustodyError::NotFound).body(), r#"{"error":"NotFound"}"#);
     }
@@ -861,6 +915,35 @@ mod tests {
             assert_eq!(parse_open_chunk(short.as_bytes()).unwrap_err(), ApiError::Custody(CustodyError::InvalidToken));
             let extra = r#"{"claim":null,"index":3}"#;
             assert_eq!(parse_open_chunk(extra.as_bytes()).unwrap_err(), ApiError::InvalidJson);
+        }
+
+        #[test]
+        fn pages_of_other_sites_cannot_call_the_relay() {
+            // A page elsewhere could otherwise make its visitors' browsers deposit
+            // junk from thousands of addresses, past the per-address limit.
+            let own = "https://sigylo.net";
+            for origin in ["https://evil.example", "null", "http://sigylo.net", "https://sigylo.net.evil.example"] {
+                assert_eq!(check_origin(Some(origin), own), Err(ApiError::CrossOrigin), "{origin}");
+            }
+            assert_eq!(ApiError::CrossOrigin.status(), 403);
+            // Our own pages, and clients that send no Origin (the app's shell), pass.
+            assert_eq!(check_origin(Some(own), own), Ok(()));
+            assert_eq!(check_origin(None, own), Ok(()));
+        }
+
+        #[test]
+        fn one_ipv6_network_is_one_client_for_the_limiter() {
+            // A /64 is what one subscriber gets: rotating addresses inside it
+            // must not buy a fresh allowance each time.
+            let a = limiter_key("2001:db8:1:2:aaaa::1");
+            assert_eq!(a, limiter_key("2001:db8:1:2:ffff:ffff:ffff:ffff"));
+            assert_ne!(a, limiter_key("2001:db8:1:3::1"));
+            assert_eq!(limiter_key("203.0.113.7"), "203.0.113.7");
+            assert_ne!(limiter_key("203.0.113.7"), limiter_key("203.0.113.8"));
+            // An IPv4-mapped address is the IPv4 client it maps.
+            assert_eq!(limiter_key("::ffff:203.0.113.7"), "203.0.113.7");
+            // Missing or garbled headers share one bucket rather than escape it.
+            assert_eq!(limiter_key(""), limiter_key("not an address"));
         }
 
         #[test]

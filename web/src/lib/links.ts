@@ -7,8 +7,8 @@
 //   #/x/<id>/<token>     revoke a secret before it is read (sender only)
 //   #/r/<id>/<fpr>       answer a request: seal to the recipient's public key
 //   #/r/<id>/<fpr>/<pin> ... that only the expected sender may answer
-//   #/k/<id>/<seed>      the recipient's private link to read the answer
-//   #/k/<id>/<seed>/<pin> ... refusing an answer from anyone but that sender
+//   #/k/<inbox>/<seed>   the recipient's private link to read the answer
+//   #/k/<inbox>/<seed>/<pin> ... refusing an answer from anyone but that sender
 //   #/me                 this browser's sender code
 //   #/terms, #/privacy   the terms of service and the privacy notice
 //   #/account            sign in, and the seals of a signed-in sender

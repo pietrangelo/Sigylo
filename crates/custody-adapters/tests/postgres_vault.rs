@@ -137,24 +137,62 @@ async fn revocation_needs_the_right_token() {
 }
 
 #[tokio::test]
-async fn request_is_answered_under_its_own_id() {
+async fn request_is_answered_into_its_private_inbox() {
     databases!(relay, _admin);
     let custodian = custodian(&relay);
-    let id = custodian.post_request(recipient_key(), Lifetime::ONE_DAY).await.unwrap().id;
-    assert_eq!(custodian.fetch_request(&id).await.unwrap().recipient_key, recipient_key());
+    let receipt = custodian.post_request(recipient_key(), Lifetime::ONE_DAY).await.unwrap();
+    assert_ne!(receipt.id, receipt.inbox);
+    assert_eq!(custodian.fetch_request(&receipt.id).await.unwrap().recipient_key, recipient_key());
     let answer = Answer {
         payload: payload(),
         retention: Retention::BurnAfterReading,
         lifetime: Lifetime::ONE_HOUR,
         chunks: None,
     };
-    custodian.answer_request(id, answer).await.unwrap();
-    assert_eq!(custodian.fetch_request(&id).await, Err(CustodyError::NotFound));
-    assert!(custodian.open(&id).await.unwrap().burned);
+    let answered = custodian.answer_request(receipt.id, answer).await.unwrap();
+    assert_eq!(answered.id, receipt.inbox, "the sender learns the inbox, for a file's chunks");
+    assert_eq!(custodian.fetch_request(&receipt.id).await, Err(CustodyError::NotFound));
+    assert!(custodian.open(&receipt.inbox).await.unwrap().burned);
+}
+
+#[tokio::test]
+async fn a_request_posted_before_inboxes_is_still_answered_under_its_id() {
+    // Requests already live when the inbox column arrived have none: their
+    // recipients' links point at the request id, so the answer goes there.
+    databases!(relay, admin);
+    let id = fresh_id();
+    admin
+        .execute(
+            "insert into custody.requests (id, recipient_key, expires_at) values ($1, $2, now() + interval '1 hour')",
+            &[&id.as_bytes().as_slice(), &recipient_key().as_bytes()],
+        )
+        .await
+        .unwrap();
+    let custodian = custodian(&relay);
+    let answer =
+        Answer { payload: payload(), retention: Retention::UntilExpiry, lifetime: Lifetime::ONE_HOUR, chunks: None };
+    assert_eq!(custodian.answer_request(id, answer).await.unwrap().id, id);
+    assert_eq!(custodian.open(&id).await.unwrap().payload, payload());
 }
 
 mod adversary {
     use super::*;
+
+    #[tokio::test]
+    async fn the_request_link_can_neither_read_nor_burn_the_answer() {
+        databases!(relay, _admin);
+        let custodian = custodian(&relay);
+        let receipt = custodian.post_request(recipient_key(), Lifetime::ONE_DAY).await.unwrap();
+        let answer = Answer {
+            payload: payload(),
+            retention: Retention::BurnAfterReading,
+            lifetime: Lifetime::ONE_HOUR,
+            chunks: None,
+        };
+        custodian.answer_request(receipt.id, answer).await.unwrap();
+        assert_eq!(custodian.open(&receipt.id).await, Err(CustodyError::NotFound));
+        assert_eq!(custodian.open(&receipt.inbox).await.unwrap().payload, payload());
+    }
 
     #[tokio::test]
     async fn concurrent_reads_of_a_burn_after_reading_secret_get_it_once() {
@@ -179,11 +217,24 @@ mod adversary {
     }
 
     #[tokio::test]
+    async fn the_database_refuses_an_inbox_that_is_the_request_id() {
+        databases!(relay, _admin);
+        let id = fresh_id();
+        let request = Request { id, inbox: id, recipient_key: recipient_key(), lifetime: Lifetime::ONE_DAY };
+        assert!(PostgresVault::new(&relay).post_request(&request).await.is_err());
+    }
+
+    #[tokio::test]
     async fn concurrent_answers_to_one_request_store_exactly_one() {
         databases!(relay, _admin);
         let id = fresh_id();
         PostgresVault::new(&relay)
-            .post_request(&Request { id, recipient_key: recipient_key(), lifetime: Lifetime::ONE_DAY })
+            .post_request(&Request {
+                id,
+                inbox: fresh_id(),
+                recipient_key: recipient_key(),
+                lifetime: Lifetime::ONE_DAY,
+            })
             .await
             .unwrap();
         let mut clients = Vec::new();
@@ -277,6 +328,81 @@ mod adversary {
             .query_one("select custody.deposit($1, $2, false, 300, null)", &[&b"short".as_slice(), &b"x".as_slice()])
             .await;
         assert!(bad_id.is_err(), "5-byte id accepted");
+    }
+
+    /// Runs `body` with the custody capacity set to what is stored now plus
+    /// `headroom` bytes, then puts the real capacity back.
+    async fn with_capacity<F: std::future::Future<Output = ()>>(admin: &Client, headroom: i64, body: F) {
+        let original: String = admin
+            .query_one("select pg_get_functiondef('custody.capacity_bytes()'::regprocedure)", &[])
+            .await
+            .unwrap()
+            .get(0);
+        // Expired rows left by other tests would otherwise be purged mid-test and free room.
+        admin.execute("select custody.purge_expired()", &[]).await.unwrap();
+        let used: i64 = admin.query_one("select custody.used_bytes()", &[]).await.unwrap().get(0);
+        let tight = format!(
+            "create or replace function custody.capacity_bytes() returns bigint language plpgsql stable \
+             set search_path = '' as $$ begin return {}; end $$",
+            used + headroom
+        );
+        admin.batch_execute(&tight).await.unwrap();
+        body.await;
+        admin.batch_execute(&original).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_full_custody_refuses_new_seals_but_still_opens_old_ones() {
+        // The free database is 500 MB: past that it turns read-only and nothing
+        // works. A flood of deposits must hit our own ceiling first.
+        databases!(relay, admin);
+        let custodian = custodian(&relay);
+        let old = custodian.deposit(payload(), Retention::UntilExpiry, Lifetime::ONE_DAY, None).await.unwrap().id;
+        let request = custodian.post_request(recipient_key(), Lifetime::ONE_DAY).await.unwrap();
+        with_capacity(&admin, 0, async {
+            let full = custodian.deposit(payload(), Retention::UntilExpiry, Lifetime::ONE_DAY, None).await;
+            assert_eq!(full, Err(CustodyError::StorageFull));
+            assert_eq!(
+                custodian.post_request(recipient_key(), Lifetime::ONE_DAY).await,
+                Err(CustodyError::StorageFull)
+            );
+            // Answering frees the request's key, so the answer must be larger than it to overflow.
+            let large = SealedPayload::new(vec![1; 4096]).unwrap();
+            let answer = Answer {
+                payload: large,
+                retention: Retention::UntilExpiry,
+                lifetime: Lifetime::ONE_HOUR,
+                chunks: None,
+            };
+            assert_eq!(custodian.answer_request(request.id, answer).await, Err(CustodyError::StorageFull));
+            // A file's manifest is a deposit like any other.
+            let two = ChunkCount::new(2).unwrap();
+            let file = custodian.deposit_file(payload(), two, Retention::UntilExpiry, Lifetime::ONE_DAY, None).await;
+            assert_eq!(file, Err(CustodyError::StorageFull));
+            assert_eq!(custodian.open(&old).await.unwrap().payload, payload());
+        })
+        .await;
+        // The refused answer left the request untouched.
+        assert!(custodian.fetch_request(&request.id).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn room_comes_back_when_a_secret_is_burned_or_expires() {
+        databases!(relay, admin);
+        let custodian = custodian(&relay);
+        let size = payload().as_bytes().len() as i64;
+        with_capacity(&admin, size, async {
+            let first = custodian.deposit(payload(), Retention::BurnAfterReading, Lifetime::ONE_DAY, None).await;
+            let first = first.unwrap().id;
+            let second = custodian.deposit(payload(), Retention::BurnAfterReading, Lifetime::ONE_DAY, None).await;
+            assert_eq!(second, Err(CustodyError::StorageFull));
+            custodian.open(&first).await.unwrap();
+            let third = custodian.deposit(payload(), Retention::UntilExpiry, Lifetime::ONE_DAY, None).await.unwrap();
+            // An expired row still on disk is cleared on the spot, not after the next purge.
+            expire(&admin, "deposits", &third.id).await;
+            assert!(custodian.deposit(payload(), Retention::UntilExpiry, Lifetime::ONE_DAY, None).await.is_ok());
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -380,20 +506,41 @@ mod files {
     async fn largest_chunk_and_file_answers_fit() {
         databases!(relay, _admin);
         let custodian = custodian(&relay);
-        let request = custodian.post_request(recipient_key(), Lifetime::ONE_DAY).await.unwrap().id;
+        let request = custodian.post_request(recipient_key(), Lifetime::ONE_DAY).await.unwrap();
         let answer = Answer {
             payload: payload(),
             retention: Retention::UntilExpiry,
             lifetime: Lifetime::ONE_HOUR,
             chunks: Some(count(custody::MAX_CHUNKS)),
         };
-        custodian.answer_request(request, answer).await.unwrap();
+        let inbox = custodian.answer_request(request.id, answer).await.unwrap().id;
+        assert_eq!(inbox, request.inbox);
         let big = SealedChunk::new(vec![0xAB; MAX_CHUNK_LEN]).unwrap();
         for i in 0..custody::MAX_CHUNKS {
-            custodian.put_chunk(&request, at(i), big.clone()).await.unwrap();
+            custodian.put_chunk(&inbox, at(i), big.clone()).await.unwrap();
         }
-        assert_eq!(custodian.open(&request).await.unwrap().chunks, Some(count(custody::MAX_CHUNKS)));
-        assert_eq!(custodian.open_chunk(&request, at(9), None).await, Ok(big));
+        assert_eq!(custodian.open(&inbox).await.unwrap().chunks, Some(count(custody::MAX_CHUNKS)));
+        assert_eq!(custodian.open_chunk(&inbox, at(9), None).await, Ok(big));
+    }
+
+    #[tokio::test]
+    async fn the_request_link_cannot_push_chunks_into_a_file_answer() {
+        // adversary: whoever saw the request link races the sender to chunk 0.
+        databases!(relay, _admin);
+        let custodian = custodian(&relay);
+        let request = custodian.post_request(recipient_key(), Lifetime::ONE_DAY).await.unwrap();
+        let answer = Answer {
+            payload: payload(),
+            retention: Retention::BurnAfterReading,
+            lifetime: Lifetime::ONE_HOUR,
+            chunks: Some(count(1)),
+        };
+        let inbox = custodian.answer_request(request.id, answer).await.unwrap().id;
+        let junk = SealedChunk::new(vec![0xEE; 300]).unwrap();
+        assert_eq!(custodian.put_chunk(&request.id, at(0), junk).await, Err(CustodyError::NotFound));
+        custodian.put_chunk(&inbox, at(0), chunk(0)).await.unwrap();
+        let opened = custodian.open(&request.inbox).await.unwrap();
+        assert_eq!(custodian.open_chunk(&request.inbox, at(0), opened.claim.as_ref()).await, Ok(chunk(0)));
     }
 
     #[tokio::test]

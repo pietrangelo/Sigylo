@@ -23,7 +23,8 @@ pub enum CustodyError {
     NotFound,
     /// The vault could not be reached.
     VaultUnavailable,
-    /// The vault has no room left for more chunks right now.
+    /// The vault has no room for anything new right now (sealed bytes or
+    /// chunks); opening, revoking and purging still work.
     StorageFull,
     /// No fresh id could be drawn: the random source failed.
     RandomnessUnavailable,

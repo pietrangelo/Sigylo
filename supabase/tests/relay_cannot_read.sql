@@ -19,7 +19,9 @@ begin
         'insert into custody.garbage values (''\x00''::bytea)',
         'update custody.deposits set claim_digest = null',
         'select custody.lifetime(300)',
-        'select custody.complete(''\x00''::bytea, 0::smallint)'
+        'select custody.complete(''\x00''::bytea, 0::smallint)',
+        'select custody.used_bytes()',
+        'select custody.ensure_room(0)'
     ] loop
         begin
             execute attempt;

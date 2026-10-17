@@ -1,6 +1,6 @@
 use custody::{
     ChunkCount, ChunkIndex, ChunkRef, ClaimDigest, CustodyError, Deposit, DropId, ObjectName, Opened, PostedRequest,
-    RecipientKeyBlob, Request, Retention, RevocationDigest, SealedPayload, UnixTime, Vault,
+    Receipt, RecipientKeyBlob, Request, Retention, RevocationDigest, SealedPayload, UnixTime, Vault,
 };
 use tokio_postgres::{Client, Error, error::SqlState};
 
@@ -33,9 +33,10 @@ mod sql {
     pub const GARBAGE: &str = "select g, now() from custody.garbage($1) g";
     pub const FORGET_GARBAGE: &str = "select custody.forget_garbage($1), now()";
     pub const REVOKE: &str = "select custody.revoke($1, $2), now()";
-    pub const POST_REQUEST: &str = "select custody.post_request($1, $2, $3), now()";
+    pub const POST_REQUEST: &str = "select custody.post_request($1, $2, $3, $4), now()";
     pub const FETCH_REQUEST: &str = "select recipient_key, expires_at, now() from custody.fetch_request($1)";
-    pub const ANSWER_REQUEST: &str = "select custody.answer_request($1, $2, $3, $4, $5), now()";
+    pub const ANSWER_REQUEST: &str =
+        "select inbox, expires_at, now() from custody.answer_into_inbox($1, $2, $3, $4, $5)";
     pub const PURGE_EXPIRED: &str = "select custody.purge_expired(), now()";
 
     #[cfg(test)]
@@ -189,6 +190,7 @@ impl Vault for PostgresVault<'_> {
                 sql::POST_REQUEST,
                 &[
                     &request.id.as_bytes().as_slice(),
+                    &request.inbox.as_bytes().as_slice(),
                     &request.recipient_key.as_bytes(),
                     &(request.lifetime.seconds() as i32),
                 ],
@@ -209,10 +211,10 @@ impl Vault for PostgresVault<'_> {
         .transpose()
     }
 
-    async fn answer_request(&self, answer: &Deposit) -> Result<Option<UnixTime>, CustodyError> {
+    async fn answer_request(&self, answer: &Deposit) -> Result<Option<Receipt>, CustodyError> {
         let row = self
             .client
-            .query_one(
+            .query_opt(
                 sql::ANSWER_REQUEST,
                 &[
                     &answer.id.as_bytes().as_slice(),
@@ -224,7 +226,13 @@ impl Vault for PostgresVault<'_> {
             )
             .await
             .map_err(vault_error)?;
-        Ok(row.get::<_, Option<i64>>(0).map(UnixTime))
+        row.map(|row| {
+            Ok(Receipt {
+                id: DropId::from_slice(row.get(0)).map_err(|_| CustodyError::VaultUnavailable)?,
+                expires_at: UnixTime(row.get(1)),
+            })
+        })
+        .transpose()
     }
 
     async fn purge_expired(&self) -> Result<u64, CustodyError> {
