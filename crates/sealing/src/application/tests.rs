@@ -1,11 +1,15 @@
-use super::fakes::{CountingRandomness, RecordingStretcher, ToyAead, ToyKdf, ToyKem};
-use super::{CryptoSuite, Sealer};
-use crate::core::{Envelope, KdfCost, LinkKey, Passphrase, Plaintext, SealError};
+use super::fakes::{CountingRandomness, RecordingStretcher, ToyAead, ToyKdf, ToyKem, ToySigner};
+use super::{CryptoSuite, HybridSigner, Sealer};
+use crate::core::{
+    Envelope, KdfCost, LinkKey, MAX_SIGNED_PLAINTEXT_LEN, Passphrase, Plaintext, SealError, SenderFingerprint,
+    SenderPublicKey, SenderSeed, SenderSignature,
+};
 
 struct World {
     randomness: CountingRandomness,
     stretcher: RecordingStretcher,
     kem: ToyKem,
+    signer: ToySigner,
 }
 
 impl World {
@@ -14,16 +18,23 @@ impl World {
             randomness: CountingRandomness::default(),
             stretcher: RecordingStretcher::default(),
             kem: ToyKem::default(),
+            signer: ToySigner::default(),
         }
     }
 
     fn sealer(&self) -> Sealer<'_> {
+        self.sealer_signing_with(&self.signer)
+    }
+
+    /// The same world, but sealing with another (possibly dishonest) signer.
+    fn sealer_signing_with<'a>(&'a self, signer: &'a dyn HybridSigner) -> Sealer<'a> {
         Sealer::new(CryptoSuite {
             randomness: &self.randomness,
             aead: &ToyAead,
             stretcher: &self.stretcher,
             kdf: &ToyKdf,
             kem: &self.kem,
+            signer,
         })
     }
 }
@@ -63,9 +74,81 @@ fn recipient_mode_roundtrip() {
     let recipient = world.sealer().new_recipient().unwrap();
     let envelope = world
         .sealer()
-        .seal_for_recipient(&secret(), &recipient.public_key, &recipient.fingerprint, Some(&pass("pw")))
+        .seal_for_recipient(&secret(), &recipient.public_key, &recipient.fingerprint, Some(&pass("pw")), None)
         .unwrap();
-    assert_eq!(world.sealer().open_as_recipient(&envelope, &recipient.seed, Some(&pass("pw"))).unwrap(), secret());
+    let received = world.sealer().open_as_recipient(&envelope, &recipient.seed, Some(&pass("pw"))).unwrap();
+    assert_eq!(received.plaintext, secret());
+    assert_eq!(received.sender, None, "an unsigned answer names no sender");
+    assert!(!envelope.is_signed());
+}
+
+#[test]
+fn new_sender_is_consistent_with_its_seed() {
+    let world = World::new();
+    let alice = world.sealer().new_sender().unwrap();
+    assert_eq!(world.signer.public_key(&alice.seed), alice.public_key);
+    assert_eq!(world.sealer().sender_fingerprint(&alice.seed), alice.fingerprint);
+    assert_ne!(world.sealer().new_sender().unwrap().fingerprint, alice.fingerprint);
+}
+
+#[test]
+fn signed_answer_names_its_sender() {
+    let world = World::new();
+    let recipient = world.sealer().new_recipient().unwrap();
+    let alice = world.sealer().new_sender().unwrap();
+    let envelope = world
+        .sealer()
+        .seal_for_recipient(
+            &secret(),
+            &recipient.public_key,
+            &recipient.fingerprint,
+            Some(&pass("pw")),
+            Some(&alice.seed),
+        )
+        .unwrap();
+    assert!(envelope.is_signed());
+    let parsed = Envelope::parse(&envelope.to_bytes()).unwrap();
+    let received = world.sealer().open_as_recipient(&parsed, &recipient.seed, Some(&pass("pw"))).unwrap();
+    assert_eq!(received.plaintext, secret());
+    assert_eq!(received.sender, Some(alice.fingerprint));
+}
+
+#[test]
+fn signing_hides_the_sender_inside_the_ciphertext() {
+    let world = World::new();
+    let recipient = world.sealer().new_recipient().unwrap();
+    let alice = world.sealer().new_sender().unwrap();
+    let envelope = world
+        .sealer()
+        .seal_for_recipient(&secret(), &recipient.public_key, &recipient.fingerprint, None, Some(&alice.seed))
+        .unwrap()
+        .to_bytes();
+    assert!(!envelope.windows(32).any(|w| w == &alice.public_key.as_bytes()[..32]));
+    assert!(!envelope.windows(32).any(|w| w == alice.fingerprint.as_bytes()));
+}
+
+#[test]
+fn signed_secrets_must_leave_room_for_the_signature() {
+    let world = World::new();
+    let recipient = world.sealer().new_recipient().unwrap();
+    let alice = world.sealer().new_sender().unwrap();
+    let seal = |len: usize| {
+        world.sealer().seal_for_recipient(
+            &Plaintext::new(vec![b'x'; len]).unwrap(),
+            &recipient.public_key,
+            &recipient.fingerprint,
+            None,
+            Some(&alice.seed),
+        )
+    };
+    let largest = seal(MAX_SIGNED_PLAINTEXT_LEN).unwrap();
+    assert_eq!(
+        world.sealer().open_as_recipient(&largest, &recipient.seed, None).unwrap().plaintext.expose().len(),
+        MAX_SIGNED_PLAINTEXT_LEN
+    );
+    let encapsulations = world.kem.encapsulations.get();
+    assert_eq!(seal(MAX_SIGNED_PLAINTEXT_LEN + 1).unwrap_err(), SealError::PlaintextTooLarge);
+    assert_eq!(world.kem.encapsulations.get(), encapsulations, "refused before any crypto work");
 }
 
 #[test]
@@ -120,8 +203,10 @@ mod adversary {
         let recipient = world.sealer().new_recipient().unwrap();
         let (link_envelope, key) = world.sealer().seal_for_link(&secret(), None).unwrap();
         assert_eq!(world.sealer().open_as_recipient(&link_envelope, &recipient.seed, None), Err(SealError::WrongMode));
-        let envelope =
-            world.sealer().seal_for_recipient(&secret(), &recipient.public_key, &recipient.fingerprint, None).unwrap();
+        let envelope = world
+            .sealer()
+            .seal_for_recipient(&secret(), &recipient.public_key, &recipient.fingerprint, None, None)
+            .unwrap();
         assert_eq!(world.sealer().open_link(&envelope, &key, None), Err(SealError::WrongMode));
     }
 
@@ -130,7 +215,7 @@ mod adversary {
         let world = World::new();
         let alice = world.sealer().new_recipient().unwrap();
         let mallory = world.sealer().new_recipient().unwrap();
-        let result = world.sealer().seal_for_recipient(&secret(), &mallory.public_key, &alice.fingerprint, None);
+        let result = world.sealer().seal_for_recipient(&secret(), &mallory.public_key, &alice.fingerprint, None, None);
         assert_eq!(result.unwrap_err(), SealError::FingerprintMismatch);
         assert_eq!(world.kem.encapsulations.get(), 0);
     }
@@ -141,7 +226,7 @@ mod adversary {
         let alice = world.sealer().new_recipient().unwrap();
         let mallory = world.sealer().new_recipient().unwrap();
         let envelope =
-            world.sealer().seal_for_recipient(&secret(), &alice.public_key, &alice.fingerprint, None).unwrap();
+            world.sealer().seal_for_recipient(&secret(), &alice.public_key, &alice.fingerprint, None, None).unwrap();
         assert_eq!(world.sealer().open_as_recipient(&envelope, &mallory.seed, None), Err(SealError::NotAuthentic));
     }
 
@@ -160,5 +245,95 @@ mod adversary {
         let bytes = envelope.to_bytes();
         assert!(!bytes.windows(32).any(|w| w == key.expose()));
         let _: &LinkKey = &key;
+    }
+
+    /// Claims someone else's public key but can only sign with its own seed.
+    struct Impersonator(SenderPublicKey);
+
+    impl HybridSigner for Impersonator {
+        fn public_key(&self, _: &SenderSeed) -> SenderPublicKey {
+            self.0.clone()
+        }
+        fn fingerprint(&self, public_key: &SenderPublicKey) -> SenderFingerprint {
+            ToySigner::default().fingerprint(public_key)
+        }
+        fn sign(&self, seed: &SenderSeed, message: &[u8]) -> SenderSignature {
+            ToySigner::default().sign(seed, message)
+        }
+        fn verify(&self, _: &SenderPublicKey, _: &[u8], _: &SenderSignature) -> bool {
+            unreachable!("sealing never verifies")
+        }
+    }
+
+    /// Replays a signature it saw once, whatever it is asked to sign.
+    struct Replayer(SenderPublicKey, SenderSignature);
+
+    impl HybridSigner for Replayer {
+        fn public_key(&self, _: &SenderSeed) -> SenderPublicKey {
+            self.0.clone()
+        }
+        fn fingerprint(&self, public_key: &SenderPublicKey) -> SenderFingerprint {
+            ToySigner::default().fingerprint(public_key)
+        }
+        fn sign(&self, _: &SenderSeed, _: &[u8]) -> SenderSignature {
+            self.1.clone()
+        }
+        fn verify(&self, _: &SenderPublicKey, _: &[u8], _: &SenderSignature) -> bool {
+            unreachable!("sealing never verifies")
+        }
+    }
+
+    #[test]
+    fn an_impostor_cannot_sign_in_someone_elses_name() {
+        let world = World::new();
+        let recipient = world.sealer().new_recipient().unwrap();
+        let alice = world.sealer().new_sender().unwrap();
+        let mallory = world.sealer().new_sender().unwrap();
+        let impostor = Impersonator(alice.public_key.clone());
+        let envelope = world
+            .sealer_signing_with(&impostor)
+            .seal_for_recipient(&secret(), &recipient.public_key, &recipient.fingerprint, None, Some(&mallory.seed))
+            .unwrap();
+        assert_eq!(world.sealer().open_as_recipient(&envelope, &recipient.seed, None), Err(SealError::NotAuthentic));
+    }
+
+    #[test]
+    fn a_signature_meant_for_one_recipient_does_not_verify_for_another() {
+        let world = World::new();
+        let bob = world.sealer().new_recipient().unwrap();
+        let carol = world.sealer().new_recipient().unwrap();
+        let alice = world.sealer().new_sender().unwrap();
+        // Bob learns Alice's signature over the secret she sent him...
+        let message = crate::core::signed_message(&bob.fingerprint, b"any header", &secret());
+        let signature = world.signer.sign(&alice.seed, &message);
+        // ...and re-seals it to Carol, as if Alice had sent it to her.
+        let replayer = Replayer(alice.public_key.clone(), signature);
+        let forged = world
+            .sealer_signing_with(&replayer)
+            .seal_for_recipient(&secret(), &carol.public_key, &carol.fingerprint, None, Some(&alice.seed))
+            .unwrap();
+        assert_eq!(world.sealer().open_as_recipient(&forged, &carol.seed, None), Err(SealError::NotAuthentic));
+    }
+
+    #[test]
+    fn the_signed_flag_can_be_neither_stripped_nor_added() {
+        let world = World::new();
+        let recipient = world.sealer().new_recipient().unwrap();
+        let alice = world.sealer().new_sender().unwrap();
+        let seal = |sender: Option<&SenderSeed>| {
+            world
+                .sealer()
+                .seal_for_recipient(&secret(), &recipient.public_key, &recipient.fingerprint, None, sender)
+                .unwrap()
+                .to_bytes()
+        };
+        for (mut bytes, flags) in [(seal(Some(&alice.seed)), 0), (seal(None), 0b10)] {
+            bytes[5] = flags;
+            let tampered = Envelope::parse(&bytes).unwrap();
+            assert_eq!(
+                world.sealer().open_as_recipient(&tampered, &recipient.seed, None),
+                Err(SealError::NotAuthentic)
+            );
+        }
     }
 }
