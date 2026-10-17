@@ -1,7 +1,12 @@
-/* Design tokens. Spacing, type and proportions follow the golden ratio
-   (φ ≈ 1.618) from an 8px base, as in the ModusNote design system. */
+/* Design tokens. Everything follows the golden ratio (φ ≈ 1.618), as in the
+   ModusNote design system; src/lib/golden.ts computes these values and
+   tests/golden.test.ts keeps the two in step and checks WCAG contrast.
+
+   Spacing: Fibonacci numbers around 8px. Type: φ steps from 16px, √φ for
+   small print. Line height φ, headings √φ. */
 :root {
   --phi: 1.618;
+  --phi-half: 1.272;
   --s1: 3px;
   --s2: 5px;
   --s3: 8px;
@@ -17,37 +22,47 @@
   --t-title: 26px;
   --t-display: 42px;
 
-  --radius: 8px;
-  --column: 610px; /* ≈ 377 × φ */
+  --radius: var(--s3);
+  --radius-card: var(--s4);
+  --column: 610px; /* 377 × φ */
 
-  /* "Ceralacca": sealing wax on parchment and ink. */
-  --ink: #0e1016;
-  --surface: #171a23;
-  --raised: #20242f;
-  --line: #2e3442;
-  --text: #f3e9dc;
-  --muted: #a7adba;
-  --wax: #b8382f;
-  --wax-strong: #d24a3f;
+  /* "Ceralacca": sealing wax on ink and parchment, built in OKLCH. Hues turn
+     by the golden angle (137.5°) from the wax red: one turn is the green of
+     "done", two the ink, three the amber of warnings and parchment.
+     Lightness climbs a ladder of φ powers (dark: L_text / φ^k, half a step
+     apart; light: the same on darkness). */
+  --ink: #09080c;
+  --surface: #111014;
+  --raised: #1c1b1f;
+  --line: #2b292e;
+  --text: #f4eee3;
+  --muted: #aeacb2;
+  --wax: #b7322e;
+  --wax-strong: #a21b1c;
   --on-wax: #ffffff;
-  --ok: #4fb38a;
-  --warn: #e3a64a;
+  --seal-mark: #f4eee3;
+  --alert: #e86157;
+  --ok: #67c29c;
+  --warn: #d0a55c;
 
   color-scheme: dark;
 }
 
 @media (prefers-color-scheme: light) {
   :root {
-    --ink: #f7f2ea;
-    --surface: #fffdf9;
-    --raised: #f1ebe1;
-    --line: #ddd3c3;
-    --text: #1c1a17;
-    --muted: #5d574e;
-    --wax: #a32d25;
-    --wax-strong: #8c241d;
-    --ok: #1f7a55;
-    --warn: #8a5a12;
+    --ink: #f6efe5;
+    --surface: #fff9ef;
+    --raised: #ede6dc;
+    --line: #c7c0b6;
+    --text: #17151a;
+    --muted: #666469;
+    --wax: #b12d29;
+    --wax-strong: #9c1115;
+    --on-wax: #ffffff;
+    --seal-mark: #f4eee3;
+    --alert: #9c1115;
+    --ok: #077755;
+    --warn: #845d02;
     color-scheme: light;
   }
 }
@@ -67,7 +82,7 @@ body {
 
 h1,
 h2 {
-  line-height: 1.2;
+  line-height: var(--phi-half);
   margin: 0 0 var(--s4);
 }
 
@@ -126,7 +141,7 @@ button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {
-  outline: 2px solid var(--wax-strong);
+  outline: 2px solid var(--alert);
   outline-offset: 2px;
 }
 
@@ -157,7 +172,7 @@ label {
 .card {
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: calc(var(--radius) * var(--phi));
+  border-radius: var(--radius-card);
   padding: var(--s6);
 }
 
@@ -166,17 +181,17 @@ label {
 }
 
 .error {
-  color: var(--wax-strong);
+  color: var(--alert);
   font-weight: 600;
 }
 
 .notice {
-  border-left: 3px solid var(--warn);
+  border-left: var(--s1) solid var(--warn);
   padding-left: var(--s4);
 }
 
 .success {
-  border-left: 3px solid var(--ok);
+  border-left: var(--s1) solid var(--ok);
   padding-left: var(--s4);
 }
 
