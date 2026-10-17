@@ -28,8 +28,11 @@ function deadStack(): number {
 
 function leftIn(needle: Uint8Array): boolean {
   const heap = new Uint8Array(memory.buffer);
-  outer: for (let i = 0; i <= heap.length - needle.length; i++) {
-    for (let j = 0; j < needle.length; j++) {
+  // The heap is tens of MiB after Argon2id: jump between candidate first
+  // bytes natively, then compare, so each scan stays well under the timeout.
+  const last = heap.length - needle.length;
+  outer: for (let i = heap.indexOf(needle[0]!); i !== -1 && i <= last; i = heap.indexOf(needle[0]!, i + 1)) {
+    for (let j = 1; j < needle.length; j++) {
       if (heap[i + j] !== needle[j]) continue outer;
     }
     return true;
