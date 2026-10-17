@@ -27,6 +27,23 @@ if [[ -z "${SIGYLO_TEST_DATABASE_URL:-}" ]]; then
 fi
 
 psql_admin=(psql "$SIGYLO_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -q -X)
+# Supabase's API roles and their automatic grants (functions and tables made
+# in `public`), so the privilege tests prove none of it reaches `custody`.
+"${psql_admin[@]}" <<'SQL'
+do $$
+declare
+    r text;
+begin
+    foreach r in array array['anon', 'authenticated', 'service_role'] loop
+        if not exists (select 1 from pg_roles where rolname = r) then
+            execute format('create role %I nologin', r);
+        end if;
+    end loop;
+end $$;
+grant usage on schema public to anon, authenticated, service_role;
+alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
+alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
+SQL
 for migration in "$root"/supabase/migrations/*.sql; do
     "${psql_admin[@]}" -f "$migration"
 done
