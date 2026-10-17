@@ -4,10 +4,11 @@
   import { inboxLink, requestLink, revokeLink, secretLink } from '../lib/links';
   import { formatExpiry, relayMessage, sealMessage } from '../lib/messages';
   import { Relay, type Retention } from '../lib/relay';
+  import { linkOrigin, relayFetch } from '../lib/platform';
   import LinkBox from './LinkBox.svelte';
   import SealOptions from './SealOptions.svelte';
 
-  const relay = new Relay();
+  const relay = new Relay(relayFetch);
   let tab: 'send' | 'receive' = $state('send');
   let secret = $state('');
   let retention: Retention = $state('burn_after_reading');
@@ -36,8 +37,8 @@
         return;
       }
       sent = {
-        link: secretLink(location.origin, result.value.id, key, pass !== undefined),
-        revoke: revokeLink(location.origin, result.value.id, token),
+        link: secretLink(linkOrigin, result.value.id, key, pass !== undefined),
+        revoke: revokeLink(linkOrigin, result.value.id, token),
         expires: result.value.expiresAt,
       };
       secret = '';
@@ -66,8 +67,8 @@
         return;
       }
       requested = {
-        request: requestLink(location.origin, result.value.id, fingerprint),
-        inbox: inboxLink(location.origin, result.value.id, seed),
+        request: requestLink(linkOrigin, result.value.id, fingerprint),
+        inbox: inboxLink(linkOrigin, result.value.id, seed),
         expires: result.value.expiresAt,
       };
     } catch (e) {

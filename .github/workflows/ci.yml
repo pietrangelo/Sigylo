@@ -12,6 +12,7 @@ env:
   CARGO_TERM_COLOR: always
   WASM_BINDGEN_VERSION: 0.2.129
   WORKER_BUILD_VERSION: 0.8.7
+  TAURI_DRIVER_VERSION: 2.1.0
 
 jobs:
   rust:
@@ -99,3 +100,41 @@ jobs:
       - run: npm ci && npx playwright install --with-deps chromium
         working-directory: web
       - run: bash scripts/e2e.sh
+
+  app:
+    name: App (Tauri shell + smoke test in the real webview)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: System webview and virtual display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev xvfb webkit2gtk-driver
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            app -> target
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ env.WASM_BINDGEN_VERSION }}
+      - run: cargo install tauri-driver@${{ env.TAURI_DRIVER_VERSION }} --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci && npm run build:app
+        working-directory: web
+      - run: cargo fmt --check
+        working-directory: app
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: app
+      - run: cargo test
+        working-directory: app
+      - run: bash scripts/app-smoke.sh

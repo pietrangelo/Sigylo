@@ -8,6 +8,7 @@
     "wasm": "bash scripts/build-wasm.sh",
     "dev": "vite",
     "build": "npm run wasm && vite build",
+    "build:app": "npm run wasm && vite build --mode app --outDir dist-app",
     "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "test": "vitest run"
   },
