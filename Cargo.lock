@@ -1097,6 +1097,7 @@ dependencies = [
 name = "sigylo-wasm"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "sealing",
  "sealing-adapters",
  "wasm-bindgen",
