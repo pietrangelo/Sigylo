@@ -2,7 +2,7 @@
 
 use crate::core::{
     ChunkIndex, ChunkRef, ClaimDigest, ClaimToken, CustodyError, Deposit, DropId, ObjectName, Opened, PostedRequest,
-    Request, RevocationDigest, RevocationToken, SealedChunk, UnixTime,
+    Receipt, Request, RevocationDigest, RevocationToken, SealedChunk, UnixTime,
 };
 
 /// Durable, blind storage of deposits and requests.
@@ -15,7 +15,8 @@ use crate::core::{
 /// * [`Vault::open`] on a [`crate::Retention::BurnAfterReading`] deposit
 ///   returns it **at most once**, even under concurrent reads;
 /// * [`Vault::answer_request`] consumes the request and stores the answer
-///   under the request's id in one atomic step, at most once;
+///   under the request's private inbox id (never its public id) in one
+///   atomic step, at most once;
 /// * ids are unique across deposits: a second deposit under a live id fails
 ///   with [`CustodyError::AlreadyExists`] (ids come from an [`IdSource`], so
 ///   this only guards against a broken random source);
@@ -27,7 +28,10 @@ use crate::core::{
 ///   [`crate::CLAIM_WINDOW_SECONDS`] at most. The deposit goes with its last chunk;
 /// * the vault never holds a chunk's bytes, only the name of its object in
 ///   the [`ChunkStore`]; whenever a chunk goes (burned, revoked, expired), its
-///   name joins the garbage until [`Vault::forget_garbage`].
+///   name joins the garbage until [`Vault::forget_garbage`];
+/// * storing (a deposit, a request or an answer) may fail with
+///   [`CustodyError::StorageFull`] when the vault is out of room, and then
+///   changes nothing; reading never does.
 // Workers run on one thread, so the futures need not be `Send`.
 #[allow(async_fn_in_trait)]
 pub trait Vault {
@@ -74,9 +78,10 @@ pub trait Vault {
 
     async fn fetch_request(&self, id: &DropId) -> Result<Option<PostedRequest>, CustodyError>;
 
-    /// Atomically consumes the live request `answer.id` and stores `answer`.
+    /// Atomically consumes the live request `answer.id` and stores `answer`
+    /// under that request's inbox id, which the receipt names.
     /// `None` when there was no live request to answer.
-    async fn answer_request(&self, answer: &Deposit) -> Result<Option<UnixTime>, CustodyError>;
+    async fn answer_request(&self, answer: &Deposit) -> Result<Option<Receipt>, CustodyError>;
 
     /// Physically removes everything expired. Returns how many rows went.
     async fn purge_expired(&self) -> Result<u64, CustodyError>;

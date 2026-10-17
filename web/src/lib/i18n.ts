@@ -128,7 +128,7 @@ const it = {
   errFileTooLarge: 'Il file è troppo grande (massimo 10 MB).',
   errFileName: 'Il nome del file contiene caratteri non ammessi: rinominalo e riprova.',
   errFileIncomplete: 'Il file non è arrivato per intero. Se si distruggeva alla lettura, è andato perso.',
-  errStorageFull: 'Lo spazio per i file è esaurito, per ora. Riprova più tardi.',
+  errStorageFull: 'Sigylo è pieno in questo momento: i segreti già sigillati si aprono, quelli nuovi no. Riprova più tardi.',
 } as const;
 
 export type MessageKey = keyof typeof it;
@@ -261,7 +261,7 @@ const en: Messages = {
   errFileTooLarge: 'The file is too large (10 MB at most).',
   errFileName: 'The file name contains characters that are not allowed: rename it and try again.',
   errFileIncomplete: 'The file did not arrive in full. If it was set to burn after reading, it is lost.',
-  errStorageFull: 'There is no room for files right now. Try again later.',
+  errStorageFull: 'Sigylo is full right now: sealed secrets still open, new ones cannot be stored. Try again later.',
 };
 
 const fr: Messages = {
@@ -391,7 +391,7 @@ const fr: Messages = {
   errFileTooLarge: 'Le fichier est trop volumineux (10 Mo maximum).',
   errFileName: 'Le nom du fichier contient des caractères non autorisés : renommez-le et réessayez.',
   errFileIncomplete: 'Le fichier n’est pas arrivé en entier. S’il devait être détruit à la lecture, il est perdu.',
-  errStorageFull: 'Il n’y a plus de place pour les fichiers pour le moment. Réessayez plus tard.',
+  errStorageFull: 'Sigylo est plein pour le moment : les secrets déjà scellés s’ouvrent, les nouveaux ne peuvent pas être gardés. Réessayez plus tard.',
 };
 
 const es: Messages = {
@@ -521,7 +521,7 @@ const es: Messages = {
   errFileTooLarge: 'El archivo es demasiado grande (máximo 10 MB).',
   errFileName: 'El nombre del archivo contiene caracteres no permitidos: cámbialo e inténtalo de nuevo.',
   errFileIncomplete: 'El archivo no llegó completo. Si se destruía al leerlo, se ha perdido.',
-  errStorageFull: 'Ahora mismo no queda espacio para archivos. Inténtalo más tarde.',
+  errStorageFull: 'Sigylo está lleno en este momento: los secretos ya sellados se abren, los nuevos no se pueden guardar. Inténtalo más tarde.',
 };
 
 const de: Messages = {
@@ -651,7 +651,7 @@ const de: Messages = {
   errFileTooLarge: 'Die Datei ist zu groß (maximal 10 MB).',
   errFileName: 'Der Dateiname enthält unzulässige Zeichen: benenne sie um und versuche es erneut.',
   errFileIncomplete: 'Die Datei ist nicht vollständig angekommen. Sollte sie nach dem Lesen vernichtet werden, ist sie verloren.',
-  errStorageFull: 'Im Moment ist kein Platz für Dateien frei. Versuche es später erneut.',
+  errStorageFull: 'Sigylo ist gerade voll: Bereits versiegelte Geheimnisse lassen sich öffnen, neue nicht speichern. Versuche es später erneut.',
 };
 
 export const languages = ['it', 'en', 'fr', 'es', 'de'] as const;

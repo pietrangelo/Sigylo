@@ -23,7 +23,7 @@ wrangler_pid=""
 cleanup() {
     [[ -n "$wrangler_pid" ]] && kill -- "-$wrangler_pid" 2>/dev/null || true
     "${as_postgres[@]}" "$pg_bin/pg_ctl" -D "$tmp/data" -m immediate stop >/dev/null || true
-    rm -rf "$tmp" "$root/worker/wrangler.e2e.toml"
+    rm -rf "$tmp"
 }
 trap cleanup EXIT
 
@@ -32,16 +32,10 @@ for migration in "$root"/supabase/migrations/*.sql; do psql "$admin" -q -X -v ON
 psql "$admin" -q -X -c "alter role sigylo_relay login password 'relay-test-only'"
 
 (cd "$root/web" && npm ci --no-fund --no-audit && npm run build)
-# The suite seals and opens files from one address far faster than a person
-# would: the e2e copy of the config raises the per-address write limit (the
-# production one stays as it is), next to the original so its paths still resolve.
-sed 's/simple = { limit = 30, period = 60 }/simple = { limit = 1000, period = 60 }/' \
-    "$root/worker/wrangler.toml" >"$root/worker/wrangler.e2e.toml"
-grep -q 'limit = 1000' "$root/worker/wrangler.e2e.toml"
 # Own process group, so cleanup stops npx, wrangler and workerd together.
 # R2 is simulated locally in "$tmp/state"; the suite runs the cron (purge and
 # garbage collection) through wrangler's local explorer API.
-(cd "$root/worker" && exec setsid npx --yes wrangler@4.151.1 dev -c wrangler.e2e.toml --var DB_TLS:disable \
+(cd "$root/worker" && exec setsid npx --yes wrangler@4.151.1 dev --var DB_TLS:disable \
     --var OPAQUE_SERVER_SEED:e2e-only-not-a-secret-AAAAAAAAAAAAAAAAAAAAA \
     --persist-to "$tmp/state" --ip 127.0.0.1 --port 8787 >"$tmp/wrangler.log" 2>&1) &
 wrangler_pid=$!

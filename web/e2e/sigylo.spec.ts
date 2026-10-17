@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { expect, test, type Browser, type Page, type Request } from '@playwright/test';
+import { type Browser, type Page, type Request } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { catalogs } from '../src/lib/i18n';
 import { legal } from '../src/lib/legal';
 
@@ -398,6 +399,52 @@ test.describe('adversary', () => {
     await recipient.goto(link);
     await recipient.getByTestId('reveal').click();
     await expect(recipient.getByTestId('open-error')).toContainText('Non c');
+  });
+
+  test('whoever holds the request link can neither burn nor fetch the answer', async ({ page, request, browser }) => {
+    await page.goto('/');
+    await page.getByTestId('tab-receive').click();
+    await page.getByTestId('create-request').click();
+    const requestLink = await page.getByTestId('request-link').inputValue();
+    const inboxLink = await page.getByTestId('inbox-link').inputValue();
+    const requestId = requestLink.split('/').at(-2)!;
+    expect(inboxLink.split('/').at(-2)).not.toBe(requestId);
+
+    const sender = await freshPage(browser);
+    await sender.goto(requestLink);
+    await sender.getByTestId('secret').fill(SECRET);
+    await sender.getByTestId('answer').click();
+    await expect(sender.getByTestId('answered')).toBeVisible();
+
+    // Someone who read the request link on its way to the sender tries to burn the answer.
+    expect((await request.post(`/api/secrets/${requestId}/open`)).status()).toBe(404);
+
+    const recipient = await freshPage(browser);
+    await recipient.goto(inboxLink);
+    await recipient.getByTestId('reveal').click();
+    await expect(recipient.getByTestId('plaintext')).toHaveValue(SECRET);
+  });
+
+  test('a page on another site cannot call the relay', async ({ request }) => {
+    const payload = 'U0dZAQEA' + 'A'.repeat(400);
+    const data = { payload, retention: 'burn_after_reading', lifetime_seconds: 3600 };
+    const foreign = await request.post('/api/secrets', { data, headers: { Origin: 'https://evil.example' } });
+    expect(foreign.status()).toBe(403);
+    expect(await foreign.json()).toEqual({ error: 'CrossOrigin' });
+  });
+
+  test('one client address gets 30 writes a minute, then 429', async ({ request }) => {
+    const data = { payload: 'U0dZAQEA' + 'A'.repeat(400), retention: 'burn_after_reading', lifetime_seconds: 300 };
+    const headers = { 'CF-Connecting-IP': '2001:db8:7:7::1' };
+    // The limiter counts in fixed one-minute windows: a run that straddles two
+    // of them gets up to 60 writes through before the 429.
+    let allowed = 0;
+    while (allowed <= 60 && (await request.post('/api/secrets', { data, headers })).status() === 201) allowed++;
+    expect(allowed).toBeGreaterThanOrEqual(30);
+    expect(allowed).toBeLessThanOrEqual(60);
+    // Another address in the same IPv6 /64 is the same client.
+    const next = await request.post('/api/secrets', { data, headers: { 'CF-Connecting-IP': '2001:db8:7:7::2' } });
+    expect(next.status()).toBe(429);
   });
 
   test('a link preview bot (GET) cannot burn a secret', async ({ page, request, browser }) => {

@@ -63,7 +63,7 @@ fn revocation_destroys_an_unread_deposit() {
 }
 
 #[test]
-fn request_lifecycle_answer_lands_under_the_request_id() {
+fn request_lifecycle_answer_lands_in_the_private_inbox() {
     let vault = FakeVault::default();
     let c = custodian(&vault);
     let request = block_on(c.post_request(key(), Lifetime::ONE_DAY)).unwrap();
@@ -77,7 +77,7 @@ fn request_lifecycle_answer_lands_under_the_request_id() {
     };
     block_on(c.answer_request(request.id, answer)).unwrap();
     assert_eq!(block_on(c.fetch_request(&request.id)), Err(CustodyError::NotFound));
-    assert_eq!(block_on(c.open(&request.id)).unwrap().payload, payload());
+    assert_eq!(block_on(c.open(&request.inbox)).unwrap().payload, payload());
 }
 
 #[test]
@@ -87,7 +87,10 @@ fn every_deposit_and_request_gets_its_own_id() {
     let a = block_on(c.deposit(payload(), Retention::UntilExpiry, Lifetime::ONE_DAY, None)).unwrap();
     let b = block_on(c.deposit(payload(), Retention::UntilExpiry, Lifetime::ONE_DAY, None)).unwrap();
     let r = block_on(c.post_request(key(), Lifetime::ONE_DAY)).unwrap();
-    assert!(a.id != b.id && b.id != r.id && a.id != r.id);
+    let ids = [a.id, b.id, r.id, r.inbox];
+    for (i, x) in ids.iter().enumerate() {
+        assert!(ids[i + 1..].iter().all(|y| y != x), "{x:?} repeats");
+    }
 }
 
 mod adversary {
@@ -165,6 +168,34 @@ mod adversary {
         };
         block_on(c.answer_request(request.id, answer())).unwrap();
         assert_eq!(block_on(c.answer_request(request.id, answer())), Err(CustodyError::NotFound));
+    }
+
+    #[test]
+    fn the_request_link_can_neither_read_nor_burn_the_answer() {
+        // The request link goes to the sender, often over a channel others can
+        // read. Whoever holds it must not be able to burn the answer before the
+        // recipient, nor fetch it: only the private inbox link reaches it.
+        let vault = FakeVault::default();
+        let c = custodian(&vault);
+        let request = block_on(c.post_request(key(), Lifetime::ONE_DAY)).unwrap();
+        let answer = Answer {
+            payload: payload(),
+            retention: Retention::BurnAfterReading,
+            lifetime: Lifetime::ONE_HOUR,
+            chunks: None,
+        };
+        block_on(c.answer_request(request.id, answer)).unwrap();
+        assert_eq!(block_on(c.open(&request.id)), Err(CustodyError::NotFound));
+        let opened = block_on(c.open(&request.inbox)).unwrap();
+        assert_eq!((opened.payload, opened.burned), (payload(), true));
+    }
+
+    #[test]
+    fn a_stuck_random_source_never_files_the_answer_under_the_request_id() {
+        let vault = FakeVault::default();
+        let c = Custodian::new(&vault, &vault.store, ToyDigest, StuckIds);
+        assert_eq!(block_on(c.post_request(key(), Lifetime::ONE_DAY)), Err(CustodyError::RandomnessUnavailable));
+        assert!(vault.is_empty());
     }
 
     #[test]
@@ -295,11 +326,32 @@ mod files {
             lifetime: Lifetime::ONE_HOUR,
             chunks: Some(count(2)),
         };
-        block_on(c.answer_request(request.id, answer)).unwrap();
-        assert_eq!(block_on(c.open(&request.id)), Err(CustodyError::NotFound), "not before the chunks");
-        upload_all(&c, &request.id, 2);
-        let opened = block_on(c.open(&request.id)).unwrap();
-        assert_eq!(block_on(c.open_chunk(&request.id, at(0), opened.claim.as_ref())), Ok(chunk(0)));
+        // The sender learns where the answer went, so it can upload the chunks there.
+        let receipt = block_on(c.answer_request(request.id, answer)).unwrap();
+        assert_eq!(receipt.id, request.inbox);
+        assert_eq!(block_on(c.open(&request.inbox)), Err(CustodyError::NotFound), "not before the chunks");
+        upload_all(&c, &receipt.id, 2);
+        let opened = block_on(c.open(&request.inbox)).unwrap();
+        assert_eq!(block_on(c.open_chunk(&request.inbox, at(0), opened.claim.as_ref())), Ok(chunk(0)));
+    }
+
+    #[test]
+    fn the_request_link_cannot_spoil_a_file_answer() {
+        // adversary: whoever saw the request link races the sender to the chunks.
+        let vault = FakeVault::default();
+        let c = custodian(&vault);
+        let request = block_on(c.post_request(key(), Lifetime::ONE_DAY)).unwrap();
+        let answer = Answer {
+            payload: payload(),
+            retention: Retention::UntilExpiry,
+            lifetime: Lifetime::ONE_HOUR,
+            chunks: Some(count(1)),
+        };
+        let receipt = block_on(c.answer_request(request.id, answer)).unwrap();
+        let junk = SealedChunk::new(vec![0xEE; 300]).unwrap();
+        assert_eq!(block_on(c.put_chunk(&request.id, at(0), junk)), Err(CustodyError::NotFound));
+        block_on(c.put_chunk(&receipt.id, at(0), chunk(0))).unwrap();
+        assert_eq!(block_on(c.open_chunk(&request.inbox, at(0), None)), Ok(chunk(0)));
     }
 
     #[test]

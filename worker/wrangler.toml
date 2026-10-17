@@ -37,11 +37,17 @@ binding = "CHUNKS"
 bucket_name = "sigylo-chunks"
 jurisdiction = "eu"
 
-# Throttles POSTs per client address (kept in memory by Cloudflare, never stored by us).
+# Throttle every API call per client address, IPv6 by /64 (kept in memory by
+# Cloudflare, never stored by us): POSTs and GETs each have their own allowance.
 [[ratelimits]]
 name = "WRITE_LIMITER"
 namespace_id = "7301"
 simple = { limit = 30, period = 60 }
+
+[[ratelimits]]
+name = "READ_LIMITER"
+namespace_id = "7303"
+simple = { limit = 60, period = 60 }
 
 # Throttles login attempts per account, from any address, so a botnet cannot
 # guess one account's password at leisure. Keyed by a prefix of the account's

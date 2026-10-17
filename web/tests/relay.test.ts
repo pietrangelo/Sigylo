@@ -12,6 +12,7 @@ function fakeRelay(status: number, body: unknown, calls: Call[] = []): Relay {
 }
 
 const id = new Uint8Array(16).fill(1);
+const inbox = new Uint8Array(16).fill(2);
 
 describe('relay client', () => {
   it('deposits base64url fields and returns the id the relay chose', async () => {
@@ -27,10 +28,10 @@ describe('relay client', () => {
     });
   });
 
-  it('posts a request and returns the id the relay chose', async () => {
+  it('posts a request and returns its public id and private inbox, both chosen by the relay', async () => {
     const calls: Call[] = [];
-    const result = await fakeRelay(201, { id: encode(id), expires_at: 7 }, calls).postRequest(Uint8Array.of(9), 3600);
-    expect(result).toEqual({ ok: true, value: { id, expiresAt: 7 } });
+    const result = await fakeRelay(201, { id: encode(id), inbox: encode(inbox), expires_at: 7 }, calls).postRequest(Uint8Array.of(9), 3600);
+    expect(result).toEqual({ ok: true, value: { id, inbox, expiresAt: 7 } });
     expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ recipient_key: 'CQ', lifetime_seconds: 3600 });
   });
 
@@ -43,10 +44,19 @@ describe('relay client', () => {
     const calls: Call[] = [];
     await fakeRelay(201, { id: encode(id), expires_at: 42 }, calls).deposit(Uint8Array.of(1, 2), 'until_expiry', 300, new Uint8Array(32), 3);
     expect(JSON.parse(calls[0]!.init.body as string)).toMatchObject({ payload: 'AQI', chunks: 3 });
-    await fakeRelay(201, { expires_at: 42 }, calls).answer(id, Uint8Array.of(1), 'until_expiry', 300, 2);
+    await fakeRelay(201, { id: encode(inbox), expires_at: 42 }, calls).answer(id, Uint8Array.of(1), 'until_expiry', 300, 2);
     expect(JSON.parse(calls[1]!.init.body as string)).toMatchObject({ chunks: 2 });
-    await fakeRelay(201, { expires_at: 42 }, calls).answer(id, Uint8Array.of(1), 'until_expiry', 300);
+    await fakeRelay(201, { id: encode(inbox), expires_at: 42 }, calls).answer(id, Uint8Array.of(1), 'until_expiry', 300);
     expect(JSON.parse(calls[2]!.init.body as string)).not.toHaveProperty('chunks');
+  });
+
+  it('learns from an answer where its chunks go, and refuses a receipt without that', async () => {
+    // The sender uploads a file answer's chunks to the inbox, never to the public request id.
+    const answered = await fakeRelay(201, { id: encode(inbox), expires_at: 42 }).answer(id, Uint8Array.of(1), 'until_expiry', 300, 2);
+    expect(answered).toEqual({ ok: true, value: { id: inbox, expiresAt: 42 } });
+    for (const body of [{ expires_at: 42 }, { id: 'AAEC', expires_at: 42 }]) {
+      expect(await fakeRelay(201, body).answer(id, Uint8Array.of(1), 'until_expiry', 300)).toEqual({ ok: false, error: 'Unexpected' });
+    }
   });
 
   it('decodes an opened file with its chunk count and claim', async () => {
@@ -81,6 +91,7 @@ describe('relay client', () => {
   it('maps relay error codes', async () => {
     expect(await fakeRelay(404, { error: 'NotFound' }).open(id)).toEqual({ ok: false, error: 'NotFound' });
     expect(await fakeRelay(429, { error: 'RateLimited' }).open(id)).toEqual({ ok: false, error: 'RateLimited' });
+    expect(await fakeRelay(507, { error: 'StorageFull' }).postRequest(id, 300)).toEqual({ ok: false, error: 'StorageFull' });
   });
 
   it('sends account messages as base64url and reads the session back', async () => {
@@ -139,6 +150,17 @@ describe('relay client', () => {
       expect(JSON.parse(calls[0]!.init.body as string)).not.toHaveProperty('id');
       for (const receipt of [{ expires_at: 42 }, { id: 'AAEC', expires_at: 42 }, { id: encode(id) }]) {
         expect(await fakeRelay(201, receipt).deposit(Uint8Array.of(1), 'until_expiry', 300, new Uint8Array(32))).toEqual({ ok: false, error: 'Unexpected' });
+      }
+    });
+
+    it('refuses a request receipt whose inbox is missing, malformed or the public id', async () => {
+      // An inbox equal to the request id would let the request link burn the answer.
+      for (const receipt of [
+        { id: encode(id), expires_at: 7 },
+        { id: encode(id), inbox: 'AAEC', expires_at: 7 },
+        { id: encode(id), inbox: encode(id), expires_at: 7 },
+      ]) {
+        expect(await fakeRelay(201, receipt).postRequest(new Uint8Array([9]), 3600)).toEqual({ ok: false, error: 'Unexpected' });
       }
     });
 

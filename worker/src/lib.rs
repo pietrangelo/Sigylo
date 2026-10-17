@@ -101,9 +101,12 @@ mod runtime {
 
     async fn rate_limited(env: &Env, req: &Request) -> bool {
         // The client address is used in memory for throttling and never stored.
-        let Ok(limiter) = env.rate_limiter("WRITE_LIMITER") else { return false };
-        let key = req.headers().get("CF-Connecting-IP").ok().flatten().unwrap_or_default();
-        limiter.limit(key).await.map(|o| !o.success).unwrap_or(false)
+        // Writes and reads have their own allowance, so fetching a request does
+        // not eat into the allowance for answering it.
+        let binding = if req.method() == Method::Post { "WRITE_LIMITER" } else { "READ_LIMITER" };
+        let Ok(limiter) = env.rate_limiter(binding) else { return false };
+        let address = req.headers().get("CF-Connecting-IP").ok().flatten().unwrap_or_default();
+        limiter.limit(api::limiter_key(&address)).await.map(|o| !o.success).unwrap_or(false)
     }
 
     /// Login and registration attempts per account, wherever they come from
@@ -196,14 +199,16 @@ mod runtime {
             Command::OpenChunk(id, index, claim) => {
                 Reply::Chunk(custodian.open_chunk(&id, index, claim.as_ref()).await?.into_bytes())
             }
-            Command::PostRequest(cmd) => {
-                Reply::Json(201, api::receipt_body(custodian.post_request(cmd.recipient_key, cmd.lifetime).await?))
-            }
+            Command::PostRequest(cmd) => Reply::Json(
+                201,
+                api::request_receipt_body(custodian.post_request(cmd.recipient_key, cmd.lifetime).await?),
+            ),
             Command::FetchRequest(id) => {
                 Reply::Json(200, api::posted_request_body(custodian.fetch_request(&id).await?))
             }
+            // The receipt names the inbox, where the sender uploads a file's chunks.
             Command::AnswerRequest(id, answer) => {
-                Reply::Json(201, api::expires_body(custodian.answer_request(id, answer).await?))
+                Reply::Json(201, api::receipt_body(custodian.answer_request(id, answer).await?))
             }
             Command::Account(_) => return Err(ApiError::NotFound),
         })
@@ -216,7 +221,12 @@ mod runtime {
             Ok(route) => route,
             Err(error) => return fail(error),
         };
-        if req.method() == Method::Post && rate_limited(&env, &req).await {
+        let own_origin = req.url()?.origin().ascii_serialization();
+        if let Err(error) = api::check_origin(req.headers().get("Origin")?.as_deref(), &own_origin) {
+            return fail(error);
+        }
+        // Every call costs a database query, reads included: all of them are throttled.
+        if rate_limited(&env, &req).await {
             return respond(429, r#"{"error":"RateLimited"}"#.into());
         }
         let body = if req.method() == Method::Post {

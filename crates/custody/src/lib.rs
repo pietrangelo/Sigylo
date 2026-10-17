@@ -13,6 +13,7 @@ pub mod core;
 pub use crate::core::{
     CLAIM_WINDOW_SECONDS, ChunkCount, ChunkIndex, ChunkRef, ClaimDigest, ClaimToken, CustodyError, Deposit, DropId,
     GARBAGE_BATCH, Lifetime, MAX_CHUNK_LEN, MAX_CHUNKS, MAX_PAYLOAD_LEN, ObjectName, Opened, PostedRequest, Receipt,
-    RecipientKeyBlob, Request, Retention, RevocationDigest, RevocationToken, SealedChunk, SealedPayload, UnixTime,
+    RecipientKeyBlob, Request, RequestReceipt, Retention, RevocationDigest, RevocationToken, SealedChunk,
+    SealedPayload, UnixTime,
 };
 pub use application::{Answer, ChunkStore, Custodian, IdSource, TokenDigest, Vault};
