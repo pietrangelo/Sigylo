@@ -53,7 +53,10 @@ const FIXED_LEN: usize = MANIFEST_MAGIC.len() + 1 + FileKey::LEN + 8 + 1;
 /// The name a file is saved under. It is shown to the recipient and handed
 /// to their browser, so it may not hide anything: no path separators, no
 /// control characters, no invisible or bidirectional formatting characters
-/// that could make `invoice\u{202E}fdp.exe` look like `invoiceexe.pdf`.
+/// that could make `invoice\u{202E}fdp.exe` look like `invoiceexe.pdf`, no
+/// runs of spaces that push the real extension out of sight, and nothing
+/// Windows would refuse or rewrite on saving (`<>:"|?*`, a trailing dot or
+/// space, device names such as `CON` or `nul.txt`).
 #[derive(Clone, PartialEq, Eq)]
 pub struct FileName(String);
 
@@ -64,7 +67,11 @@ impl FileName {
             && name.len() <= MAX_NAME_LEN
             && name != "."
             && name != ".."
-            && !name.chars().any(|c| c == '/' || c == '\\' || c.is_control() || is_invisible(c));
+            && !name.chars().any(forbidden)
+            && !name.contains("  ")
+            && !name.starts_with(' ')
+            && !name.ends_with([' ', '.'])
+            && !is_device_name(&name);
         if acceptable { Ok(Self(name)) } else { Err(SealError::InvalidFileName) }
     }
 
@@ -73,10 +80,34 @@ impl FileName {
     }
 }
 
-/// Format characters that render as nothing or reorder what follows.
+fn forbidden(c: char) -> bool {
+    matches!(c, '/' | '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*')
+        || c.is_control()
+        || (c.is_whitespace() && c != ' ')
+        || is_invisible(c)
+}
+
+/// Format characters (Unicode category Cf), line and paragraph separators,
+/// and the characters that draw nothing: Hangul fillers, the combining
+/// grapheme joiner, variation selectors and tags.
 fn is_invisible(c: char) -> bool {
-    matches!(c, '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
-        | '\u{2060}'..='\u{2069}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
+    matches!(c, '\u{00AD}' | '\u{034F}' | '\u{0600}'..='\u{0605}' | '\u{061C}' | '\u{06DD}' | '\u{070F}'
+        | '\u{0890}'..='\u{0891}' | '\u{08E2}' | '\u{115F}'..='\u{1160}' | '\u{17B4}'..='\u{17B5}'
+        | '\u{180B}'..='\u{180F}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{206F}'
+        | '\u{3164}' | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{FFA0}' | '\u{FFF0}'..='\u{FFFB}'
+        | '\u{110BD}' | '\u{110CD}' | '\u{13430}'..='\u{1343F}' | '\u{1BCA0}'..='\u{1BCA3}'
+        | '\u{1D173}'..='\u{1D17A}' | '\u{E0000}'..='\u{E0FFF}')
+}
+
+/// `CON`, `nul.txt`, `Lpt1.pdf`…: Windows maps these to devices, whatever
+/// the extension.
+fn is_device_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    match stem.as_bytes() {
+        b"CON" | b"PRN" | b"AUX" | b"NUL" => true,
+        [b'C', b'O', b'M', d] | [b'L', b'P', b'T', d] => d.is_ascii_digit() && *d != b'0',
+        _ => false,
+    }
 }
 
 impl fmt::Debug for FileName {
@@ -400,8 +431,55 @@ mod tests {
                 "nul\0byte",
                 "bom\u{FEFF}",
                 &"x".repeat(MAX_NAME_LEN + 1),
+                // Line and paragraph separators, Hangul fillers, the grapheme
+                // joiner, variation selectors and tags: all invisible.
+                "line\u{2028}sep",
+                "para\u{2029}sep",
+                "filler\u{115F}",
+                "filler\u{1160}",
+                "filler\u{3164}",
+                "filler\u{FFA0}",
+                "joiner\u{034F}",
+                "variation\u{FE0F}",
+                "tag\u{E0041}",
+                "arabic\u{0600}mark",
+                // Spaces that push the real extension out of sight.
+                "report.pdf          .exe",
+                "report.pdf\u{00A0}.exe",
+                "report.pdf\u{3000}.exe",
+                " leading",
+                // What Windows would refuse or silently rewrite.
+                "what?.txt",
+                "a<b>.txt",
+                "c:.txt",
+                "quote\".txt",
+                "pipe|.txt",
+                "star*.txt",
+                "trailing.",
+                "trailing ",
+                "CON",
+                "con.txt",
+                "Lpt1.pdf",
+                "nul.tar.gz",
             ] {
                 assert_eq!(FileName::new(bad.to_owned()), Err(SealError::InvalidFileName), "{bad:?}");
+            }
+        }
+
+        #[test]
+        fn ordinary_names_are_kept_as_they_are() {
+            for good in [
+                "Relazione finale (v2).pdf",
+                "été 2026.txt",
+                "日本語の資料.docx",
+                "контракт.odt",
+                "a.b.c",
+                ".env",
+                "console.log",
+                "COM10.txt",
+                "x".repeat(MAX_NAME_LEN).as_str(),
+            ] {
+                assert_eq!(FileName::new(good.to_owned()).map(|n| n.as_str().to_owned()), Ok(good.to_owned()));
             }
         }
 

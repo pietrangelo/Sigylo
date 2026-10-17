@@ -3,9 +3,14 @@
 // has no network and no Tauri API beyond its two commands, and the webview
 // never leaves the bundle. Nothing here talks to the production relay.
 //
-//   node app/smoke/smoke.mjs <path to the app binary>   (tauri-driver on :4444)
+//   node app/smoke/smoke.mjs <app binary> <downloads dir>   (tauri-driver on :4444)
+
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const DRIVER = 'http://127.0.0.1:4444';
+// The downloads folder app-smoke.sh gives the app.
+const DOWNLOADS = process.argv[3];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function wd(method, path, body) {
@@ -56,6 +61,13 @@ try {
   await sleep(300);
   check('a pasted foreign link is refused', await run('return !!document.querySelector("[data-testid=paste-link] [role=alert]")'), true);
   check('and nothing navigated', await run('return location.hash'), '');
+  // Saving an opened file: the page hands the webview an octet-stream blob,
+  // exactly as files.ts saveFile does, and it must land in the downloads.
+  await run(`const url = URL.createObjectURL(new Blob([new TextEncoder().encode("sealed bytes")], { type: "application/octet-stream" })); const a = document.createElement("a"); a.href = url; a.download = "smoke-check.bin"; a.rel = "noopener"; document.body.append(a); a.click(); a.remove();`);
+  const saved = join(DOWNLOADS, 'smoke-check.bin');
+  for (let i = 0; i < 50 && !existsSync(saved); i++) await sleep(200);
+  check('a saved file lands in the downloads', existsSync(saved) && readFileSync(saved, 'utf8'), 'sealed bytes');
+  check('and the page stays where it was', await url(), (u) => u.startsWith('tauri://localhost') || u.startsWith('http://tauri.localhost'));
   await run('location.href = "https://example.com/"');
   await sleep(1500);
   check('the webview never leaves the bundle', await url(), (u) => !u.includes('example.com'));
