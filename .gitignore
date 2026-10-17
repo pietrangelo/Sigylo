@@ -1,0 +1,8 @@
+target/
+node_modules/
+dist/
+.wrangler/
+web/src/lib/wasm/
+worker/build/
+web/test-results/
+web/playwright-report/

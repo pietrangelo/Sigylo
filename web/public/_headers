@@ -1,0 +1,18 @@
+# Served by Workers Static Assets (or Cloudflare Pages). Every response of the
+# web client carries a strict policy: only our own scripts and Wasm, network
+# only to our own origin, no framing, no referrer, no third parties at all.
+/*
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Resource-Policy: same-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), clipboard-read=()
+  Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+
+/index.html
+  Cache-Control: no-store
+
+/
+  Cache-Control: no-store

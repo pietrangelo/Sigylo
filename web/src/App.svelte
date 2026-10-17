@@ -1,0 +1,97 @@
+<script lang="ts">
+  import { parseFragment, type Route } from './lib/links';
+  import { t } from './lib/i18n';
+  import Compose from './components/Compose.svelte';
+  import Opener from './components/Opener.svelte';
+  import Answer from './components/Answer.svelte';
+  import Revoke from './components/Revoke.svelte';
+
+  let route: Route = $state(parseFragment(location.hash));
+
+  $effect(() => {
+    const onHash = () => (route = parseFragment(location.hash));
+    addEventListener('hashchange', onHash);
+    return () => removeEventListener('hashchange', onHash);
+  });
+</script>
+
+<main>
+  <header>
+    <a class="brand" href="#/">
+      <svg viewBox="0 0 64 64" aria-hidden="true">
+        <circle cx="32" cy="32" r="28" class="wax" />
+        <circle cx="32" cy="32" r="20" class="ring" />
+        <path d="M38 24c-2-3-11-3-12 2s12 5 12 10-10 6-13 2" class="mark" />
+      </svg>
+      <span>{t.home}</span>
+    </a>
+    <p class="muted">{t.tagline}</p>
+  </header>
+
+  {#key route}
+    {#if route.kind === 'compose'}
+      <Compose />
+    {:else if route.kind === 'secret'}
+      <Opener mode="link" id={route.id} secret={route.key} expectsPassphrase={route.passphrase} />
+    {:else if route.kind === 'inbox'}
+      <Opener mode="inbox" id={route.id} secret={route.seed} expectsPassphrase={false} />
+    {:else if route.kind === 'answer'}
+      <Answer id={route.id} fingerprint={route.fingerprint} />
+    {:else if route.kind === 'revoke'}
+      <Revoke id={route.id} token={route.token} />
+    {:else}
+      <section class="card"><p class="error">{t.invalidLink}</p></section>
+    {/if}
+  {/key}
+
+  <footer class="muted small">{t.footer}</footer>
+</main>
+
+<style>
+  main {
+    max-width: var(--column);
+    margin: 0 auto;
+    padding: var(--s6) var(--s5) var(--s7);
+  }
+
+  header {
+    margin-bottom: var(--s6);
+  }
+
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s4);
+    color: var(--text);
+    text-decoration: none;
+    font-size: var(--t-display);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+
+  .brand svg {
+    width: var(--s7);
+    height: var(--s7);
+  }
+
+  .wax {
+    fill: var(--wax);
+  }
+
+  .ring {
+    fill: none;
+    stroke: #f3e9dc;
+    stroke-width: 3;
+  }
+
+  .mark {
+    fill: none;
+    stroke: #f3e9dc;
+    stroke-width: 4;
+    stroke-linecap: round;
+  }
+
+  footer {
+    margin-top: var(--s6);
+  }
+</style>
