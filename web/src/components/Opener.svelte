@@ -14,7 +14,10 @@
     id,
     secret,
     expectsPassphrase,
-  }: { mode: 'link' | 'inbox'; id: Uint8Array; secret: Uint8Array; expectsPassphrase: boolean } = $props();
+    expectedSender = null,
+  }: { mode: 'link' | 'inbox'; id: Uint8Array; secret: Uint8Array; expectsPassphrase: boolean;
+    expectedSender?: Uint8Array | null;
+  } = $props();
 
   const relay = new Relay(relayFetch);
   let envelope: Uint8Array | null = null;
@@ -25,6 +28,8 @@
   let busy = $state(false);
   let error = $state('');
   let plaintext: string | null = $state(null);
+  // Inbox only: the verified sender code, or null for an unsigned answer.
+  let senderCode: string | null = $state(null);
   let visible = $state(true);
 
   async function open(event: SubmitEvent) {
@@ -47,7 +52,16 @@
         }
       }
       const pass = passphraseBytes(passphrase);
-      const bytes = mode === 'link' ? engine.openLink(envelope, secret, pass) : engine.openAsRecipient(envelope, secret, pass);
+      let bytes: Uint8Array;
+      if (mode === 'link') {
+        bytes = engine.openLink(envelope, secret, pass);
+      } else {
+        // Throws NotAuthentic, like a tampered envelope, if a signature does not verify.
+        const received = engine.openAsRecipient(envelope, secret, pass, expectedSender ?? undefined);
+        bytes = received.plaintext;
+        senderCode = received.senderCode ?? null;
+        received.free();
+      }
       plaintext = bytesText(bytes);
       bytes.fill(0);
       envelope = null;
@@ -69,6 +83,15 @@
   {#if plaintext !== null}
     <h2>{mode === 'inbox' ? t.inboxTitle : t.revealTitle}</h2>
     <p class={burned ? 'notice' : 'success'} data-testid="retention-note">{burned ? t.burned : t.readableUntil}</p>
+    {#if mode === 'inbox' && senderCode !== null}
+      <div class="sender" data-testid="signed">
+        <p class="small muted">{t.signedBy}</p>
+        <p class="code" data-testid="sender-code">{senderCode}</p>
+        <p class="small muted">{expectedSender === null ? t.signedHint : t.expectedSenderOk}</p>
+      </div>
+    {:else if mode === 'inbox'}
+      <p class="notice" data-testid="unsigned">{t.unsigned}</p>
+    {/if}
     {#if visible}
       <textarea readonly data-testid="plaintext" value={plaintext}></textarea>
     {:else}
