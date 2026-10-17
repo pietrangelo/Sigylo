@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/sealing", "crates/sealing-adapters", "crates/custody", "crates/custody-adapters", "crates/sigylo-wasm", "worker", "tools/architecture-guard"]
+# The Tauri app is its own workspace (it needs the system webview); the guard checks it too.
+exclude = ["app"]
 
 [workspace.package]
 version = "0.1.0"

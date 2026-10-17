@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { encode } from '../src/lib/base64url';
-import { inboxLink, parseFragment, requestLink, revokeLink, secretLink } from '../src/lib/links';
+import { inboxLink, linkFragment, parseFragment, requestLink, revokeLink, secretLink } from '../src/lib/links';
 
 const id = Uint8Array.from({ length: 16 }, (_, i) => i);
 const key = Uint8Array.from({ length: 32 }, (_, i) => 255 - i);
@@ -58,6 +58,42 @@ describe('links', () => {
       ]) {
         expect(parseFragment(bad).kind, bad).toBe('invalid');
       }
+    });
+  });
+
+  describe('a link pasted into the app', () => {
+    const site = 'https://sigylo.net';
+
+    it('opens every kind of Sigylo link at its fragment', () => {
+      for (const link of [secretLink(site, id, key, false), secretLink(site, id, key, true), revokeLink(site, id, key), requestLink(site, id, key), inboxLink(site, id, key)]) {
+        expect(linkFragment(link)).toBe(new URL(link).hash);
+        expect(linkFragment(`  ${link}\n`)).toBe(new URL(link).hash);
+      }
+    });
+
+    describe('adversary', () => {
+      it('refuses links that are not sigylo.net secrets', () => {
+        const fragment = new URL(secretLink(site, id, key, false)).hash;
+        for (const bad of [
+          `http://sigylo.net/${fragment}`,
+          `https://sigylo.net.evil.example/${fragment}`,
+          `https://evil.example/${fragment}`,
+          `https://sigylo.net@evil.example/${fragment}`,
+          `https://user@sigylo.net/${fragment}`,
+          `https://sigylo.net:8443/${fragment}`,
+          `https://sigylo.net/other${fragment}`,
+          `https://sigylo.net/?x=1${fragment}`,
+          `javascript:alert(1)//${fragment}`,
+          'https://sigylo.net/',
+          'https://sigylo.net/#/',
+          'https://sigylo.net/#/terms',
+          'https://sigylo.net/#/s/short/key',
+          fragment,
+          '',
+        ]) {
+          expect(linkFragment(bad), bad).toBeNull();
+        }
+      });
     });
   });
 });

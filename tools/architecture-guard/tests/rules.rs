@@ -93,8 +93,42 @@ fn the_real_workspace_is_clean() {
     assert!(violations.is_empty(), "{violations:#?}");
 }
 
+/// A throwaway workspace on disk with the app crate excluded from it.
+fn workspace_with_excluded_app(app_manifest: Option<&str>) -> Vec<Rule> {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let root = std::env::temp_dir().join(format!("sigylo-guard-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("app/src")).unwrap();
+    std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = []\nexclude = [\"app\"]\n").unwrap();
+    if let Some(manifest) = app_manifest {
+        std::fs::write(root.join("app/Cargo.toml"), manifest).unwrap();
+    }
+    let rules = architecture_guard::check_workspace(&root).unwrap().into_iter().map(|v| v.rule).collect();
+    std::fs::remove_dir_all(&root).unwrap();
+    rules
+}
+
+fn app_with_role(role: &str) -> String {
+    format!("[package]\nname = \"sigylo-app\"\n[package.metadata.rosette]\nrole = \"{role}\"\n")
+}
+
+#[test]
+fn a_crate_outside_the_workspace_may_be_a_shell() {
+    assert_eq!(workspace_with_excluded_app(Some(&app_with_role("shell"))), vec![]);
+    assert_eq!(workspace_with_excluded_app(None), vec![], "an excluded folder without a crate holds no code");
+}
+
 mod adversary {
     use super::*;
+
+    #[test]
+    fn domains_and_adapters_cannot_escape_the_guard_by_leaving_the_workspace() {
+        assert_eq!(workspace_with_excluded_app(Some(&app_with_role("domain"))), vec![Rule::ExcludedCrate]);
+        assert_eq!(workspace_with_excluded_app(Some(&app_with_role("adapters"))), vec![Rule::ExcludedCrate]);
+        assert_eq!(workspace_with_excluded_app(Some("[package]\nname = \"sigylo-app\"\n")), vec![Rule::UndeclaredRole]);
+        assert_eq!(workspace_with_excluded_app(Some("[package")), vec![Rule::Unparsable]);
+    }
 
     #[test]
     fn grouped_and_nested_imports_are_seen() {

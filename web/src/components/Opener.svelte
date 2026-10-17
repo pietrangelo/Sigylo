@@ -7,6 +7,7 @@
   import { t } from '../lib/i18n';
   import { relayMessage, sealMessage } from '../lib/messages';
   import { Relay } from '../lib/relay';
+  import { relayFetch } from '../lib/platform';
 
   let {
     mode,
@@ -15,7 +16,7 @@
     expectsPassphrase,
   }: { mode: 'link' | 'inbox'; id: Uint8Array; secret: Uint8Array; expectsPassphrase: boolean } = $props();
 
-  const relay = new Relay();
+  const relay = new Relay(relayFetch);
   let envelope: Uint8Array | null = null;
   let burned = $state(false);
   let askedForPassphrase = $state(false);
