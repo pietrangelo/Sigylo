@@ -12,8 +12,10 @@ pub enum CustodyError {
     LifetimeOutOfRange,
     /// A recipient public key blob has the wrong size.
     InvalidRecipientKey,
-    /// A revocation token or digest is not 32 bytes.
+    /// A revocation or claim token is not 32 bytes.
     InvalidToken,
+    /// A chunk count or index is outside what a file can have.
+    InvalidChunk,
     /// Something already lives under this identifier.
     AlreadyExists,
     /// Nothing to give: never existed, expired, already read, revoked or
@@ -21,10 +23,11 @@ pub enum CustodyError {
     NotFound,
     /// The vault could not be reached.
     VaultUnavailable,
+    /// The vault has no room for anything new right now (sealed bytes or
+    /// chunks); opening, revoking and purging still work.
+    StorageFull,
     /// No fresh id could be drawn: the random source failed.
     RandomnessUnavailable,
-    /// The vault has no room for anything new right now; reads still work.
-    CustodyFull,
 }
 
 impl fmt::Display for CustodyError {
@@ -35,12 +38,13 @@ impl fmt::Display for CustodyError {
             Self::PayloadTooLarge => "payload too large",
             Self::LifetimeOutOfRange => "lifetime out of range",
             Self::InvalidRecipientKey => "invalid recipient key",
-            Self::InvalidToken => "invalid revocation token",
+            Self::InvalidToken => "invalid token",
+            Self::InvalidChunk => "invalid chunk count or index",
             Self::AlreadyExists => "identifier already in use",
             Self::NotFound => "not found, expired or already read",
             Self::VaultUnavailable => "vault unavailable",
+            Self::StorageFull => "storage full",
             Self::RandomnessUnavailable => "randomness unavailable",
-            Self::CustodyFull => "custody full, try again later",
         })
     }
 }

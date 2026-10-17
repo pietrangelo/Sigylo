@@ -1,4 +1,4 @@
-use super::fakes::{BrokenIds, FakeVault, SequentialIds, StuckIds, ToyDigest, block_on};
+use super::fakes::{BrokenIds, FakeStore, FakeVault, SequentialIds, StuckIds, ToyDigest, block_on};
 use super::{Answer, Custodian, IdSource, TokenDigest};
 use crate::core::{CustodyError, Lifetime, RecipientKeyBlob, Retention, RevocationToken, SealedPayload};
 
@@ -14,8 +14,10 @@ fn key() -> RecipientKeyBlob {
     RecipientKeyBlob::new(vec![4; RecipientKeyBlob::LEN]).unwrap()
 }
 
-fn custodian(vault: &FakeVault) -> Custodian<&FakeVault, ToyDigest, SequentialIds> {
-    Custodian::new(vault, ToyDigest, SequentialIds::default())
+type TestCustodian<'a> = Custodian<&'a FakeVault, &'a FakeStore, ToyDigest, SequentialIds>;
+
+fn custodian(vault: &FakeVault) -> TestCustodian<'_> {
+    Custodian::new(vault, &vault.store, ToyDigest, SequentialIds::default())
 }
 
 #[test]
@@ -67,7 +69,12 @@ fn request_lifecycle_answer_lands_in_the_private_inbox() {
     let request = block_on(c.post_request(key(), Lifetime::ONE_DAY)).unwrap();
     assert_eq!(block_on(c.fetch_request(&request.id)).unwrap().recipient_key, key());
 
-    let answer = Answer { payload: payload(), retention: Retention::BurnAfterReading, lifetime: Lifetime::ONE_HOUR };
+    let answer = Answer {
+        payload: payload(),
+        retention: Retention::BurnAfterReading,
+        lifetime: Lifetime::ONE_HOUR,
+        chunks: None,
+    };
     block_on(c.answer_request(request.id, answer)).unwrap();
     assert_eq!(block_on(c.fetch_request(&request.id)), Err(CustodyError::NotFound));
     assert_eq!(block_on(c.open(&request.inbox)).unwrap().payload, payload());
@@ -129,7 +136,7 @@ mod adversary {
     #[test]
     fn a_stuck_id_source_cannot_overwrite_a_live_secret() {
         let vault = FakeVault::default();
-        let c = Custodian::new(&vault, ToyDigest, StuckIds);
+        let c = Custodian::new(&vault, &vault.store, ToyDigest, StuckIds);
         let first = block_on(c.deposit(payload(), Retention::BurnAfterReading, Lifetime::ONE_DAY, None)).unwrap();
         let evil = SealedPayload::new(b"attacker".to_vec()).unwrap();
         let again = block_on(c.deposit(evil, Retention::UntilExpiry, Lifetime::MAX, None));
@@ -140,7 +147,7 @@ mod adversary {
     #[test]
     fn a_failing_id_source_stores_nothing() {
         let vault = FakeVault::default();
-        let c = Custodian::new(&vault, ToyDigest, BrokenIds);
+        let c = Custodian::new(&vault, &vault.store, ToyDigest, BrokenIds);
         let deposit = block_on(c.deposit(payload(), Retention::BurnAfterReading, Lifetime::ONE_DAY, None));
         assert_eq!(deposit, Err(CustodyError::RandomnessUnavailable));
         assert_eq!(block_on(c.post_request(key(), Lifetime::ONE_DAY)), Err(CustodyError::RandomnessUnavailable));
@@ -153,7 +160,12 @@ mod adversary {
         let vault = FakeVault::default();
         let c = custodian(&vault);
         let request = block_on(c.post_request(key(), Lifetime::ONE_DAY)).unwrap();
-        let answer = || Answer { payload: payload(), retention: Retention::UntilExpiry, lifetime: Lifetime::ONE_HOUR };
+        let answer = || Answer {
+            payload: payload(),
+            retention: Retention::UntilExpiry,
+            lifetime: Lifetime::ONE_HOUR,
+            chunks: None,
+        };
         block_on(c.answer_request(request.id, answer())).unwrap();
         assert_eq!(block_on(c.answer_request(request.id, answer())), Err(CustodyError::NotFound));
     }
@@ -166,8 +178,12 @@ mod adversary {
         let vault = FakeVault::default();
         let c = custodian(&vault);
         let request = block_on(c.post_request(key(), Lifetime::ONE_DAY)).unwrap();
-        let answer =
-            Answer { payload: payload(), retention: Retention::BurnAfterReading, lifetime: Lifetime::ONE_HOUR };
+        let answer = Answer {
+            payload: payload(),
+            retention: Retention::BurnAfterReading,
+            lifetime: Lifetime::ONE_HOUR,
+            chunks: None,
+        };
         block_on(c.answer_request(request.id, answer)).unwrap();
         assert_eq!(block_on(c.open(&request.id)), Err(CustodyError::NotFound));
         let opened = block_on(c.open(&request.inbox)).unwrap();
@@ -177,7 +193,7 @@ mod adversary {
     #[test]
     fn a_stuck_random_source_never_files_the_answer_under_the_request_id() {
         let vault = FakeVault::default();
-        let c = Custodian::new(&vault, ToyDigest, StuckIds);
+        let c = Custodian::new(&vault, &vault.store, ToyDigest, StuckIds);
         assert_eq!(block_on(c.post_request(key(), Lifetime::ONE_DAY)), Err(CustodyError::RandomnessUnavailable));
         assert!(vault.is_empty());
     }
@@ -187,7 +203,12 @@ mod adversary {
         let vault = FakeVault::default();
         let c = custodian(&vault);
         let secret = block_on(c.deposit(payload(), Retention::UntilExpiry, Lifetime::ONE_DAY, None)).unwrap();
-        let answer = Answer { payload: payload(), retention: Retention::UntilExpiry, lifetime: Lifetime::ONE_HOUR };
+        let answer = Answer {
+            payload: payload(),
+            retention: Retention::UntilExpiry,
+            lifetime: Lifetime::ONE_HOUR,
+            chunks: None,
+        };
         assert_eq!(block_on(c.answer_request(secret.id, answer)), Err(CustodyError::NotFound));
     }
 
@@ -197,7 +218,12 @@ mod adversary {
         let c = custodian(&vault);
         let request = block_on(c.post_request(key(), Lifetime::MIN)).unwrap();
         vault.advance(i64::from(Lifetime::MIN.seconds()));
-        let answer = Answer { payload: payload(), retention: Retention::UntilExpiry, lifetime: Lifetime::ONE_HOUR };
+        let answer = Answer {
+            payload: payload(),
+            retention: Retention::UntilExpiry,
+            lifetime: Lifetime::ONE_HOUR,
+            chunks: None,
+        };
         assert_eq!(block_on(c.answer_request(request.id, answer)), Err(CustodyError::NotFound));
         assert_eq!(block_on(c.fetch_request(&request.id)), Err(CustodyError::NotFound));
     }
@@ -215,6 +241,346 @@ mod adversary {
         vault.advance(i64::from(Lifetime::MIN.seconds()));
         for id in [never, burned.id, revoked.id, expired.id] {
             assert_eq!(block_on(c.open(&id)), Err(CustodyError::NotFound), "{id:?}");
+        }
+    }
+}
+
+mod files {
+    use super::*;
+    use crate::core::{CLAIM_WINDOW_SECONDS, ChunkCount, ChunkIndex, ClaimToken, DropId, SealedChunk};
+
+    fn count(n: u16) -> ChunkCount {
+        ChunkCount::new(n).unwrap()
+    }
+
+    fn at(i: u16) -> ChunkIndex {
+        ChunkIndex::new(i).unwrap()
+    }
+
+    fn chunk(i: u16) -> SealedChunk {
+        SealedChunk::new(vec![i as u8 + 1; 300]).unwrap()
+    }
+
+    fn deposit_file(c: &TestCustodian<'_>, n: u16, retention: Retention) -> DropId {
+        let receipt = block_on(c.deposit_file(payload(), count(n), retention, Lifetime::ONE_DAY, Some(&token(3))));
+        receipt.unwrap().id
+    }
+
+    fn upload_all(c: &TestCustodian<'_>, id: &DropId, n: u16) {
+        for i in 0..n {
+            block_on(c.put_chunk(id, at(i), chunk(i))).unwrap();
+        }
+    }
+
+    #[test]
+    fn burn_after_reading_file_hands_each_chunk_once_to_whoever_opened_it() {
+        let vault = FakeVault::default();
+        let c = custodian(&vault);
+        let id = deposit_file(&c, 3, Retention::BurnAfterReading);
+        upload_all(&c, &id, 3);
+        let opened = block_on(c.open(&id)).unwrap();
+        assert_eq!((opened.payload, opened.burned, opened.chunks), (payload(), true, Some(count(3))));
+        let claim = opened.claim.expect("a burned file comes with its claim");
+        for i in 0..3 {
+            assert_eq!(block_on(c.open_chunk(&id, at(i), Some(&claim))), Ok(chunk(i)));
+            assert_eq!(block_on(c.open_chunk(&id, at(i), Some(&claim))), Err(CustodyError::NotFound));
+        }
+        // The deposit went with its last chunk.
+        assert!(vault.is_empty());
+    }
+
+    #[test]
+    fn until_expiry_file_is_readable_by_anyone_with_the_link_until_it_expires() {
+        let vault = FakeVault::default();
+        let c = custodian(&vault);
+        let id = deposit_file(&c, 2, Retention::UntilExpiry);
+        upload_all(&c, &id, 2);
+        for _ in 0..2 {
+            let opened = block_on(c.open(&id)).unwrap();
+            assert_eq!((opened.burned, opened.chunks, opened.claim), (false, Some(count(2)), None));
+            assert_eq!(block_on(c.open_chunk(&id, at(1), None)), Ok(chunk(1)));
+        }
+        vault.advance(i64::from(Lifetime::ONE_DAY.seconds()));
+        assert_eq!(block_on(c.open_chunk(&id, at(0), None)), Err(CustodyError::NotFound));
+        assert_eq!(block_on(c.purge_expired()), Ok(1));
+        assert!(vault.is_empty());
+    }
+
+    #[test]
+    fn a_text_secret_carries_no_chunks_and_no_claim() {
+        let vault = FakeVault::default();
+        let c = custodian(&vault);
+        let receipt = block_on(c.deposit(payload(), Retention::BurnAfterReading, Lifetime::ONE_DAY, None)).unwrap();
+        let opened = block_on(c.open(&receipt.id)).unwrap();
+        assert_eq!((opened.chunks, opened.claim), (None, None));
+    }
+
+    #[test]
+    fn a_request_can_be_answered_with_a_file() {
+        let vault = FakeVault::default();
+        let c = custodian(&vault);
+        let request = block_on(c.post_request(key(), Lifetime::ONE_DAY)).unwrap();
+        let answer = Answer {
+            payload: payload(),
+            retention: Retention::BurnAfterReading,
+            lifetime: Lifetime::ONE_HOUR,
+            chunks: Some(count(2)),
+        };
+        block_on(c.answer_request(request.id, answer)).unwrap();
+        assert_eq!(block_on(c.open(&request.id)), Err(CustodyError::NotFound), "not before the chunks");
+        upload_all(&c, &request.id, 2);
+        let opened = block_on(c.open(&request.id)).unwrap();
+        assert_eq!(block_on(c.open_chunk(&request.id, at(0), opened.claim.as_ref())), Ok(chunk(0)));
+    }
+
+    #[test]
+    fn revoking_a_file_takes_its_chunks_along() {
+        let vault = FakeVault::default();
+        let c = custodian(&vault);
+        let id = deposit_file(&c, 2, Retention::UntilExpiry);
+        upload_all(&c, &id, 2);
+        block_on(c.revoke(&id, &token(3))).unwrap();
+        assert!(vault.is_empty());
+        assert_eq!(block_on(c.collect_garbage()), Ok(2));
+        assert_eq!((vault.store.objects(), vault.garbage()), (0, 0));
+    }
+
+    #[test]
+    fn chunks_live_in_the_store_and_the_vault_keeps_only_their_names() {
+        let vault = FakeVault::default();
+        let c = custodian(&vault);
+        let id = deposit_file(&c, 2, Retention::UntilExpiry);
+        upload_all(&c, &id, 2);
+        assert_eq!((vault.stored_chunks(), vault.store.objects()), (2, 2));
+        let mut kept = vault.store.contents();
+        kept.sort_by_key(|c| c.as_bytes().to_vec());
+        assert_eq!(kept, vec![chunk(0), chunk(1)]);
+    }
+
+    #[test]
+    fn a_burned_chunk_leaves_the_store_as_it_is_handed_out() {
+        let vault = FakeVault::default();
+        let c = custodian(&vault);
+        let id = deposit_file(&c, 2, Retention::BurnAfterReading);
+        upload_all(&c, &id, 2);
+        let claim = block_on(c.open(&id)).unwrap().claim.unwrap();
+        block_on(c.open_chunk(&id, at(0), Some(&claim))).unwrap();
+        assert_eq!(vault.store.objects(), 1);
+        block_on(c.open_chunk(&id, at(1), Some(&claim))).unwrap();
+        assert_eq!(vault.store.objects(), 0);
+        // What the store already dropped costs nothing more to collect.
+        block_on(c.collect_garbage()).unwrap();
+        assert_eq!(vault.garbage(), 0);
+    }
+
+    #[test]
+    fn expired_files_leave_the_store_with_the_next_collection() {
+        let vault = FakeVault::default();
+        let c = custodian(&vault);
+        let id = deposit_file(&c, 3, Retention::BurnAfterReading);
+        upload_all(&c, &id, 3);
+        vault.advance(i64::from(Lifetime::ONE_DAY.seconds()));
+        assert_eq!(block_on(c.purge_expired()), Ok(1));
+        assert_eq!(vault.store.objects(), 3);
+        assert_eq!(block_on(c.collect_garbage()), Ok(3));
+        assert_eq!(vault.store.objects(), 0);
+        assert_eq!(block_on(c.collect_garbage()), Ok(0));
+    }
+
+    mod adversary {
+        use super::*;
+
+        #[test]
+        fn an_incomplete_file_cannot_be_opened() {
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let id = deposit_file(&c, 3, Retention::BurnAfterReading);
+            block_on(c.put_chunk(&id, at(0), chunk(0))).unwrap();
+            block_on(c.put_chunk(&id, at(2), chunk(2))).unwrap();
+            assert_eq!(block_on(c.open(&id)), Err(CustodyError::NotFound));
+            assert_eq!(block_on(c.open_chunk(&id, at(0), None)), Err(CustodyError::NotFound));
+        }
+
+        #[test]
+        fn chunks_are_written_once_and_only_where_the_count_allows() {
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let id = deposit_file(&c, 2, Retention::UntilExpiry);
+            block_on(c.put_chunk(&id, at(0), chunk(0))).unwrap();
+            let forged = SealedChunk::new(b"forged".to_vec()).unwrap();
+            assert_eq!(block_on(c.put_chunk(&id, at(0), forged.clone())), Err(CustodyError::AlreadyExists));
+            assert_eq!(block_on(c.put_chunk(&id, at(2), forged)), Err(CustodyError::NotFound));
+            assert_eq!(vault.stored_chunks(), 1);
+        }
+
+        #[test]
+        fn no_chunk_can_be_added_after_the_file_was_opened() {
+            // A reader who holds the link cannot slip a chunk into a file that
+            // others will open after them, nor into a text secret.
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let id = deposit_file(&c, 1, Retention::BurnAfterReading);
+            upload_all(&c, &id, 1);
+            block_on(c.open(&id)).unwrap();
+            assert_eq!(block_on(c.put_chunk(&id, at(0), chunk(9))), Err(CustodyError::NotFound));
+            let text = block_on(c.deposit(payload(), Retention::UntilExpiry, Lifetime::ONE_DAY, None)).unwrap();
+            assert_eq!(block_on(c.put_chunk(&text.id, at(0), chunk(0))), Err(CustodyError::NotFound));
+        }
+
+        #[test]
+        fn a_claimed_file_cannot_be_opened_again_nor_its_chunks_taken_without_the_claim() {
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let id = deposit_file(&c, 2, Retention::BurnAfterReading);
+            upload_all(&c, &id, 2);
+            let first = block_on(c.open(&id)).unwrap();
+            assert_eq!(block_on(c.open(&id)), Err(CustodyError::NotFound));
+            let guessed = ClaimToken::from_array([0x42; 32]);
+            for claim in [None, Some(&guessed)] {
+                assert_eq!(block_on(c.open_chunk(&id, at(0), claim)), Err(CustodyError::NotFound));
+            }
+            assert_eq!(block_on(c.open_chunk(&id, at(0), first.claim.as_ref())), Ok(chunk(0)));
+        }
+
+        #[test]
+        fn the_vault_keeps_only_the_digest_of_the_claim() {
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let id = deposit_file(&c, 1, Retention::BurnAfterReading);
+            upload_all(&c, &id, 1);
+            let claim = block_on(c.open(&id)).unwrap().claim.unwrap();
+            let stored = vault.stored_claim(&id).unwrap();
+            assert_ne!(stored.as_bytes(), claim.expose());
+            assert_eq!(stored, ToyDigest.digest_claim(&claim));
+        }
+
+        #[test]
+        fn an_abandoned_claim_lapses_within_the_claim_window() {
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let id = deposit_file(&c, 2, Retention::BurnAfterReading);
+            upload_all(&c, &id, 2);
+            let claim = block_on(c.open(&id)).unwrap().claim.unwrap();
+            assert_eq!(vault.expires_at(&id), Some(i64::from(CLAIM_WINDOW_SECONDS)));
+            vault.advance(i64::from(CLAIM_WINDOW_SECONDS));
+            assert_eq!(block_on(c.open_chunk(&id, at(0), Some(&claim))), Err(CustodyError::NotFound));
+            assert_eq!(block_on(c.purge_expired()), Ok(1));
+            assert!(vault.is_empty());
+        }
+
+        #[test]
+        fn the_claim_window_never_extends_a_deposit() {
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let receipt =
+                block_on(c.deposit_file(payload(), count(1), Retention::BurnAfterReading, Lifetime::MIN, None));
+            let id = receipt.unwrap().id;
+            upload_all(&c, &id, 1);
+            block_on(c.open(&id)).unwrap();
+            assert_eq!(vault.expires_at(&id), Some(i64::from(Lifetime::MIN.seconds())));
+        }
+
+        #[test]
+        fn a_refused_chunk_leaves_nothing_in_the_store() {
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let id = deposit_file(&c, 1, Retention::BurnAfterReading);
+            upload_all(&c, &id, 1);
+            assert_eq!(block_on(c.put_chunk(&id, at(0), chunk(5))), Err(CustodyError::AlreadyExists));
+            assert_eq!(block_on(c.put_chunk(&id, at(1), chunk(5))), Err(CustodyError::NotFound));
+            let unknown = DropId::from_slice(&[0x77; 16]).unwrap();
+            assert_eq!(block_on(c.put_chunk(&unknown, at(0), chunk(5))), Err(CustodyError::NotFound));
+            assert_eq!(vault.store.objects(), 1);
+        }
+
+        #[test]
+        fn a_chunk_over_the_quota_leaves_nothing_in_the_store() {
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let id = deposit_file(&c, 1, Retention::UntilExpiry);
+            vault.full.set(true);
+            assert_eq!(block_on(c.put_chunk(&id, at(0), chunk(0))), Err(CustodyError::StorageFull));
+            assert_eq!((vault.stored_chunks(), vault.store.objects()), (0, 0));
+        }
+
+        #[test]
+        fn a_chunk_the_store_could_not_keep_is_not_recorded() {
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let id = deposit_file(&c, 1, Retention::UntilExpiry);
+            vault.store.fail.set(true);
+            assert_eq!(block_on(c.put_chunk(&id, at(0), chunk(0))), Err(CustodyError::VaultUnavailable));
+            vault.store.fail.set(false);
+            assert_eq!(vault.stored_chunks(), 0);
+            assert_eq!(block_on(c.open(&id)), Err(CustodyError::NotFound), "the file is still incomplete");
+            upload_all(&c, &id, 1);
+            assert!(block_on(c.open(&id)).is_ok());
+        }
+
+        #[test]
+        fn a_claim_sent_for_a_file_kept_until_expiry_burns_nothing() {
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let id = deposit_file(&c, 1, Retention::UntilExpiry);
+            upload_all(&c, &id, 1);
+            let guessed = ClaimToken::from_array([0x42; 32]);
+            for _ in 0..2 {
+                assert_eq!(block_on(c.open_chunk(&id, at(0), Some(&guessed))), Ok(chunk(0)));
+            }
+            assert_eq!(vault.store.objects(), 1);
+        }
+
+        #[test]
+        fn object_names_are_fresh_and_say_nothing_of_the_deposit() {
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let id = deposit_file(&c, 3, Retention::UntilExpiry);
+            upload_all(&c, &id, 3);
+            let names = vault.store.names();
+            assert_eq!(names.len(), 3);
+            for name in &names {
+                assert_ne!(name.as_bytes(), id.as_bytes());
+            }
+            let mut unique = names.clone();
+            unique.sort_by_key(|n| *n.as_bytes());
+            unique.dedup();
+            assert_eq!(unique.len(), 3);
+        }
+
+        #[test]
+        fn garbage_survives_a_store_that_fails_to_delete() {
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let id = deposit_file(&c, 2, Retention::UntilExpiry);
+            upload_all(&c, &id, 2);
+            block_on(c.revoke(&id, &token(3))).unwrap();
+            vault.store.fail.set(true);
+            assert_eq!(block_on(c.collect_garbage()), Err(CustodyError::VaultUnavailable));
+            vault.store.fail.set(false);
+            assert_eq!(vault.store.objects(), 2, "nothing was lost track of");
+            assert_eq!(block_on(c.collect_garbage()), Ok(2));
+            assert_eq!(vault.store.objects(), 0);
+        }
+
+        #[test]
+        fn chunks_of_one_file_are_not_reachable_through_another() {
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let a = deposit_file(&c, 1, Retention::UntilExpiry);
+            let b = deposit_file(&c, 1, Retention::UntilExpiry);
+            upload_all(&c, &a, 1);
+            assert_eq!(block_on(c.open_chunk(&b, at(0), None)), Err(CustodyError::NotFound));
+        }
+
+        #[test]
+        fn a_failing_random_source_opens_nothing() {
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let id = deposit_file(&c, 1, Retention::BurnAfterReading);
+            upload_all(&c, &id, 1);
+            let broken = Custodian::new(&vault, &vault.store, ToyDigest, BrokenIds);
+            assert_eq!(block_on(broken.open(&id)), Err(CustodyError::RandomnessUnavailable));
+            assert!(block_on(c.open(&id)).unwrap().claim.is_some(), "the file is still there");
         }
     }
 }

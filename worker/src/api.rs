@@ -4,16 +4,21 @@
 //! All binary fields are base64url without padding. Ids are 16 bytes and
 //! always chosen by the relay: a deposit or request body that carries one is
 //! refused, so nobody can put something under an id that already had a life.
+//!
+//! File chunks are the exception to JSON: a chunk travels as the raw request
+//! body (`POST /api/secrets/{id}/chunks/{n}`) and comes back as the raw
+//! response body (`POST /api/secrets/{id}/chunks/{n}/open`), so a 1 MiB chunk
+//! costs no base64 work in a Worker that has 10 ms of CPU per request.
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use custody::{
-    Answer, CustodyError, DropId, Lifetime, Receipt, RecipientKeyBlob, RequestReceipt, Retention, RevocationToken,
-    SealedPayload, UnixTime,
+    Answer, ChunkCount, ChunkIndex, ClaimToken, CustodyError, DropId, Lifetime, MAX_CHUNK_LEN, Receipt,
+    RecipientKeyBlob, RequestReceipt, Retention, RevocationToken, SealedChunk, SealedPayload, UnixTime,
 };
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
-/// Largest request body accepted (a maximal payload in base64 plus JSON).
+/// Largest JSON request body accepted (a maximal payload in base64 plus JSON).
 pub const MAX_BODY_LEN: usize = 100 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,9 +26,21 @@ pub enum Route {
     Deposit,
     Open(DropId),
     Revoke(DropId),
+    PutChunk(DropId, ChunkIndex),
+    OpenChunk(DropId, ChunkIndex),
     PostRequest,
     FetchRequest(DropId),
     AnswerRequest(DropId),
+}
+
+impl Route {
+    /// The largest body this route reads: a raw chunk, or a JSON document.
+    pub fn max_body_len(&self) -> usize {
+        match self {
+            Self::PutChunk(..) => MAX_CHUNK_LEN,
+            _ => MAX_BODY_LEN,
+        }
+    }
 }
 
 /// Why a request was refused before reaching the domain.
@@ -53,8 +70,8 @@ impl ApiError {
             Self::CrossOrigin => 403,
             Self::BodyTooLarge | Self::Custody(CustodyError::PayloadTooLarge) => 413,
             Self::Custody(CustodyError::AlreadyExists) => 409,
-            Self::Custody(CustodyError::CustodyFull) => 507,
             Self::Custody(CustodyError::VaultUnavailable | CustodyError::RandomnessUnavailable) => 503,
+            Self::Custody(CustodyError::StorageFull) => 507,
             Self::InvalidJson | Self::InvalidEncoding | Self::Custody(_) => 400,
         }
     }
@@ -72,10 +89,11 @@ impl ApiError {
     }
 }
 
-/// Refuse a body whose declared length is already too large, before reading it.
-pub fn check_declared_length(content_length: Option<&str>) -> Result<(), ApiError> {
+/// Refuse a body whose declared length is already too large for its route,
+/// before reading it.
+pub fn check_declared_length(route: &Route, content_length: Option<&str>) -> Result<(), ApiError> {
     match content_length.map(|v| v.trim().parse::<u64>()) {
-        Some(Ok(n)) if n > MAX_BODY_LEN as u64 => Err(ApiError::BodyTooLarge),
+        Some(Ok(n)) if n > route.max_body_len() as u64 => Err(ApiError::BodyTooLarge),
         _ => Ok(()),
     }
 }
@@ -114,6 +132,16 @@ fn id_segment(segment: &str) -> Result<DropId, ApiError> {
     DropId::from_slice(&bytes).map_err(|_| ApiError::NotFound)
 }
 
+/// A chunk index in canonical decimal: "0" to "9", no sign, no leading zero.
+fn index_segment(segment: &str) -> Result<ChunkIndex, ApiError> {
+    let canonical = !segment.is_empty()
+        && segment.len() <= 2
+        && segment.bytes().all(|b| b.is_ascii_digit())
+        && (segment == "0" || !segment.starts_with('0'));
+    let index = segment.parse::<u16>().ok().filter(|_| canonical).ok_or(ApiError::NotFound)?;
+    ChunkIndex::new(index).map_err(|_| ApiError::NotFound)
+}
+
 /// Map method and path to a route. Anything unexpected is a plain 404/405.
 pub fn route(method: &str, path: &str) -> Result<Route, ApiError> {
     let segments: Vec<&str> = path.strip_prefix("/api/").ok_or(ApiError::NotFound)?.split('/').collect();
@@ -121,6 +149,8 @@ pub fn route(method: &str, path: &str) -> Result<Route, ApiError> {
         ["secrets"] => ("POST", Route::Deposit),
         ["secrets", id, "open"] => ("POST", Route::Open(id_segment(id)?)),
         ["secrets", id, "revoke"] => ("POST", Route::Revoke(id_segment(id)?)),
+        ["secrets", id, "chunks", n] => ("POST", Route::PutChunk(id_segment(id)?, index_segment(n)?)),
+        ["secrets", id, "chunks", n, "open"] => ("POST", Route::OpenChunk(id_segment(id)?, index_segment(n)?)),
         ["requests"] => ("POST", Route::PostRequest),
         ["requests", id] => ("GET", Route::FetchRequest(id_segment(id)?)),
         ["requests", id, "answer"] => ("POST", Route::AnswerRequest(id_segment(id)?)),
@@ -167,15 +197,22 @@ struct DepositDto {
     retention: RetentionDto,
     lifetime_seconds: u32,
     revocation_token: Option<String>,
+    chunks: Option<u16>,
 }
 
-/// A validated deposit command.
+/// A validated deposit command. With `chunks`, the payload is a file's
+/// sealed manifest and that many chunks follow.
 #[derive(Debug)]
 pub struct DepositCommand {
     pub payload: SealedPayload,
     pub retention: Retention,
     pub lifetime: Lifetime,
     pub revocation: Option<RevocationToken>,
+    pub chunks: Option<ChunkCount>,
+}
+
+fn chunk_count(chunks: Option<u16>) -> Result<Option<ChunkCount>, ApiError> {
+    Ok(chunks.map(ChunkCount::new).transpose()?)
 }
 
 pub fn parse_deposit(body: &[u8]) -> Result<DepositCommand, ApiError> {
@@ -188,7 +225,28 @@ pub fn parse_deposit(body: &[u8]) -> Result<DepositCommand, ApiError> {
             .revocation_token
             .map(|t| Ok::<_, ApiError>(RevocationToken::from_slice(&decode(&t)?)?))
             .transpose()?,
+        chunks: chunk_count(dto.chunks)?,
     })
+}
+
+/// A raw chunk body, checked against the chunk bounds.
+pub fn parse_chunk(body: &[u8]) -> Result<SealedChunk, ApiError> {
+    if body.len() > MAX_CHUNK_LEN {
+        return Err(ApiError::BodyTooLarge);
+    }
+    Ok(SealedChunk::new(body.to_vec())?)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenChunkDto {
+    claim: Option<String>,
+}
+
+/// The claim token a burn-after-reading file's chunks need, if any.
+pub fn parse_open_chunk(body: &[u8]) -> Result<Option<ClaimToken>, ApiError> {
+    let dto: OpenChunkDto = parse(body)?;
+    dto.claim.map(|c| Ok(ClaimToken::from_slice(&decode(&c)?)?)).transpose()
 }
 
 #[derive(Debug, Deserialize)]
@@ -230,6 +288,7 @@ struct AnswerDto {
     payload: String,
     retention: RetentionDto,
     lifetime_seconds: u32,
+    chunks: Option<u16>,
 }
 
 pub fn parse_answer(body: &[u8]) -> Result<Answer, ApiError> {
@@ -238,6 +297,7 @@ pub fn parse_answer(body: &[u8]) -> Result<Answer, ApiError> {
         payload: SealedPayload::new(decode(&dto.payload)?)?,
         retention: dto.retention.into(),
         lifetime: Lifetime::from_seconds(dto.lifetime_seconds)?,
+        chunks: chunk_count(dto.chunks)?,
     })
 }
 
@@ -248,6 +308,8 @@ pub enum Command {
     Deposit(DepositCommand),
     Open(DropId),
     Revoke(DropId, RevocationToken),
+    PutChunk(DropId, ChunkIndex, SealedChunk),
+    OpenChunk(DropId, ChunkIndex, Option<ClaimToken>),
     PostRequest(RequestCommand),
     FetchRequest(DropId),
     AnswerRequest(DropId, Answer),
@@ -258,6 +320,8 @@ pub fn command(route: Route, body: &[u8]) -> Result<Command, ApiError> {
         Route::Deposit => Command::Deposit(parse_deposit(body)?),
         Route::Open(id) => Command::Open(id),
         Route::Revoke(id) => Command::Revoke(id, parse_revoke(body)?),
+        Route::PutChunk(id, index) => Command::PutChunk(id, index, parse_chunk(body)?),
+        Route::OpenChunk(id, index) => Command::OpenChunk(id, index, parse_open_chunk(body)?),
         Route::PostRequest => Command::PostRequest(parse_request(body)?),
         Route::FetchRequest(id) => Command::FetchRequest(id),
         Route::AnswerRequest(id) => Command::AnswerRequest(id, parse_answer(body)?),
@@ -307,11 +371,22 @@ pub fn expires_body(expires: UnixTime) -> String {
 struct OpenedDto {
     payload: String,
     burned: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chunks: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    claim: Option<String>,
 }
 
+/// A text secret keeps the original shape; a file adds its chunk count and,
+/// when burning, the claim that only this response carries.
 pub fn opened_body(opened: custody::Opened) -> String {
-    serde_json::to_string(&OpenedDto { payload: encode(opened.payload.as_bytes()), burned: opened.burned })
-        .expect("serializable")
+    serde_json::to_string(&OpenedDto {
+        payload: encode(opened.payload.as_bytes()),
+        burned: opened.burned,
+        chunks: opened.chunks.map(|c| c.get()),
+        claim: opened.claim.as_ref().map(|c| encode(c.expose())),
+    })
+    .expect("serializable")
 }
 
 #[derive(Debug, Serialize)]
@@ -352,6 +427,45 @@ mod tests {
         assert_eq!(route("POST", "/api/requests"), Ok(Route::PostRequest));
         assert_eq!(route("GET", &format!("/api/requests/{ID}")), Ok(Route::FetchRequest(id)));
         assert_eq!(route("POST", &format!("/api/requests/{ID}/answer")), Ok(Route::AnswerRequest(id)));
+        let nine = ChunkIndex::new(9).unwrap();
+        assert_eq!(route("POST", &format!("/api/secrets/{ID}/chunks/9")), Ok(Route::PutChunk(id, nine)));
+        assert_eq!(route("POST", &format!("/api/secrets/{ID}/chunks/9/open")), Ok(Route::OpenChunk(id, nine)));
+    }
+
+    #[test]
+    fn file_deposits_and_answers_carry_a_chunk_count() {
+        let cmd = parse_deposit(deposit_json(r#","chunks":10"#).as_bytes()).unwrap();
+        assert_eq!(cmd.chunks, Some(ChunkCount::new(10).unwrap()));
+        assert!(parse_deposit(deposit_json("").as_bytes()).unwrap().chunks.is_none());
+        let answer = r#"{"payload":"U0dZAQ","retention":"until_expiry","lifetime_seconds":300,"chunks":2}"#;
+        assert_eq!(parse_answer(answer.as_bytes()).unwrap().chunks, Some(ChunkCount::new(2).unwrap()));
+    }
+
+    #[test]
+    fn chunks_travel_raw_and_claims_in_json() {
+        assert_eq!(parse_chunk(&[7; MAX_CHUNK_LEN]).unwrap().as_bytes().len(), MAX_CHUNK_LEN);
+        assert_eq!(parse_open_chunk(b"{}"), Ok(None));
+        let claim = format!(r#"{{"claim":"{}"}}"#, encode(&[3; 32]));
+        assert_eq!(parse_open_chunk(claim.as_bytes()).unwrap().unwrap().expose(), &[3; 32]);
+        let id = id_segment(ID).unwrap();
+        let index = ChunkIndex::new(0).unwrap();
+        assert_eq!(Route::PutChunk(id, index).max_body_len(), MAX_CHUNK_LEN);
+        assert_eq!(Route::OpenChunk(id, index).max_body_len(), MAX_BODY_LEN);
+    }
+
+    #[test]
+    fn opened_bodies_add_chunks_and_claim_only_for_files() {
+        let payload = SealedPayload::new(b"SGY\x01".to_vec()).unwrap();
+        let text = custody::Opened { payload: payload.clone(), burned: true, chunks: None, claim: None };
+        assert_eq!(opened_body(text), r#"{"payload":"U0dZAQ","burned":true}"#);
+        let file = custody::Opened {
+            payload,
+            burned: true,
+            chunks: Some(ChunkCount::new(3).unwrap()),
+            claim: Some(ClaimToken::from_array([0; 32])),
+        };
+        let claim = encode(&[0; 32]);
+        assert_eq!(opened_body(file), format!(r#"{{"payload":"U0dZAQ","burned":true,"chunks":3,"claim":"{claim}"}}"#));
     }
 
     #[test]
@@ -408,8 +522,9 @@ mod tests {
         assert_eq!(ApiError::Custody(CustodyError::LifetimeOutOfRange).status(), 400);
         assert_eq!(ApiError::Custody(CustodyError::VaultUnavailable).status(), 503);
         assert_eq!(ApiError::Custody(CustodyError::RandomnessUnavailable).status(), 503);
-        assert_eq!(ApiError::Custody(CustodyError::CustodyFull).status(), 507);
-        assert_eq!(ApiError::Custody(CustodyError::CustodyFull).body(), r#"{"error":"CustodyFull"}"#);
+        assert_eq!(ApiError::Custody(CustodyError::StorageFull).status(), 507);
+        assert_eq!(ApiError::Custody(CustodyError::StorageFull).body(), r#"{"error":"StorageFull"}"#);
+        assert_eq!(ApiError::Custody(CustodyError::InvalidChunk).status(), 400);
         assert_eq!(ApiError::Custody(CustodyError::NotFound).body(), r#"{"error":"NotFound"}"#);
     }
 
@@ -421,6 +536,8 @@ mod tests {
             // A link preview bot issues GET/HEAD: it must never reach `open`.
             for method in ["GET", "HEAD", "OPTIONS", "PUT"] {
                 assert_eq!(route(method, &format!("/api/secrets/{ID}/open")), Err(ApiError::MethodNotAllowed));
+                let chunk = format!("/api/secrets/{ID}/chunks/0/open");
+                assert_eq!(route(method, &chunk), Err(ApiError::MethodNotAllowed));
             }
         }
 
@@ -435,6 +552,16 @@ mod tests {
                 "/api/secrets/not*base64/open",
                 "/secrets",
                 "/api//secrets",
+                &format!("/api/secrets/{ID}/chunks"),
+                &format!("/api/secrets/{ID}/chunks/10"),
+                &format!("/api/secrets/{ID}/chunks/01"),
+                &format!("/api/secrets/{ID}/chunks/+1"),
+                &format!("/api/secrets/{ID}/chunks/-0"),
+                &format!("/api/secrets/{ID}/chunks/1%30"),
+                &format!("/api/secrets/{ID}/chunks/65536"),
+                &format!("/api/secrets/{ID}/chunks/18446744073709551617/open"),
+                &format!("/api/secrets/{ID}/chunks//open"),
+                &format!("/api/secrets/{ID}/chunks/0/revoke"),
             ] {
                 assert_eq!(route("POST", path), Err(ApiError::NotFound), "{path}");
             }
@@ -488,12 +615,35 @@ mod tests {
 
         #[test]
         fn a_declared_oversized_body_is_refused_before_it_is_read() {
-            assert_eq!(check_declared_length(Some("104857600")), Err(ApiError::BodyTooLarge));
-            assert_eq!(check_declared_length(Some(&(MAX_BODY_LEN + 1).to_string())), Err(ApiError::BodyTooLarge));
-            assert_eq!(check_declared_length(Some(&MAX_BODY_LEN.to_string())), Ok(()));
+            let json = Route::Deposit;
+            assert_eq!(check_declared_length(&json, Some("104857600")), Err(ApiError::BodyTooLarge));
+            let over = (MAX_BODY_LEN + 1).to_string();
+            assert_eq!(check_declared_length(&json, Some(&over)), Err(ApiError::BodyTooLarge));
+            assert_eq!(check_declared_length(&json, Some(&MAX_BODY_LEN.to_string())), Ok(()));
             // Missing or odd headers fall through to the check on the bytes actually read.
-            assert_eq!(check_declared_length(None), Ok(()));
-            assert_eq!(check_declared_length(Some("lots")), Ok(()));
+            assert_eq!(check_declared_length(&json, None), Ok(()));
+            assert_eq!(check_declared_length(&json, Some("lots")), Ok(()));
+            // A chunk may be larger than a JSON body, but no larger than a chunk.
+            let chunk = Route::PutChunk(id_segment(ID).unwrap(), ChunkIndex::new(0).unwrap());
+            assert_eq!(check_declared_length(&chunk, Some(&MAX_CHUNK_LEN.to_string())), Ok(()));
+            let over = (MAX_CHUNK_LEN + 1).to_string();
+            assert_eq!(check_declared_length(&chunk, Some(&over)), Err(ApiError::BodyTooLarge));
+        }
+
+        #[test]
+        fn hostile_chunk_bodies_are_refused() {
+            assert_eq!(parse_chunk(&[]).unwrap_err(), ApiError::Custody(CustodyError::PayloadEmpty));
+            assert_eq!(parse_chunk(&vec![0; MAX_CHUNK_LEN + 1]).unwrap_err(), ApiError::BodyTooLarge);
+            let too_many = deposit_json(r#","chunks":11"#);
+            assert_eq!(parse_deposit(too_many.as_bytes()).unwrap_err(), ApiError::Custody(CustodyError::InvalidChunk));
+            let none = deposit_json(r#","chunks":0"#);
+            assert_eq!(parse_deposit(none.as_bytes()).unwrap_err(), ApiError::Custody(CustodyError::InvalidChunk));
+            let negative = deposit_json(r#","chunks":-1"#);
+            assert_eq!(parse_deposit(negative.as_bytes()).unwrap_err(), ApiError::InvalidJson);
+            let short = r#"{"claim":"AAEC"}"#;
+            assert_eq!(parse_open_chunk(short.as_bytes()).unwrap_err(), ApiError::Custody(CustodyError::InvalidToken));
+            let extra = r#"{"claim":null,"index":3}"#;
+            assert_eq!(parse_open_chunk(extra.as_bytes()).unwrap_err(), ApiError::InvalidJson);
         }
 
         #[test]

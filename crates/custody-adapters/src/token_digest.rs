@@ -1,14 +1,18 @@
-use custody::{RevocationDigest, RevocationToken, TokenDigest};
+use custody::{ClaimDigest, ClaimToken, RevocationDigest, RevocationToken, TokenDigest};
 use sha2::{Digest, Sha256};
 
-/// SHA-256 of the 256-bit revocation token. The token is uniformly random,
-/// so a plain hash is enough: there is nothing to brute-force.
+/// SHA-256 of the 256-bit revocation and claim tokens. The tokens are
+/// uniformly random, so a plain hash is enough: there is nothing to brute-force.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Sha256TokenDigest;
 
 impl TokenDigest for Sha256TokenDigest {
     fn digest(&self, token: &RevocationToken) -> RevocationDigest {
         RevocationDigest::from_array(Sha256::digest(token.expose()).into())
+    }
+
+    fn digest_claim(&self, claim: &ClaimToken) -> ClaimDigest {
+        ClaimDigest::from_array(Sha256::digest(claim.expose()).into())
     }
 }
 
@@ -23,5 +27,7 @@ mod tests {
         let expected = "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925";
         let hex: String = Sha256TokenDigest.digest(&token).as_bytes().iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(hex, expected);
+        let claim = ClaimToken::from_array([0; 32]);
+        assert_eq!(Sha256TokenDigest.digest_claim(&claim).as_bytes(), Sha256TokenDigest.digest(&token).as_bytes());
     }
 }
