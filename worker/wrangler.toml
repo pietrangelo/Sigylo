@@ -17,9 +17,11 @@ directory = "../web/dist"
 run_worker_first = ["/api/*"]
 not_found_handling = "single-page-application"
 
-# PostgreSQL (Supabase) through Hyperdrive. Create it with:
-#   npx wrangler hyperdrive create sigylo-db --connection-string="postgres://sigylo_relay:<password>@<host>:5432/postgres"
-# then paste its id here. The local connection string is used by `wrangler dev`.
+# PostgreSQL (Supabase) through Hyperdrive. Create it with caching disabled:
+#   npx wrangler hyperdrive create sigylo-db --caching-disabled --connection-string="postgres://sigylo_relay:<password>@<host>:5432/postgres"
+# then paste its id here. A cached `custody.open` would hand out a burned,
+# revoked or expired secret again (CLAUDE.md §4). The local connection string
+# is used by `wrangler dev`.
 [[hyperdrive]]
 binding = "DB"
 id = "00000000000000000000000000000000"
