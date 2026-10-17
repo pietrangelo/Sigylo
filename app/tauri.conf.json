@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Sigylo",
+  "version": "0.1.0",
+  "identifier": "net.sigylo.app",
+  "build": {
+    "frontendDist": "../web/dist-app"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; connect-src 'self' ipc: http://ipc.localhost; base-uri 'none'; form-action 'none'",
+      "freezePrototype": true,
+      "capabilities": ["main"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Utility",
+    "shortDescription": "Il sigillo digitale per i tuoi segreti",
+    "longDescription": "Condividi password, chiavi e codici: il segreto viene sigillato sul tuo dispositivo e il server custodisce solo dati illeggibili.",
+    "copyright": "Pietrangelo Masala",
+    "license": "Apache-2.0",
+    "licenseFile": "../LICENSE",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
+  }
+}

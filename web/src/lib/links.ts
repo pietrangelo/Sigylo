@@ -76,3 +76,22 @@ export function requestLink(origin: string, id: Uint8Array, fingerprint: Uint8Ar
 export function inboxLink(origin: string, id: Uint8Array, seed: Uint8Array): string {
   return link(origin, 'k', encode(id), encode(seed));
 }
+
+const SITE = 'https://sigylo.net';
+
+/**
+ * The fragment of a Sigylo link pasted into the app, or null. Only links of
+ * the public site that carry a secret, a request or an inbox are accepted:
+ * the app never follows a pasted address anywhere else.
+ */
+export function linkFragment(text: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(text.trim());
+  } catch {
+    return null;
+  }
+  if (url.origin !== SITE || url.username !== '' || url.password !== '' || url.pathname !== '/' || url.search !== '') return null;
+  const kind = parseFragment(url.hash).kind;
+  return kind === 'secret' || kind === 'revoke' || kind === 'answer' || kind === 'inbox' ? url.hash : null;
+}

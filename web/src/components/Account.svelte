@@ -5,10 +5,11 @@
   import { t } from '../lib/i18n';
   import { removeSeal, type Seal } from '../lib/keyring';
   import { accountMessage, formatExpiry, relayMessage } from '../lib/messages';
+  import { relayFetch } from '../lib/platform';
   import { Relay } from '../lib/relay';
   import { currentSession, signedIn } from '../lib/session.svelte';
 
-  const relay = new Relay();
+  const relay = new Relay(relayFetch);
   const accounts = new Accounts(engine, relay);
 
   let mode: 'signIn' | 'signUp' = $state('signIn');

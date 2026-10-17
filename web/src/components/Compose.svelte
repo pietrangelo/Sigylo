@@ -8,10 +8,11 @@
   import { encode } from '../lib/base64url';
   import { addSeal } from '../lib/keyring';
   import { currentSession } from '../lib/session.svelte';
+  import { linkOrigin, relayFetch } from '../lib/platform';
   import LinkBox from './LinkBox.svelte';
   import SealOptions from './SealOptions.svelte';
 
-  const relay = new Relay();
+  const relay = new Relay(relayFetch);
   let tab: 'send' | 'receive' = $state('send');
   let secret = $state('');
   let retention: Retention = $state('burn_after_reading');
@@ -40,8 +41,8 @@
         return;
       }
       sent = {
-        link: secretLink(location.origin, result.value.id, key, pass !== undefined),
-        revoke: revokeLink(location.origin, result.value.id, token),
+        link: secretLink(linkOrigin, result.value.id, key, pass !== undefined),
+        revoke: revokeLink(linkOrigin, result.value.id, token),
         expires: result.value.expiresAt,
         saved: null,
       };
@@ -81,8 +82,8 @@
         return;
       }
       requested = {
-        request: requestLink(location.origin, result.value.id, fingerprint),
-        inbox: inboxLink(location.origin, result.value.id, seed),
+        request: requestLink(linkOrigin, result.value.id, fingerprint),
+        inbox: inboxLink(linkOrigin, result.value.id, seed),
         expires: result.value.expiresAt,
       };
     } catch (e) {
