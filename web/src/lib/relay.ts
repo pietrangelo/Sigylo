@@ -131,13 +131,13 @@ export class Relay {
     });
   }
 
-  answer(id: Uint8Array, envelope: Uint8Array, retention: Retention, lifetimeSeconds: number, chunks?: number): Promise<Result<number>> {
+  answer(id: Uint8Array, envelope: Uint8Array, retention: Retention, lifetimeSeconds: number, chunks?: number): Promise<Result<Receipt>> {
     return this.call('POST', `/requests/${encode(id)}/answer`, {
       payload: encode(envelope),
       retention,
       lifetime_seconds: lifetimeSeconds,
       ...(chunks === undefined ? {} : { chunks }),
-    }, readExpires);
+    }, readReceipt);
   }
 }
 
@@ -154,9 +154,4 @@ function readRequestReceipt(json: unknown): RequestReceipt | null {
   // An inbox equal to the public id would let the request link reach the answer.
   if (receipt === null || inbox === null || encode(inbox) === encode(receipt.id)) return null;
   return { id: receipt.id, inbox, expiresAt: receipt.expiresAt };
-}
-
-function readExpires(json: unknown): number | null {
-  const expires = (json as { expires_at?: unknown } | null)?.expires_at;
-  return typeof expires === 'number' ? expires : null;
 }

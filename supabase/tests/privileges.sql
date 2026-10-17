@@ -10,6 +10,10 @@ begin
         'relay must be able to post a request with its inbox';
     assert not has_function_privilege('public', 'custody.post_request(bytea, bytea, bytea, integer)', 'execute'),
         'PUBLIC must not post requests';
+    assert has_function_privilege('sigylo_relay', 'custody.answer_into_inbox(bytea, bytea, boolean, integer, smallint)', 'execute'),
+        'relay must be able to answer into the inbox';
+    assert not has_function_privilege('public', 'custody.answer_into_inbox(bytea, bytea, boolean, integer, smallint)', 'execute'),
+        'PUBLIC must not answer requests';
     assert has_function_privilege('sigylo_relay', 'custody.open(bytea, bytea)', 'execute')
         and has_function_privilege('sigylo_relay', 'custody.put_chunk(bytea, smallint, bytea, integer)', 'execute')
         and has_function_privilege('sigylo_relay', 'custody.open_chunk(bytea, smallint, bytea)', 'execute')

@@ -2,7 +2,7 @@
 
 use crate::core::{
     ChunkIndex, ChunkRef, ClaimDigest, ClaimToken, CustodyError, Deposit, DropId, ObjectName, Opened, PostedRequest,
-    Request, RevocationDigest, RevocationToken, SealedChunk, UnixTime,
+    Receipt, Request, RevocationDigest, RevocationToken, SealedChunk, UnixTime,
 };
 
 /// Durable, blind storage of deposits and requests.
@@ -79,9 +79,9 @@ pub trait Vault {
     async fn fetch_request(&self, id: &DropId) -> Result<Option<PostedRequest>, CustodyError>;
 
     /// Atomically consumes the live request `answer.id` and stores `answer`
-    /// under that request's inbox id.
+    /// under that request's inbox id, which the receipt names.
     /// `None` when there was no live request to answer.
-    async fn answer_request(&self, answer: &Deposit) -> Result<Option<UnixTime>, CustodyError>;
+    async fn answer_request(&self, answer: &Deposit) -> Result<Option<Receipt>, CustodyError>;
 
     /// Physically removes everything expired. Returns how many rows went.
     async fn purge_expired(&self) -> Result<u64, CustodyError>;

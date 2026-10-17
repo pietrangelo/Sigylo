@@ -13,7 +13,7 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use custody::{
     Answer, ChunkCount, ChunkIndex, ClaimToken, CustodyError, DropId, Lifetime, MAX_CHUNK_LEN, Receipt,
-    RecipientKeyBlob, RequestReceipt, Retention, RevocationToken, SealedChunk, SealedPayload, UnixTime,
+    RecipientKeyBlob, RequestReceipt, Retention, RevocationToken, SealedChunk, SealedPayload,
 };
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
@@ -359,15 +359,6 @@ pub fn request_receipt_body(receipt: RequestReceipt) -> String {
 }
 
 #[derive(Debug, Serialize)]
-struct ExpiresDto {
-    expires_at: i64,
-}
-
-pub fn expires_body(expires: UnixTime) -> String {
-    serde_json::to_string(&ExpiresDto { expires_at: expires.0 }).expect("serializable")
-}
-
-#[derive(Debug, Serialize)]
 struct OpenedDto {
     payload: String,
     burned: bool,
@@ -406,6 +397,7 @@ pub fn posted_request_body(posted: custody::PostedRequest) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use custody::UnixTime;
 
     const ID: &str = "AAECAwQFBgcICQoLDA0ODw"; // bytes 0..16
 

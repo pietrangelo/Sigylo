@@ -81,7 +81,8 @@
       }
       if (chunks !== undefined) {
         uploading = true;
-        const uploaded = await uploadChunks(relay, id, chunks);
+        // To the inbox the relay just named: the public request id takes no chunks.
+        const uploaded = await uploadChunks(relay, result.value.id, chunks);
         if (!uploaded.ok) {
           error = relayMessage(uploaded.error);
           return;

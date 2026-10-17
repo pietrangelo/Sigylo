@@ -44,10 +44,19 @@ describe('relay client', () => {
     const calls: Call[] = [];
     await fakeRelay(201, { id: encode(id), expires_at: 42 }, calls).deposit(Uint8Array.of(1, 2), 'until_expiry', 300, new Uint8Array(32), 3);
     expect(JSON.parse(calls[0]!.init.body as string)).toMatchObject({ payload: 'AQI', chunks: 3 });
-    await fakeRelay(201, { expires_at: 42 }, calls).answer(id, Uint8Array.of(1), 'until_expiry', 300, 2);
+    await fakeRelay(201, { id: encode(inbox), expires_at: 42 }, calls).answer(id, Uint8Array.of(1), 'until_expiry', 300, 2);
     expect(JSON.parse(calls[1]!.init.body as string)).toMatchObject({ chunks: 2 });
-    await fakeRelay(201, { expires_at: 42 }, calls).answer(id, Uint8Array.of(1), 'until_expiry', 300);
+    await fakeRelay(201, { id: encode(inbox), expires_at: 42 }, calls).answer(id, Uint8Array.of(1), 'until_expiry', 300);
     expect(JSON.parse(calls[2]!.init.body as string)).not.toHaveProperty('chunks');
+  });
+
+  it('learns from an answer where its chunks go, and refuses a receipt without that', async () => {
+    // The sender uploads a file answer's chunks to the inbox, never to the public request id.
+    const answered = await fakeRelay(201, { id: encode(inbox), expires_at: 42 }).answer(id, Uint8Array.of(1), 'until_expiry', 300, 2);
+    expect(answered).toEqual({ ok: true, value: { id: inbox, expiresAt: 42 } });
+    for (const body of [{ expires_at: 42 }, { id: 'AAEC', expires_at: 42 }]) {
+      expect(await fakeRelay(201, body).answer(id, Uint8Array.of(1), 'until_expiry', 300)).toEqual({ ok: false, error: 'Unexpected' });
+    }
   });
 
   it('decodes an opened file with its chunk count and claim', async () => {
