@@ -56,6 +56,12 @@ impl Route {
             _ => MAX_BODY_LEN,
         }
     }
+
+    /// Whether the route reads a request body at all. The others never read
+    /// one, so nothing a client sends with them is buffered.
+    pub fn takes_body(&self) -> bool {
+        !matches!(self, Self::Open(_) | Self::FetchRequest(_) | Self::Logout | Self::ReadKeyring | Self::CloseAccount)
+    }
 }
 
 /// Why a request was refused before reaching the domain.
@@ -65,6 +71,8 @@ pub enum ApiError {
     MethodNotAllowed,
     /// A browser page of another origin tried to call the relay.
     CrossOrigin,
+    /// A body came without a `Content-Length` to check before reading it.
+    LengthRequired,
     BodyTooLarge,
     InvalidJson,
     InvalidEncoding,
@@ -90,6 +98,7 @@ impl ApiError {
             Self::NotFound | Self::Custody(CustodyError::NotFound) => 404,
             Self::MethodNotAllowed => 405,
             Self::CrossOrigin => 403,
+            Self::LengthRequired => 411,
             Self::BodyTooLarge | Self::Custody(CustodyError::PayloadTooLarge) => 413,
             Self::Custody(CustodyError::AlreadyExists) => 409,
             Self::Custody(CustodyError::VaultUnavailable | CustodyError::RandomnessUnavailable) => 503,
@@ -123,12 +132,16 @@ impl ApiError {
     }
 }
 
-/// Refuse a body whose declared length is already too large for its route,
-/// before reading it.
+/// Refuse a body before reading it unless it declares its length, in plain
+/// decimal, and that length fits its route. Without the header (chunked
+/// encoding) the Worker would buffer whatever came, up to Cloudflare's 100 MB.
 pub fn check_declared_length(route: &Route, content_length: Option<&str>) -> Result<(), ApiError> {
-    match content_length.map(|v| v.trim().parse::<u64>()) {
-        Some(Ok(n)) if n > route.max_body_len() as u64 => Err(ApiError::BodyTooLarge),
-        _ => Ok(()),
+    let declared = content_length.map(str::trim).filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()));
+    match declared.map(str::parse::<u64>) {
+        Some(Ok(n)) if n <= route.max_body_len() as u64 => Ok(()),
+        // All digits but past u64: too large in any case.
+        Some(_) => Err(ApiError::BodyTooLarge),
+        None => Err(ApiError::LengthRequired),
     }
 }
 
@@ -891,14 +904,37 @@ mod tests {
             let over = (MAX_BODY_LEN + 1).to_string();
             assert_eq!(check_declared_length(&json, Some(&over)), Err(ApiError::BodyTooLarge));
             assert_eq!(check_declared_length(&json, Some(&MAX_BODY_LEN.to_string())), Ok(()));
-            // Missing or odd headers fall through to the check on the bytes actually read.
-            assert_eq!(check_declared_length(&json, None), Ok(()));
-            assert_eq!(check_declared_length(&json, Some("lots")), Ok(()));
             // A chunk may be larger than a JSON body, but no larger than a chunk.
             let chunk = Route::PutChunk(id_segment(ID).unwrap(), ChunkIndex::new(0).unwrap());
             assert_eq!(check_declared_length(&chunk, Some(&MAX_CHUNK_LEN.to_string())), Ok(()));
             let over = (MAX_CHUNK_LEN + 1).to_string();
             assert_eq!(check_declared_length(&chunk, Some(&over)), Err(ApiError::BodyTooLarge));
+        }
+
+        #[test]
+        fn a_body_of_undeclared_length_is_refused_before_it_is_read() {
+            // Chunked encoding would otherwise have the Worker buffer up to
+            // Cloudflare's 100 MB limit before any size check.
+            let id = id_segment(ID).unwrap();
+            let chunk = Route::PutChunk(id, ChunkIndex::new(0).unwrap());
+            for route in [Route::Deposit, chunk, Route::OpenChunk(id, ChunkIndex::new(0).unwrap()), Route::LoginStart] {
+                assert!(route.takes_body(), "{route:?}");
+                for header in [None, Some(""), Some("lots"), Some("-1"), Some("1e3")] {
+                    assert_eq!(check_declared_length(&route, header), Err(ApiError::LengthRequired), "{header:?}");
+                }
+            }
+            assert_eq!(ApiError::LengthRequired.status(), 411);
+            assert_eq!(ApiError::LengthRequired.body(), r#"{"error":"LengthRequired"}"#);
+        }
+
+        #[test]
+        fn routes_without_a_body_never_read_one() {
+            let id = id_segment(ID).unwrap();
+            for route in
+                [Route::Open(id), Route::FetchRequest(id), Route::Logout, Route::ReadKeyring, Route::CloseAccount]
+            {
+                assert!(!route.takes_body(), "{route:?}");
+            }
         }
 
         #[test]
