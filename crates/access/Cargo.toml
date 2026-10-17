@@ -1,0 +1,17 @@
+[package]
+name = "access"
+description = "Access bounded context (pure domain): accounts with OPAQUE password login, sessions and the blind keyring"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+zeroize.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.rosette]
+role = "domain"

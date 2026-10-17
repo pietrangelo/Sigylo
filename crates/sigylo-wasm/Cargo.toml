@@ -1,6 +1,6 @@
 [package]
 name = "sigylo-wasm"
-description = "Browser shell: exposes the Sealing use cases, wired to the RustCrypto suite, to JavaScript"
+description = "Browser shell: exposes the Sealing use cases (RustCrypto suite) and the Access member use cases (OPAQUE) to JavaScript"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -17,6 +17,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 sealing.workspace = true
 sealing-adapters.workspace = true
+access.workspace = true
+access-adapters.workspace = true
 zeroize.workspace = true
 wasm-bindgen = "=0.2.129"
 js-sys = "0.3.106"

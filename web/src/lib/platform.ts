@@ -24,11 +24,15 @@ export function ipcFetch(invoke: Invoke): Fetch {
     if (raw === null || typeof raw === 'string') body = raw;
     else if (raw instanceof Uint8Array) body = encode(raw);
     else throw new TypeError('relay bodies are JSON text or a sealed chunk');
-    const reply = (await invoke('relay', { method: init.method ?? 'GET', path: input.slice(API.length - 1), body })) as {
-      status?: unknown;
-      body?: unknown;
-      binary?: unknown;
-    } | null;
+    const args: Record<string, unknown> = { method: init.method ?? 'GET', path: input.slice(API.length - 1), body };
+    const authorization = new Headers(init.headers).get('Authorization');
+    if (authorization !== null) {
+      // The shell checks the token itself; anything but our own bearer scheme is a bug.
+      const session = /^Bearer ([A-Za-z0-9_-]+)$/.exec(authorization)?.[1];
+      if (session === undefined) throw new TypeError('unexpected authorization');
+      args['session'] = session;
+    }
+    const reply = (await invoke('relay', args)) as { status?: unknown; body?: unknown; binary?: unknown } | null;
     const status = reply?.status;
     const binary = reply?.binary ?? false;
     if (typeof status !== 'number' || !Number.isInteger(status) || status < 200 || status > 599 || typeof reply?.body !== 'string' || typeof binary !== 'boolean') {
