@@ -26,6 +26,11 @@ describe('links', () => {
     expect(link.hash).toContain(encode(key));
   });
 
+  it('the terms of service and the privacy notice have their own pages', () => {
+    expect(parseFragment('#/terms')).toEqual({ kind: 'terms' });
+    expect(parseFragment('#/privacy')).toEqual({ kind: 'privacy' });
+  });
+
   it('an empty fragment is the compose page', () => {
     expect(parseFragment('')).toEqual({ kind: 'compose' });
     expect(parseFragment('#/')).toEqual({ kind: 'compose' });
@@ -45,6 +50,11 @@ describe('links', () => {
         `#s/${i}/${k}`,
         `#/s/${i}`,
         `#/s/${i}/${k}==`,
+        '#/terms/',
+        '#/terms/x',
+        '#/Terms',
+        '#terms',
+        '#/privacy/p',
       ]) {
         expect(parseFragment(bad).kind, bad).toBe('invalid');
       }

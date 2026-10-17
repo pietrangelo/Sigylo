@@ -1,0 +1,14 @@
+Sigylo
+Copyright 2026 DA COMPILARE: nome e cognome del titolare
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The name "Sigylo" and its logo identify the service at https://sigylo.net.
+The licence grants no permission to use them (section 6): a modified
+version must be distributed under another name.
+
+This product bundles third-party software, each under its own licence:
+the RustCrypto crates (MIT or Apache-2.0), wasm-bindgen (MIT or
+Apache-2.0), tokio-postgres (MIT or Apache-2.0), workers-rs (Apache-2.0)
+and Svelte (MIT). Their licence texts and copyright notices ship with
+their source packages, pinned in Cargo.lock and web/package-lock.json.

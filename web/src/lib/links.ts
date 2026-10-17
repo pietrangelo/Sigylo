@@ -7,6 +7,7 @@
 //   #/x/<id>/<token>     revoke a secret before it is read (sender only)
 //   #/r/<id>/<fpr>       answer a request: seal to the recipient's public key
 //   #/k/<id>/<seed>      the recipient's private link to read the answer
+//   #/terms, #/privacy   the terms of service and the privacy notice
 
 import { decodeExact, encode } from './base64url';
 
@@ -19,11 +20,15 @@ export type Route =
   | { kind: 'revoke'; id: Uint8Array; token: Uint8Array }
   | { kind: 'answer'; id: Uint8Array; fingerprint: Uint8Array }
   | { kind: 'inbox'; id: Uint8Array; seed: Uint8Array }
+  | { kind: 'terms' }
+  | { kind: 'privacy' }
   | { kind: 'invalid' };
 
 export function parseFragment(fragment: string): Route {
   const path = fragment.replace(/^#/, '');
   if (path === '' || path === '/') return { kind: 'compose' };
+  if (path === '/terms') return { kind: 'terms' };
+  if (path === '/privacy') return { kind: 'privacy' };
   const parts = path.split('/');
   if (parts[0] !== '') return { kind: 'invalid' };
   const [, kind, idText, secretText, flag, ...rest] = parts;
