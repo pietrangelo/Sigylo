@@ -266,6 +266,72 @@ mod adversary {
         assert!(bad_id.is_err(), "5-byte id accepted");
     }
 
+    /// Runs `body` with the custody capacity set to what is stored now plus
+    /// `headroom` bytes, then puts the real capacity back.
+    async fn with_capacity<F: std::future::Future<Output = ()>>(admin: &Client, headroom: i64, body: F) {
+        let original: String = admin
+            .query_one("select pg_get_functiondef('custody.capacity_bytes()'::regprocedure)", &[])
+            .await
+            .unwrap()
+            .get(0);
+        // Expired rows left by other tests would otherwise be purged mid-test and free room.
+        admin.execute("select custody.purge_expired()", &[]).await.unwrap();
+        let used: i64 = admin.query_one("select custody.used_bytes()", &[]).await.unwrap().get(0);
+        let tight = format!(
+            "create or replace function custody.capacity_bytes() returns bigint language plpgsql stable \
+             set search_path = '' as $$ begin return {}; end $$",
+            used + headroom
+        );
+        admin.batch_execute(&tight).await.unwrap();
+        body.await;
+        admin.batch_execute(&original).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_full_custody_refuses_new_seals_but_still_opens_old_ones() {
+        // The free database is 500 MB: past that it turns read-only and nothing
+        // works. A flood of deposits must hit our own ceiling first.
+        databases!(relay, admin);
+        let custodian = custodian(&relay);
+        let old = custodian.deposit(payload(), Retention::UntilExpiry, Lifetime::ONE_DAY, None).await.unwrap().id;
+        let request = custodian.post_request(recipient_key(), Lifetime::ONE_DAY).await.unwrap();
+        with_capacity(&admin, 0, async {
+            let full = custodian.deposit(payload(), Retention::UntilExpiry, Lifetime::ONE_DAY, None).await;
+            assert_eq!(full, Err(CustodyError::CustodyFull));
+            assert_eq!(
+                custodian.post_request(recipient_key(), Lifetime::ONE_DAY).await,
+                Err(CustodyError::CustodyFull)
+            );
+            // Answering frees the request's key, so the answer must be larger than it to overflow.
+            let large = SealedPayload::new(vec![1; 4096]).unwrap();
+            let answer = Answer { payload: large, retention: Retention::UntilExpiry, lifetime: Lifetime::ONE_HOUR };
+            assert_eq!(custodian.answer_request(request.id, answer).await, Err(CustodyError::CustodyFull));
+            assert_eq!(custodian.open(&old).await.unwrap().payload, payload());
+        })
+        .await;
+        // The refused answer left the request untouched.
+        assert!(custodian.fetch_request(&request.id).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn room_comes_back_when_a_secret_is_burned_or_expires() {
+        databases!(relay, admin);
+        let custodian = custodian(&relay);
+        let size = payload().as_bytes().len() as i64;
+        with_capacity(&admin, size, async {
+            let first = custodian.deposit(payload(), Retention::BurnAfterReading, Lifetime::ONE_DAY, None).await;
+            let first = first.unwrap().id;
+            let second = custodian.deposit(payload(), Retention::BurnAfterReading, Lifetime::ONE_DAY, None).await;
+            assert_eq!(second, Err(CustodyError::CustodyFull));
+            custodian.open(&first).await.unwrap();
+            let third = custodian.deposit(payload(), Retention::UntilExpiry, Lifetime::ONE_DAY, None).await.unwrap();
+            // An expired row still on disk is cleared on the spot, not after the next purge.
+            expire(&admin, "deposits", &third.id).await;
+            assert!(custodian.deposit(payload(), Retention::UntilExpiry, Lifetime::ONE_DAY, None).await.is_ok());
+        })
+        .await;
+    }
+
     #[tokio::test]
     async fn the_relay_role_cannot_read_tables() {
         databases!(relay, _admin);

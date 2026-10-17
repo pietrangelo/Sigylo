@@ -18,7 +18,10 @@ use crate::core::{
 ///   atomic step, at most once;
 /// * ids are unique across deposits: a second deposit under a live id fails
 ///   with [`CustodyError::AlreadyExists`] (ids come from an [`IdSource`], so
-///   this only guards against a broken random source).
+///   this only guards against a broken random source);
+/// * storing (a deposit, a request or an answer) may fail with
+///   [`CustodyError::CustodyFull`] when the vault is out of room, and then
+///   changes nothing; reading never does.
 // Workers run on one thread, so the futures need not be `Send`.
 #[allow(async_fn_in_trait)]
 pub trait Vault {

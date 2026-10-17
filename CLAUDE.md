@@ -106,6 +106,7 @@ Tutto avviene sul dispositivo, in Rust compilato a Wasm. Le implementazioni sono
 * Il Worker si collega come `sigylo_relay`, che può **solo eseguire le funzioni**: nessun privilegio sulle tabelle, quindi una credenziale del relay rubata non può elencare o scaricare i segreti. Nessun altro ruolo, né `PUBLIC` né `anon`/`authenticated`/`service_role` di Supabase, ha privilegi nello schema `custody` (verificato sulle ACL dai test, con i ruoli Supabase ricreati). RLS attiva e forzata.
 * Disattivati per scelta: Supabase Auth, supabase-js nel browser, Vault/pgsodium (la crittografia non avviene mai nel database), PostgREST sullo schema `custody`.
 * Un cron ogni 15 minuti (`purge_expired`) cancella fisicamente ciò che è scaduto.
+* **Tetto della custodia:** il database gratuito si ferma a 500 MB e poi passa in sola lettura (niente si apre più). `custody.ensure_room` rifiuta ogni nuovo deposito, richiesta o risposta oltre `custody.capacity_bytes()` (300 MB di byte custoditi, contati con `custody.used_bytes()`, non dai file su disco che non si restringono) con SQLSTATE `53100`, che il relay restituisce come `507 CustodyFull`. Prima di rifiutare cancella subito ciò che è scaduto; aprire, revocare e pulire funzionano sempre. Ogni nuova tabella che custodisce byte va contata in `used_bytes`.
 
 ## 5. CLIENT WEB E INTEGRITÀ DEL CODICE
 

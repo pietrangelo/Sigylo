@@ -43,6 +43,7 @@ describe('relay client', () => {
   it('maps relay error codes', async () => {
     expect(await fakeRelay(404, { error: 'NotFound' }).open(id)).toEqual({ ok: false, error: 'NotFound' });
     expect(await fakeRelay(429, { error: 'RateLimited' }).open(id)).toEqual({ ok: false, error: 'RateLimited' });
+    expect(await fakeRelay(507, { error: 'CustodyFull' }).postRequest(id, 300)).toEqual({ ok: false, error: 'CustodyFull' });
   });
 
   describe('adversary', () => {
