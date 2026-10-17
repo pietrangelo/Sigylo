@@ -66,9 +66,9 @@ mod runtime {
 
     async fn rate_limited(env: &Env, req: &Request) -> bool {
         // The client address is used in memory for throttling and never stored.
-        let Ok(limiter) = env.rate_limiter("WRITE_LIMITER") else { return false };
-        let key = req.headers().get("CF-Connecting-IP").ok().flatten().unwrap_or_default();
-        limiter.limit(key).await.map(|o| !o.success).unwrap_or(false)
+        let Ok(limiter) = env.rate_limiter("API_LIMITER") else { return false };
+        let address = req.headers().get("CF-Connecting-IP").ok().flatten().unwrap_or_default();
+        limiter.limit(api::limiter_key(&address)).await.map(|o| !o.success).unwrap_or(false)
     }
 
     async fn execute(command: Command, env: &Env) -> std::result::Result<(u16, String), ApiError> {
@@ -100,7 +100,12 @@ mod runtime {
             Ok(route) => route,
             Err(error) => return fail(error),
         };
-        if req.method() == Method::Post && rate_limited(&env, &req).await {
+        let own_origin = req.url()?.origin().ascii_serialization();
+        if let Err(error) = api::check_origin(req.headers().get("Origin")?.as_deref(), &own_origin) {
+            return fail(error);
+        }
+        // Every call costs a database query, reads included: all of them are throttled.
+        if rate_limited(&env, &req).await {
             return respond(429, r#"{"error":"RateLimited"}"#.into());
         }
         let body = if req.method() == Method::Post {
