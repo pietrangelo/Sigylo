@@ -54,10 +54,12 @@
 </div>
 
 <style>
+  /* Only the sides and bottom: the top margin is the stack's rhythm. */
   fieldset {
     border: 0;
     padding: 0;
-    margin: 0;
+    margin-inline: 0;
+    margin-bottom: 0;
   }
 
   legend {
