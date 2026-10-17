@@ -1,0 +1,78 @@
+name: App release
+
+# Builds the installable app for Linux, macOS and Windows and attaches the
+# installers to a draft GitHub release. Runs only for a tag `app-v*` or by
+# hand, never for a pull request. The builds are not signed yet: signing
+# (Apple Developer ID, Windows code signing) needs the owner's accounts and
+# goes in through repository secrets.
+
+on:
+  push:
+    tags: ["app-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  WASM_BINDGEN_VERSION: 0.2.129
+  TAURI_CLI_VERSION: 2.12.3
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-22.04
+            args: ""
+          - name: macOS (Apple silicon)
+            os: macos-latest
+            args: --target aarch64-apple-darwin
+          - name: macOS (Intel)
+            os: macos-latest
+            args: --target x86_64-apple-darwin
+          - name: Windows
+            os: windows-latest
+            args: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: System webview (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'wasm32-unknown-unknown,aarch64-apple-darwin,x86_64-apple-darwin' || 'wasm32-unknown-unknown' }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            app -> target
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ env.WASM_BINDGEN_VERSION }}
+      - run: cargo install tauri-cli@${{ env.TAURI_CLI_VERSION }} --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci && npm run build:app
+        working-directory: web
+        shell: bash
+      - uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: app
+          tauriScript: cargo tauri
+          args: ${{ matrix.args }}
+          tagName: app-v__VERSION__
+          releaseName: Sigylo app __VERSION__
+          releaseBody: Installers of the Sigylo app, built from this tag by GitHub Actions. Not signed yet.
+          releaseDraft: true
+          prerelease: true

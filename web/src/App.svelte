@@ -7,6 +7,8 @@
   import Revoke from './components/Revoke.svelte';
   import Legal from './components/Legal.svelte';
   import Me from './components/Me.svelte';
+  import PasteLink from './components/PasteLink.svelte';
+  import { isApp, openLegal } from './lib/platform';
 
   let route: Route = $state(parseFragment(location.hash));
 
@@ -32,6 +34,7 @@
 
   {#key route}
     {#if route.kind === 'compose'}
+      {#if isApp}<PasteLink />{/if}
       <Compose />
     {:else if route.kind === 'secret'}
       <Opener mode="link" id={route.id} secret={route.key} expectsPassphrase={route.passphrase} />
@@ -52,11 +55,18 @@
 
   <footer class="muted small">
     <p>{t.footer}</p>
-    <!-- A new tab, so a secret link open in this one keeps its fragment. -->
+    <!-- A new tab, so a secret link open in this one keeps its fragment; in the app, the system browser. -->
     <nav>
-      <a href="#/terms" target="_blank" rel="noopener noreferrer" data-testid="terms-link">{t.termsLink}</a>
-      <a href="#/privacy" target="_blank" rel="noopener noreferrer" data-testid="privacy-link">{t.privacyLink}</a>
-      <a href="#/me" target="_blank" rel="noopener noreferrer" data-testid="me-link">{t.myCodeLink}</a>
+      {#if isApp}
+        <button class="link" onclick={() => openLegal('terms')}>{t.termsLink}</button>
+        <button class="link" onclick={() => openLegal('privacy')}>{t.privacyLink}</button>
+        <!-- The sender identity lives in the app's own storage, so its code is shown here. -->
+        <a href="#/me" data-testid="me-link">{t.myCodeLink}</a>
+      {:else}
+        <a href="#/terms" target="_blank" rel="noopener noreferrer" data-testid="terms-link">{t.termsLink}</a>
+        <a href="#/privacy" target="_blank" rel="noopener noreferrer" data-testid="privacy-link">{t.privacyLink}</a>
+        <a href="#/me" target="_blank" rel="noopener noreferrer" data-testid="me-link">{t.myCodeLink}</a>
+      {/if}
     </nav>
   </footer>
 </main>
@@ -118,7 +128,17 @@
     gap: var(--s4);
   }
 
-  footer a {
+  footer a,
+  footer .link {
     color: var(--muted);
+  }
+
+  footer .link {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
   }
 </style>
