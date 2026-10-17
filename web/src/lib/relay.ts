@@ -1,8 +1,10 @@
 // Client of the blind relay. It only ever sends envelopes that were sealed
 // on this device. Opening is a POST, never a GET, so link previews and
-// prefetchers cannot burn a secret.
+// prefetchers cannot burn a secret. Ids are chosen by the relay, never here:
+// a burned link can then never be refilled by whoever read it first.
 
-import { decode, encode } from './base64url';
+import { decode, decodeExact, encode } from './base64url';
+import { ID_LEN } from './links';
 
 export type Retention = 'burn_after_reading' | 'until_expiry';
 
@@ -16,6 +18,9 @@ export type RelayError =
   | 'Unexpected';
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: RelayError };
+
+/** Where the relay put a deposit or request, and until when. */
+export type Receipt = { id: Uint8Array; expiresAt: number };
 
 type Fetch = (input: string, init: RequestInit) => Promise<Response>;
 
@@ -48,14 +53,13 @@ export class Relay {
     return value === null ? { ok: false, error: 'Unexpected' } : { ok: true, value };
   }
 
-  deposit(id: Uint8Array, envelope: Uint8Array, retention: Retention, lifetimeSeconds: number, revocationToken: Uint8Array): Promise<Result<number>> {
+  deposit(envelope: Uint8Array, retention: Retention, lifetimeSeconds: number, revocationToken: Uint8Array): Promise<Result<Receipt>> {
     return this.call('POST', '/secrets', {
-      id: encode(id),
       payload: encode(envelope),
       retention,
       lifetime_seconds: lifetimeSeconds,
       revocation_token: encode(revocationToken),
-    }, readExpires);
+    }, readReceipt);
   }
 
   open(id: Uint8Array): Promise<Result<{ envelope: Uint8Array; burned: boolean }>> {
@@ -70,8 +74,8 @@ export class Relay {
     return this.call('POST', `/secrets/${encode(id)}/revoke`, { token: encode(token) }, () => true as const);
   }
 
-  postRequest(id: Uint8Array, publicKey: Uint8Array, lifetimeSeconds: number): Promise<Result<number>> {
-    return this.call('POST', '/requests', { id: encode(id), recipient_key: encode(publicKey), lifetime_seconds: lifetimeSeconds }, readExpires);
+  postRequest(publicKey: Uint8Array, lifetimeSeconds: number): Promise<Result<Receipt>> {
+    return this.call('POST', '/requests', { recipient_key: encode(publicKey), lifetime_seconds: lifetimeSeconds }, readReceipt);
   }
 
   fetchRequest(id: Uint8Array): Promise<Result<{ publicKey: Uint8Array; expiresAt: number }>> {
@@ -85,6 +89,12 @@ export class Relay {
   answer(id: Uint8Array, envelope: Uint8Array, retention: Retention, lifetimeSeconds: number): Promise<Result<number>> {
     return this.call('POST', `/requests/${encode(id)}/answer`, { payload: encode(envelope), retention, lifetime_seconds: lifetimeSeconds }, readExpires);
   }
+}
+
+function readReceipt(json: unknown): Receipt | null {
+  const j = json as { id?: unknown; expires_at?: unknown } | null;
+  const id = typeof j?.id === 'string' ? decodeExact(j.id, ID_LEN) : null;
+  return id !== null && typeof j?.expires_at === 'number' ? { id, expiresAt: j.expires_at } : null;
 }
 
 function readExpires(json: unknown): number | null {

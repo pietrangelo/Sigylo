@@ -26,19 +26,20 @@
       await loadEngine();
       const pass = passphraseBytes(passphrase);
       const sealed = engine.sealForLink(textBytes(secret), pass);
-      const id = engine.randomId();
+      const key = sealed.key;
+      const envelope = sealed.envelope;
+      sealed.free();
       const token = randomBytes(32);
-      const result = await relay.deposit(id, sealed.envelope, retention, lifetime, token);
+      const result = await relay.deposit(envelope, retention, lifetime, token);
       if (!result.ok) {
         error = relayMessage(result.error);
         return;
       }
       sent = {
-        link: secretLink(location.origin, id, sealed.key, pass !== undefined),
-        revoke: revokeLink(location.origin, id, token),
-        expires: result.value,
+        link: secretLink(location.origin, result.value.id, key, pass !== undefined),
+        revoke: revokeLink(location.origin, result.value.id, token),
+        expires: result.value.expiresAt,
       };
-      sealed.free();
       secret = '';
       passphrase = '';
     } catch (e) {
@@ -55,18 +56,20 @@
     try {
       await loadEngine();
       const recipient = engine.newRecipient();
-      const id = engine.randomId();
-      const result = await relay.postRequest(id, recipient.publicKey, lifetime);
+      const seed = recipient.seed;
+      const publicKey = recipient.publicKey;
+      const fingerprint = recipient.fingerprint;
+      recipient.free();
+      const result = await relay.postRequest(publicKey, lifetime);
       if (!result.ok) {
         error = relayMessage(result.error);
         return;
       }
       requested = {
-        request: requestLink(location.origin, id, recipient.fingerprint),
-        inbox: inboxLink(location.origin, id, recipient.seed),
-        expires: result.value,
+        request: requestLink(location.origin, result.value.id, fingerprint),
+        inbox: inboxLink(location.origin, result.value.id, seed),
+        expires: result.value.expiresAt,
       };
-      recipient.free();
     } catch (e) {
       error = sealMessage(errorCode(e));
     } finally {
