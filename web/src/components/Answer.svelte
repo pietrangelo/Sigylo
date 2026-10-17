@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { engine, errorCode, loadEngine, passphraseBytes, textBytes } from '../lib/crypto';
+  import { engine, errorCode, loadEngine, passphraseBytes, randomBytes, textBytes } from '../lib/crypto';
   import { t } from '../lib/i18n';
+  import { SEED_LEN, browserStore, loadOrCreateSeed } from '../lib/identity';
   import { relayMessage, sealMessage } from '../lib/messages';
   import { Relay, type Retention } from '../lib/relay';
   import SealOptions from './SealOptions.svelte';
@@ -15,6 +16,13 @@
   let busy = $state(false);
   let error = $state('');
   let done = $state(false);
+  // Every answer is signed with this browser's sender identity.
+  const senderSeed = loadOrCreateSeed(browserStore(), () => randomBytes(SEED_LEN));
+  let senderCode = $state('');
+
+  $effect(() => {
+    loadEngine().then(() => (senderCode = engine.senderCode(senderSeed.slice())));
+  });
 
   async function send(event: SubmitEvent) {
     event.preventDefault();
@@ -28,7 +36,7 @@
         return;
       }
       // Throws FingerprintMismatch if the relay served a substituted key.
-      const envelope = engine.sealForRecipient(textBytes(secret), request.value.publicKey, fingerprint, passphraseBytes(passphrase));
+      const envelope = engine.sealForRecipient(textBytes(secret), request.value.publicKey, fingerprint, passphraseBytes(passphrase), senderSeed.slice());
       const result = await relay.answer(id, envelope, retention, lifetime);
       if (!result.ok) {
         error = result.error === 'NotFound' ? t.requestGone : relayMessage(result.error);
@@ -47,6 +55,13 @@
 
 <section class="card stack">
   <h2>{t.answerTitle}</h2>
+  {#if senderCode}
+    <div class="sender">
+      <p class="small muted">{t.senderCodeLabel}</p>
+      <p class="code" data-testid="sender-code">{senderCode}</p>
+      <p class="small muted">{t.senderCodeHint}</p>
+    </div>
+  {/if}
   {#if done}
     <p class="success" data-testid="answered">{t.answered}</p>
   {:else}

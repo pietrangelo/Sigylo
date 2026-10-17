@@ -72,15 +72,25 @@ test('the sender can destroy a secret before it is read', async ({ page, browser
   await expect(reader.getByTestId('open-error')).toBeVisible();
 });
 
-test('request mode: sealed to the recipient’s post-quantum key', async ({ page, browser }) => {
+async function createRequest(page: Page): Promise<{ requestLink: string; inboxLink: string }> {
   await page.goto('/');
   await page.getByTestId('tab-receive').click();
   await page.getByTestId('create-request').click();
-  const requestLink = await page.getByTestId('request-link').inputValue();
-  const inboxLink = await page.getByTestId('inbox-link').inputValue();
+  return {
+    requestLink: await page.getByTestId('request-link').inputValue(),
+    inboxLink: await page.getByTestId('inbox-link').inputValue(),
+  };
+}
+
+const SENDER_CODE = /^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){4}$/;
+
+test('request mode: sealed to the recipient’s post-quantum key and signed by the sender', async ({ page, browser }) => {
+  const { requestLink, inboxLink } = await createRequest(page);
 
   const sender = await freshPage(browser);
   await sender.goto(requestLink);
+  await expect(sender.getByTestId('sender-code')).toHaveText(SENDER_CODE);
+  const code = await sender.getByTestId('sender-code').textContent();
   await sender.getByTestId('secret').fill(SECRET);
   await sender.getByTestId('answer').click();
   await expect(sender.getByTestId('answered')).toBeVisible();
@@ -89,9 +99,50 @@ test('request mode: sealed to the recipient’s post-quantum key', async ({ page
   await recipient.goto(inboxLink);
   await recipient.getByTestId('reveal').click();
   await expect(recipient.getByTestId('plaintext')).toHaveValue(SECRET);
+  await expect(recipient.getByTestId('sender-code')).toHaveText(code!);
+  await expect(recipient.getByTestId('unsigned')).toHaveCount(0);
+});
+
+test('a sender keeps the same code from one answer to the next', async ({ page, browser }) => {
+  const first = await createRequest(page);
+  const second = await createRequest(await freshPage(browser));
+  const sender = await freshPage(browser);
+  await sender.goto(first.requestLink);
+  const code = await sender.getByTestId('sender-code').textContent();
+  expect(code).toMatch(SENDER_CODE);
+  await sender.goto(second.requestLink);
+  await sender.reload();
+  await expect(sender.getByTestId('sender-code')).toHaveText(code!);
+  // Another browser is another sender.
+  const stranger = await freshPage(browser);
+  await stranger.goto(second.requestLink);
+  await expect(stranger.getByTestId('sender-code')).toHaveText(SENDER_CODE);
+  await expect(stranger.getByTestId('sender-code')).not.toHaveText(code!);
 });
 
 test.describe('adversary', () => {
+  test('whoever races the sender to a request link is caught by the sender code', async ({ page, browser }) => {
+    const { requestLink, inboxLink } = await createRequest(page);
+    const mallory = await freshPage(browser);
+    await mallory.goto(requestLink);
+    await mallory.getByTestId('secret').fill('a fake secret from mallory');
+    await mallory.getByTestId('answer').click();
+    await expect(mallory.getByTestId('answered')).toBeVisible();
+
+    const alice = await freshPage(browser);
+    await alice.goto(requestLink);
+    const aliceCode = await alice.getByTestId('sender-code').textContent();
+    await alice.getByTestId('secret').fill(SECRET);
+    await alice.getByTestId('answer').click();
+    await expect(alice.getByTestId('answer-error')).toBeVisible();
+
+    const recipient = await freshPage(browser);
+    await recipient.goto(inboxLink);
+    await recipient.getByTestId('reveal').click();
+    await expect(recipient.getByTestId('sender-code')).toHaveText(SENDER_CODE);
+    await expect(recipient.getByTestId('sender-code')).not.toHaveText(aliceCode!);
+  });
+
   test('a request link with another fingerprint refuses to seal and sends nothing', async ({ page, browser }) => {
     await page.goto('/');
     await page.getByTestId('tab-receive').click();
