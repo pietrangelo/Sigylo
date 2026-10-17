@@ -1,7 +1,11 @@
 //! The app shell's relay command: which calls it lets through, and how it
 //! talks to the relay. A local HTTP server stands in for sigylo.net.
 
-use sigylo_app::relay::{Call, Failure, MAX_BODY_LEN, MAX_REPLY_LEN, Method, PRODUCTION, Refusal, Relay};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use sigylo_app::relay::{
+    Call, Failure, MAX_BODY_LEN, MAX_CHUNK_LEN, MAX_REPLY_LEN, Method, PRODUCTION, Refusal, Relay,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -59,6 +63,20 @@ async fn server(response: impl Into<Vec<u8>>) -> (String, mpsc::UnboundedReceive
     (base, rx)
 }
 
+fn chunk_body(bytes: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn binary(status: &str, body: &[u8]) -> Vec<u8> {
+    let mut response = format!(
+        "HTTP/1.1 {status}\r\ncontent-type: application/octet-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(body);
+    response
+}
+
 fn http(status: &str, extra: &str, body: &str) -> String {
     format!(
         "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n{extra}connection: close\r\n\r\n{body}",
@@ -81,6 +99,10 @@ fn every_route_of_the_relay_api_is_allowed() {
         ("POST", "/requests".to_string(), body),
         ("GET", format!("/requests/{ID}"), None),
         ("POST", format!("/requests/{ID}/answer"), body),
+        ("POST", format!("/secrets/{ID}/chunks/0"), Some("AQI")),
+        ("POST", format!("/secrets/{ID}/chunks/9"), Some("AQI")),
+        ("POST", format!("/secrets/{ID}/chunks/0/open"), body),
+        ("POST", format!("/secrets/{ID}/chunks/9/open"), body),
     ] {
         let checked = call(method, &path, body).unwrap_or_else(|e| panic!("{method} {path}: {e:?}"));
         assert_eq!(checked.path(), path);
@@ -142,6 +164,56 @@ async fn forwards_the_call_and_returns_status_and_body() {
 }
 
 #[tokio::test]
+async fn a_chunk_travels_as_raw_bytes() {
+    let (base, mut requests) = server(http("201 Created", "", "{}")).await;
+    let chunk: Vec<u8> = (0..=255).collect();
+    let put = call("POST", &format!("/secrets/{ID}/chunks/3"), Some(&chunk_body(&chunk))).unwrap();
+    let reply = Relay::new(&base, false).send(&put).await.unwrap();
+    assert_eq!(reply.status, 201);
+
+    let request = requests.recv().await.unwrap();
+    assert!(request.starts_with(&format!("POST /api/secrets/{ID}/chunks/3 HTTP/1.1\r\n")), "{request}");
+    assert!(request.to_ascii_lowercase().contains("content-type: application/octet-stream\r\n"), "{request}");
+    assert!(request.to_ascii_lowercase().contains("content-length: 256\r\n"), "{request}");
+}
+
+#[tokio::test]
+async fn a_chunk_comes_back_to_the_page_as_base64() {
+    let chunk: Vec<u8> = (0..=255).rev().collect();
+    let (base, mut requests) = server(binary("200 OK", &chunk)).await;
+    let open = call("POST", &format!("/secrets/{ID}/chunks/0/open"), Some(r#"{"claim":"AQI"}"#)).unwrap();
+    let reply = Relay::new(&base, false).send(&open).await.unwrap();
+    assert_eq!((reply.status, reply.binary), (200, true));
+    assert_eq!(URL_SAFE_NO_PAD.decode(&reply.body).unwrap(), chunk);
+
+    let request = requests.recv().await.unwrap();
+    assert!(request.to_ascii_lowercase().contains("content-type: application/json\r\n"), "{request}");
+    assert!(request.ends_with(r#"{"claim":"AQI"}"#), "{request}");
+}
+
+#[tokio::test]
+async fn a_chunk_route_that_fails_answers_in_json() {
+    let (base, _requests) = server(http("404 Not Found", "", r#"{"error":"NotFound"}"#)).await;
+    let open = call("POST", &format!("/secrets/{ID}/chunks/0/open"), Some("{}")).unwrap();
+    let reply = Relay::new(&base, false).send(&open).await.unwrap();
+    assert_eq!((reply.status, reply.binary, reply.body.as_str()), (404, false, r#"{"error":"NotFound"}"#));
+}
+
+#[tokio::test]
+async fn the_largest_chunk_goes_both_ways() {
+    let chunk = vec![0xa5; MAX_CHUNK_LEN];
+    let (stores, mut requests) = server(http("201 Created", "", "{}")).await;
+    let put = call("POST", &format!("/secrets/{ID}/chunks/9"), Some(&chunk_body(&chunk))).unwrap();
+    assert_eq!(Relay::new(&stores, false).send(&put).await.unwrap().status, 201);
+    let (serves, _requests) = server(binary("200 OK", &chunk)).await;
+    let open = call("POST", &format!("/secrets/{ID}/chunks/9/open"), Some("{}")).unwrap();
+    let reply = Relay::new(&serves, false).send(&open).await.unwrap();
+    assert_eq!(URL_SAFE_NO_PAD.decode(&reply.body).unwrap(), chunk);
+    let put = requests.recv().await.unwrap();
+    assert!(put.to_ascii_lowercase().contains(&format!("content-length: {MAX_CHUNK_LEN}\r\n")));
+}
+
+#[tokio::test]
 async fn sends_no_cookie_and_no_referer() {
     let (base, mut requests) = server(http("200 OK", "set-cookie: track=1\r\n", "{}")).await;
     let relay = Relay::new(&base, false);
@@ -199,6 +271,68 @@ mod adversary {
         ] {
             assert_eq!(call("POST", path, Some("{}")).unwrap_err(), Refusal::UnknownRoute, "{path:?}");
         }
+    }
+
+    #[test]
+    fn chunk_paths_name_one_of_ten_chunks_exactly() {
+        for chunk in ["10", "01", "00", "-1", "+1", "a", "", " 1", "1 ", "9/", "%31", "\u{0661}"] {
+            let put = format!("/secrets/{ID}/chunks/{chunk}");
+            assert_eq!(call("POST", &put, Some("AQI")).unwrap_err(), Refusal::UnknownRoute, "{put:?}");
+            let open = format!("/secrets/{ID}/chunks/{chunk}/open");
+            assert_eq!(call("POST", &open, Some("{}")).unwrap_err(), Refusal::UnknownRoute, "{open:?}");
+        }
+        for path in [
+            format!("/secrets/{ID}/chunks"),
+            format!("/secrets/{ID}/chunks/1/open/more"),
+            format!("/secrets/{ID}/chunks/1/revoke"),
+            format!("/requests/{ID}/chunks/1"),
+            "/secrets/AAECAwQFBgcICQoLDA0OD/chunks/1".to_string(),
+        ] {
+            assert_eq!(call("POST", &path, Some("AQI")).unwrap_err(), Refusal::UnknownRoute, "{path:?}");
+        }
+        assert_eq!(call("GET", &format!("/secrets/{ID}/chunks/1/open"), None).unwrap_err(), Refusal::WrongMethod);
+    }
+
+    #[test]
+    fn a_chunk_is_canonical_base64_or_nothing_leaves() {
+        let put = format!("/secrets/{ID}/chunks/0");
+        for body in ["", "AQI=", "AQ I", "AQ+/", "A", "AQJ", "AQI\n", "{}"] {
+            assert_eq!(call("POST", &put, Some(body)).unwrap_err(), Refusal::MalformedBody, "{body:?}");
+        }
+        assert_eq!(call("POST", &put, None).unwrap_err(), Refusal::MissingBody);
+    }
+
+    #[test]
+    fn a_chunk_larger_than_the_relay_stores_never_leaves_the_device() {
+        let put = format!("/secrets/{ID}/chunks/0");
+        assert!(call("POST", &put, Some(&chunk_body(&vec![0; MAX_CHUNK_LEN]))).is_ok());
+        let larger = chunk_body(&vec![0; MAX_CHUNK_LEN + 1]);
+        assert_eq!(call("POST", &put, Some(&larger)).unwrap_err(), Refusal::BodyTooLarge);
+        let huge = "A".repeat(64 * 1024 * 1024);
+        assert_eq!(call("POST", &put, Some(&huge)).unwrap_err(), Refusal::BodyTooLarge);
+        let open = format!("/secrets/{ID}/chunks/0/open");
+        assert_eq!(call("POST", &open, Some(&"x".repeat(MAX_BODY_LEN + 1))).unwrap_err(), Refusal::BodyTooLarge);
+    }
+
+    #[tokio::test]
+    async fn an_oversized_chunk_reply_is_cut_off() {
+        let (base, _requests) = server(binary("200 OK", &vec![0; MAX_CHUNK_LEN + 1])).await;
+        let open = call("POST", &format!("/secrets/{ID}/chunks/0/open"), Some("{}")).unwrap();
+        assert_eq!(Relay::new(&base, false).send(&open).await.unwrap_err(), Failure::ReplyTooLarge);
+    }
+
+    #[tokio::test]
+    async fn only_the_chunk_route_returns_bytes() {
+        let (base, _requests) = server(binary("200 OK", &[0xff, 0xfe])).await;
+        let open = call("POST", &format!("/secrets/{ID}/open"), None).unwrap();
+        assert_eq!(Relay::new(&base, false).send(&open).await.unwrap_err(), Failure::NotText);
+    }
+
+    #[test]
+    fn debug_never_prints_a_chunk() {
+        let checked = call("POST", &format!("/secrets/{ID}/chunks/0"), Some("U0VLUklU")).unwrap();
+        let printed = format!("{checked:?}");
+        assert!(!printed.contains("U0VLUklU") && !printed.contains("83, 69"), "{printed}");
     }
 
     #[test]

@@ -1,7 +1,8 @@
 //! # Sigylo relay (Cloudflare Worker)
 //!
 //! A blind relay: it receives envelopes that were sealed in the browser and
-//! keeps them in PostgreSQL through Hyperdrive, via the Custody use cases.
+//! keeps them in PostgreSQL through Hyperdrive, and the chunks of files in
+//! Cloudflare R2, via the Custody use cases.
 //! It never sees a key or a plaintext and logs neither ids nor payloads.
 //! The static web client is served by Workers Static Assets on the same
 //! origin, so the browser never talks to a third party.
@@ -19,7 +20,7 @@ mod runtime {
     use access_adapters::{OpaqueKeys, PostgresAccounts, RandomTokens, Sha256SessionDigest};
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     use custody::Custodian;
-    use custody_adapters::{PostgresVault, RandomIds, Sha256TokenDigest};
+    use custody_adapters::{PostgresVault, R2ChunkStore, RandomIds, Sha256TokenDigest};
     use tokio_postgres::{Client, NoTls};
     use worker::postgres_tls::PassthroughTls;
     use worker::{
@@ -58,6 +59,11 @@ mod runtime {
         Ok(client)
     }
 
+    /// The R2 bucket that holds the sealed chunks of files.
+    fn chunk_store(env: &Env) -> Result<R2ChunkStore> {
+        Ok(R2ChunkStore::new(env.bucket("CHUNKS")?))
+    }
+
     fn respond(status: u16, body: String) -> Result<Response> {
         let mut response = Response::ok(body)?.with_status(status);
         let headers = response.headers_mut();
@@ -70,6 +76,27 @@ mod runtime {
 
     fn fail(error: ApiError) -> Result<Response> {
         respond(error.status(), error.body())
+    }
+
+    /// What a use case answers: JSON, or the raw bytes of a chunk.
+    enum Reply {
+        Json(u16, String),
+        Chunk(Vec<u8>),
+    }
+
+    fn reply(reply: Reply) -> Result<Response> {
+        match reply {
+            Reply::Json(status, body) => respond(status, body),
+            Reply::Chunk(bytes) => {
+                let mut response = Response::from_bytes(bytes)?;
+                let headers = response.headers_mut();
+                headers.set("Content-Type", "application/octet-stream")?;
+                headers.set("Cache-Control", "no-store")?;
+                headers.set("X-Content-Type-Options", "nosniff")?;
+                headers.set("Referrer-Policy", "no-referrer")?;
+                Ok(response)
+            }
+        }
     }
 
     async fn rate_limited(env: &Env, req: &Request) -> bool {
@@ -98,66 +125,86 @@ mod runtime {
         OpaqueKeys::from_seed(&seed)
     }
 
-    async fn account(command: AccountCommand, env: &Env) -> std::result::Result<(u16, String), ApiError> {
+    async fn account(command: AccountCommand, env: &Env) -> std::result::Result<Reply, ApiError> {
         let keys = opaque_keys(env)?;
         let client = connect(env).await.map_err(|_| AccessError::StoreUnavailable)?;
         let gatekeeper =
             Gatekeeper::new(keys, PostgresAccounts::new(&client), RandomTokens, Sha256SessionDigest, LoginLimiter(env));
         Ok(match command {
-            AccountCommand::RegisterStart(username, request) => {
-                (200, api::registration_response_body(&gatekeeper.registration_response(&username, &request).await?))
-            }
+            AccountCommand::RegisterStart(username, request) => Reply::Json(
+                200,
+                api::registration_response_body(&gatekeeper.registration_response(&username, &request).await?),
+            ),
             AccountCommand::RegisterFinish(username, record) => {
                 gatekeeper.register(&username, &record).await?;
-                (201, "{}".into())
+                Reply::Json(201, "{}".into())
             }
             AccountCommand::LoginStart(username, request) => {
-                (200, api::login_challenge_body(&gatekeeper.begin_login(&username, &request).await?))
+                Reply::Json(200, api::login_challenge_body(&gatekeeper.begin_login(&username, &request).await?))
             }
             AccountCommand::LoginFinish(handle, finalization) => {
-                (200, api::session_body(&gatekeeper.finish_login(&handle, &finalization).await?))
+                Reply::Json(200, api::session_body(&gatekeeper.finish_login(&handle, &finalization).await?))
             }
             AccountCommand::Logout(token) => {
                 gatekeeper.sign_out(&token).await?;
-                (200, "{}".into())
+                Reply::Json(200, "{}".into())
             }
-            AccountCommand::ReadKeyring(token) => (200, api::keyring_body(&gatekeeper.keyring(&token).await?)),
+            AccountCommand::ReadKeyring(token) => {
+                Reply::Json(200, api::keyring_body(&gatekeeper.keyring(&token).await?))
+            }
             AccountCommand::StoreKeyring(token, keyring, expected) => {
-                (200, api::version_body(gatekeeper.store_keyring(&token, &keyring, expected).await?))
+                Reply::Json(200, api::version_body(gatekeeper.store_keyring(&token, &keyring, expected).await?))
             }
             AccountCommand::Close(token) => {
                 gatekeeper.close_account(&token).await?;
-                (200, "{}".into())
+                Reply::Json(200, "{}".into())
             }
         })
     }
 
-    async fn execute(command: Command, env: &Env) -> std::result::Result<(u16, String), ApiError> {
+    async fn execute(command: Command, env: &Env) -> std::result::Result<Reply, ApiError> {
         match command {
             Command::Account(command) => account(command, env).await,
             custody => safekeeping(custody, env).await,
         }
     }
 
-    async fn safekeeping(command: Command, env: &Env) -> std::result::Result<(u16, String), ApiError> {
+    async fn safekeeping(command: Command, env: &Env) -> std::result::Result<Reply, ApiError> {
         let client = connect(env).await.map_err(|_| custody::CustodyError::VaultUnavailable)?;
-        let custodian = Custodian::new(PostgresVault::new(&client), Sha256TokenDigest, RandomIds);
+        let store = chunk_store(env).map_err(|_| custody::CustodyError::VaultUnavailable)?;
+        let custodian = Custodian::new(PostgresVault::new(&client), store, Sha256TokenDigest, RandomIds);
         Ok(match command {
             Command::Deposit(cmd) => {
-                let receipt =
-                    custodian.deposit(cmd.payload, cmd.retention, cmd.lifetime, cmd.revocation.as_ref()).await?;
-                (201, api::receipt_body(receipt))
+                let revocation = cmd.revocation.as_ref();
+                let receipt = match cmd.chunks {
+                    Some(chunks) => {
+                        custodian.deposit_file(cmd.payload, chunks, cmd.retention, cmd.lifetime, revocation).await?
+                    }
+                    None => custodian.deposit(cmd.payload, cmd.retention, cmd.lifetime, revocation).await?,
+                };
+                Reply::Json(201, api::receipt_body(receipt))
             }
-            Command::Open(id) => (200, api::opened_body(custodian.open(&id).await?)),
+            Command::Open(id) => Reply::Json(200, api::opened_body(custodian.open(&id).await?)),
             Command::Revoke(id, token) => {
                 custodian.revoke(&id, &token).await?;
-                (200, "{}".into())
+                Reply::Json(200, "{}".into())
+            }
+            Command::PutChunk(id, index, chunk) => {
+                custodian.put_chunk(&id, index, chunk).await?;
+                Reply::Json(201, "{}".into())
+            }
+            Command::OpenChunk(id, index, claim) => {
+                Reply::Chunk(custodian.open_chunk(&id, index, claim.as_ref()).await?.into_bytes())
             }
             Command::PostRequest(cmd) => {
-                (201, api::receipt_body(custodian.post_request(cmd.recipient_key, cmd.lifetime).await?))
+                Reply::Json(201, api::receipt_body(custodian.post_request(cmd.recipient_key, cmd.lifetime).await?))
             }
-            Command::FetchRequest(id) => (200, api::posted_request_body(custodian.fetch_request(&id).await?)),
-            Command::AnswerRequest(id, answer) => (201, api::expires_body(custodian.answer_request(id, answer).await?)),
+            Command::FetchRequest(id) => {
+                Reply::Json(200, api::posted_request_body(custodian.fetch_request(&id).await?))
+            }
+            Command::AnswerRequest(id, answer) => {
+                Reply::Json(201, api::expires_body(custodian.answer_request(id, answer).await?))
+            }
             Command::Account(_) => return Err(ApiError::NotFound),
         })
     }
@@ -173,14 +220,14 @@ mod runtime {
             return respond(429, r#"{"error":"RateLimited"}"#.into());
         }
         let body = if req.method() == Method::Post {
-            if let Err(error) = api::check_declared_length(req.headers().get("Content-Length")?.as_deref()) {
+            if let Err(error) = api::check_declared_length(&route, req.headers().get("Content-Length")?.as_deref()) {
                 return fail(error);
             }
             req.bytes().await?
         } else {
             Vec::new()
         };
-        if body.len() > api::MAX_BODY_LEN {
+        if body.len() > route.max_body_len() {
             return fail(ApiError::BodyTooLarge);
         }
         let bearer = req.headers().get("Authorization")?;
@@ -189,16 +236,18 @@ mod runtime {
             Err(error) => return fail(error),
         };
         match execute(command, &env).await {
-            Ok((status, body)) => respond(status, body),
+            Ok(answer) => reply(answer),
             Err(error) => fail(error),
         }
     }
 
     #[event(scheduled)]
     async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
-        if let Ok(client) = connect(&env).await {
-            let custodian = Custodian::new(PostgresVault::new(&client), Sha256TokenDigest, RandomIds);
+        // Expired rows go first, so their chunks' objects join this round's garbage.
+        if let (Ok(client), Ok(store)) = (connect(&env).await, chunk_store(&env)) {
+            let custodian = Custodian::new(PostgresVault::new(&client), store, Sha256TokenDigest, RandomIds);
             let _ = custodian.purge_expired().await;
+            let _ = custodian.collect_garbage().await;
             if let Ok(keys) = opaque_keys(&env) {
                 let store = PostgresAccounts::new(&client);
                 let gatekeeper = Gatekeeper::new(keys, store, RandomTokens, Sha256SessionDigest, LoginLimiter(&env));

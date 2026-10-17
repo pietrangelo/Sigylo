@@ -2,11 +2,15 @@
 //! command, which knows the calls of the relay API and nothing else, and
 //! sends them to https://sigylo.net only. Bodies are the JSON the web client
 //! already sends to the relay in a browser (sealed envelopes and OPAQUE
-//! messages, opaque here); a signed-in call adds its session as a bearer token.
+//! messages, opaque here), except a file's sealed chunks: they cross the IPC
+//! boundary in base64url and travel to and from the relay as raw bytes, as
+//! they do in a browser. A signed-in call adds its session as a bearer token.
 
 use std::fmt;
 use std::time::Duration;
 
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Serialize;
 
 /// The relay the app talks to.
@@ -17,6 +21,9 @@ pub const MAX_BODY_LEN: usize = 100 * 1024;
 
 /// Largest reply read: a maximal envelope in base64 plus JSON fits easily.
 pub const MAX_REPLY_LEN: usize = 128 * 1024;
+
+/// Largest sealed chunk of a file: 1 MiB plus its tag, as the relay stores it.
+pub const MAX_CHUNK_LEN: usize = 1024 * 1024 + 16;
 
 /// Length of a 16-byte id in base64url without padding.
 const ID_LEN: usize = 22;
@@ -38,6 +45,7 @@ pub enum Refusal {
     MissingBody,
     UnexpectedBody,
     BodyTooLarge,
+    MalformedBody,
     MissingSession,
     UnexpectedSession,
     MalformedSession,
@@ -56,8 +64,25 @@ pub enum Failure {
 pub struct Call {
     method: Method,
     path: String,
-    body: Option<String>,
+    body: Body,
+    binary_reply: bool,
     session: Option<String>,
+}
+
+/// What goes to the relay with a call.
+#[derive(Clone, PartialEq, Eq)]
+enum Body {
+    None,
+    Json(String),
+    Chunk(Vec<u8>),
+}
+
+/// The body each route takes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    None,
+    Json,
+    Chunk,
 }
 
 impl fmt::Debug for Call {
@@ -74,31 +99,59 @@ fn is_id(segment: &str) -> bool {
     is_base64url(segment, ID_LEN)
 }
 
-/// What a route expects: its method, whether it takes a body, whether it needs a session.
-struct Shape {
+/// One of a file's ten chunks, written as the relay writes it: a single digit.
+fn is_chunk_index(segment: &str) -> bool {
+    matches!(segment.as_bytes(), [b'0'..=b'9'])
+}
+
+/// What a route expects: its method, its body, whether the reply is bytes,
+/// and whether it needs a session.
+struct Expected {
     method: Method,
-    body: bool,
+    shape: Shape,
+    binary_reply: bool,
     session: bool,
 }
 
-const fn shape(method: Method, body: bool, session: bool) -> Option<Shape> {
-    Some(Shape { method, body, session })
+const fn expect(method: Method, shape: Shape, binary_reply: bool) -> Option<Expected> {
+    Some(Expected { method, shape, binary_reply, session: false })
+}
+
+const fn signed_in(method: Method, shape: Shape) -> Option<Expected> {
+    Some(Expected { method, shape, binary_reply: false, session: true })
 }
 
 /// The shape of each route of the API, by method too where a path has two.
-fn route(method: Method, path: &str) -> Option<Shape> {
-    use Method::{Get, Post};
+fn route(method: Method, path: &str) -> Option<Expected> {
     let segments: Vec<&str> = path.strip_prefix('/')?.split('/').collect();
     match segments.as_slice() {
-        ["secrets"] | ["requests"] => shape(Post, true, false),
-        ["secrets", id, "open"] if is_id(id) => shape(Post, false, false),
-        ["secrets", id, "revoke"] | ["requests", id, "answer"] if is_id(id) => shape(Post, true, false),
-        ["requests", id] if is_id(id) => shape(Get, false, false),
-        ["account", "register" | "login", "start" | "finish"] => shape(Post, true, false),
-        ["account", "logout" | "close"] => shape(Post, false, true),
-        ["account", "keyring"] if method == Get => shape(Get, false, true),
-        ["account", "keyring"] => shape(Post, true, true),
+        ["secrets"] | ["requests"] => expect(Method::Post, Shape::Json, false),
+        ["secrets", id, "open"] if is_id(id) => expect(Method::Post, Shape::None, false),
+        ["secrets", id, "revoke"] | ["requests", id, "answer"] if is_id(id) => expect(Method::Post, Shape::Json, false),
+        ["requests", id] if is_id(id) => expect(Method::Get, Shape::None, false),
+        ["secrets", id, "chunks", n] if is_id(id) && is_chunk_index(n) => expect(Method::Post, Shape::Chunk, false),
+        ["secrets", id, "chunks", n, "open"] if is_id(id) && is_chunk_index(n) => {
+            expect(Method::Post, Shape::Json, true)
+        }
+        ["account", "register" | "login", "start" | "finish"] => expect(Method::Post, Shape::Json, false),
+        ["account", "logout" | "close"] => signed_in(Method::Post, Shape::None),
+        ["account", "keyring"] if method == Method::Get => signed_in(Method::Get, Shape::None),
+        ["account", "keyring"] => signed_in(Method::Post, Shape::Json),
         _ => None,
+    }
+}
+
+/// A sealed chunk, from the canonical base64url the page sends.
+fn chunk(text: &str) -> Result<Vec<u8>, Refusal> {
+    // Checked before decoding, so a huge string is never decoded.
+    if text.len() > (MAX_CHUNK_LEN * 4).div_ceil(3) {
+        return Err(Refusal::BodyTooLarge);
+    }
+    let bytes = URL_SAFE_NO_PAD.decode(text).map_err(|_| Refusal::MalformedBody)?;
+    match bytes.len() {
+        0 => Err(Refusal::MalformedBody),
+        n if n > MAX_CHUNK_LEN => Err(Refusal::BodyTooLarge),
+        _ => Ok(bytes),
     }
 }
 
@@ -114,19 +167,22 @@ impl Call {
         if method != expected.method {
             return Err(Refusal::WrongMethod);
         }
-        match (&body, expected.body) {
-            (None, true) => return Err(Refusal::MissingBody),
-            (Some(_), false) => return Err(Refusal::UnexpectedBody),
-            (Some(b), true) if b.len() > MAX_BODY_LEN => return Err(Refusal::BodyTooLarge),
-            _ => {}
-        }
+        let (shape, binary_reply) = (expected.shape, expected.binary_reply);
+        let body = match (body, shape) {
+            (None, Shape::None) => Body::None,
+            (None, _) => return Err(Refusal::MissingBody),
+            (Some(_), Shape::None) => return Err(Refusal::UnexpectedBody),
+            (Some(b), Shape::Json) if b.len() > MAX_BODY_LEN => return Err(Refusal::BodyTooLarge),
+            (Some(b), Shape::Json) => Body::Json(b),
+            (Some(b), Shape::Chunk) => Body::Chunk(chunk(&b)?),
+        };
         match (&session, expected.session) {
             (None, true) => return Err(Refusal::MissingSession),
             (Some(_), false) => return Err(Refusal::UnexpectedSession),
             (Some(s), true) if !is_base64url(s, SESSION_LEN) => return Err(Refusal::MalformedSession),
             _ => {}
         }
-        Ok(Self { method, path: path.to_string(), body, session })
+        Ok(Self { method, path: path.to_string(), body, binary_reply, session })
     }
 
     pub fn method(&self) -> Method {
@@ -138,11 +194,13 @@ impl Call {
     }
 }
 
-/// What the page gets back: the relay's status and JSON text, unchanged.
+/// What the page gets back: the relay's status and JSON text, unchanged, or
+/// a sealed chunk in base64url (`binary`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Reply {
     pub status: u16,
     pub body: String,
+    pub binary: bool,
 }
 
 #[derive(Debug)]
@@ -177,25 +235,34 @@ impl Relay {
             Method::Get => self.client.get(url),
             Method::Post => self.client.post(url),
         };
-        if let Some(body) = &call.body {
-            request = request.header(reqwest::header::CONTENT_TYPE, "application/json").body(body.clone());
-        }
+        request = match &call.body {
+            Body::None => request,
+            Body::Json(json) => request.header(reqwest::header::CONTENT_TYPE, "application/json").body(json.clone()),
+            Body::Chunk(bytes) => {
+                request.header(reqwest::header::CONTENT_TYPE, "application/octet-stream").body(bytes.clone())
+            }
+        };
         if let Some(session) = &call.session {
             request = request.bearer_auth(session);
         }
         let mut response = request.send().await.map_err(|_| Failure::Network)?;
-        if response.content_length().is_some_and(|n| n > MAX_REPLY_LEN as u64) {
+        let limit = if call.binary_reply { MAX_CHUNK_LEN } else { MAX_REPLY_LEN };
+        if response.content_length().is_some_and(|n| n > limit as u64) {
             return Err(Failure::ReplyTooLarge);
         }
         let status = response.status().as_u16();
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(|_| Failure::Network)? {
-            if bytes.len() + chunk.len() > MAX_REPLY_LEN {
+            if bytes.len() + chunk.len() > limit {
                 return Err(Failure::ReplyTooLarge);
             }
             bytes.extend_from_slice(&chunk);
         }
+        // A chunk comes back only with success; a refusal is the relay's JSON.
+        if call.binary_reply && response.status().is_success() {
+            return Ok(Reply { status, body: URL_SAFE_NO_PAD.encode(bytes), binary: true });
+        }
         let body = String::from_utf8(bytes).map_err(|_| Failure::NotText)?;
-        Ok(Reply { status, body })
+        Ok(Reply { status, body, binary: false })
     }
 }

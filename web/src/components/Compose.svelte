@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { engine, errorCode, loadEngine, passphraseBytes, randomBytes, textBytes } from '../lib/crypto';
+  import { engine, errorCode, fileName, loadEngine, passphraseBytes, randomBytes, textBytes } from '../lib/crypto';
+  import { MAX_FILE_LEN, uploadChunks } from '../lib/files';
   import { t } from '../lib/i18n';
   import { inboxLink, requestLink, revokeLink, secretLink } from '../lib/links';
   import { formatExpiry, relayMessage, sealMessage } from '../lib/messages';
@@ -11,10 +12,14 @@
   import { linkOrigin, relayFetch } from '../lib/platform';
   import LinkBox from './LinkBox.svelte';
   import SealOptions from './SealOptions.svelte';
+  import SecretField from './SecretField.svelte';
 
   const relay = new Relay(relayFetch);
   let tab: 'send' | 'receive' = $state('send');
+  let kind: 'text' | 'file' = $state('text');
   let secret = $state('');
+  let file: File | null = $state(null);
+  let uploading = $state(false);
   let retention: Retention = $state('burn_after_reading');
   let lifetime = $state(86400);
   let passphrase = $state('');
@@ -31,15 +36,44 @@
     try {
       await loadEngine();
       const pass = passphraseBytes(passphrase);
-      const sealed = engine.sealForLink(textBytes(secret), pass);
-      const key = sealed.key;
-      const envelope = sealed.envelope;
-      sealed.free();
+      let key: Uint8Array;
+      let envelope: Uint8Array;
+      let chunks: Uint8Array[] | undefined;
+      if (kind === 'file') {
+        if (file === null) return;
+        if (file.size > MAX_FILE_LEN) {
+          error = t.errFileTooLarge;
+          return;
+        }
+        const contents = new Uint8Array(await file.arrayBuffer());
+        try {
+          const sealed = engine.sealFileForLink(fileName(file.name), contents, pass);
+          ({ key, envelope } = sealed);
+          chunks = sealed.chunks as Uint8Array[];
+          sealed.free();
+        } finally {
+          contents.fill(0);
+        }
+      } else {
+        const sealed = engine.sealForLink(textBytes(secret), pass);
+        ({ key, envelope } = sealed);
+        sealed.free();
+      }
       const token = randomBytes(32);
-      const result = await relay.deposit(envelope, retention, lifetime, token);
+      const result = await relay.deposit(envelope, retention, lifetime, token, chunks?.length);
       if (!result.ok) {
         error = relayMessage(result.error);
         return;
+      }
+      if (chunks !== undefined) {
+        uploading = true;
+        const uploaded = await uploadChunks(relay, result.value.id, chunks);
+        if (!uploaded.ok) {
+          // Nobody can open a file with missing chunks; take the manifest back too.
+          await relay.revoke(result.value.id, token);
+          error = relayMessage(uploaded.error);
+          return;
+        }
       }
       sent = {
         link: secretLink(linkOrigin, result.value.id, key, pass !== undefined),
@@ -48,12 +82,14 @@
         saved: null,
       };
       secret = '';
+      file = null;
       passphrase = '';
       await remember(result.value.id, token, result.value.expiresAt);
     } catch (e) {
       error = sealMessage(errorCode(e));
     } finally {
       busy = false;
+      uploading = false;
     }
   }
 
@@ -119,13 +155,10 @@
     </div>
   {:else if tab === 'send'}
     <form class="stack" onsubmit={seal}>
-      <div>
-        <label for="secret">{t.secretLabel}</label>
-        <textarea id="secret" bind:value={secret} placeholder={t.secretPlaceholder} autocomplete="off" spellcheck="false" required data-testid="secret"></textarea>
-      </div>
+      <SecretField id="secret" bind:kind bind:text={secret} bind:file />
       <SealOptions bind:retention bind:lifetime bind:passphrase />
-      {#if error}<p class="error" role="alert">{error}</p>{/if}
-      <button class="primary" type="submit" disabled={busy} data-testid="seal">{busy ? t.sealing : t.seal}</button>
+      {#if error}<p class="error" role="alert" data-testid="seal-error">{error}</p>{/if}
+      <button class="primary" type="submit" disabled={busy} data-testid="seal">{uploading ? t.uploading : busy ? t.sealing : t.seal}</button>
     </form>
   {:else if requested}
     <div class="stack" data-testid="requested">

@@ -1,6 +1,6 @@
 [package]
 name = "custody-adapters"
-description = "Adapters for the Custody ports: PostgreSQL vault (tokio-postgres, works over Cloudflare Hyperdrive), SHA-256 token digest and random ids"
+description = "Adapters for the Custody ports: PostgreSQL vault (tokio-postgres, works over Cloudflare Hyperdrive), SHA-256 token digest, random ids, and the chunk store on Cloudflare R2"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,6 +12,9 @@ custody.workspace = true
 tokio-postgres = { version = "0.7.18", default-features = false }
 sha2 = "0.11.1"
 getrandom = "0.4.3"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+worker = "0.8.7"
 
 [dev-dependencies]
 tokio-postgres = { version = "0.7.18" }

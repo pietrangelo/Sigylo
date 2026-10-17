@@ -5,7 +5,7 @@ La stessa interfaccia di sigylo.net e lo stesso motore Rust/Wasm, ma installati 
 ## Cosa può fare la pagina
 
 - **Niente rete:** la CSP della pagina permette solo il bundle dell'app (`'self'`) e l'IPC di Tauri. `fetch` verso qualunque indirizzo fallisce.
-- **Due comandi soltanto** (`capabilities/main.json`, dichiarati in `build.rs`): `relay`, che accetta solo le chiamate dell'API del relay (segreti, richieste e account; il token di sessione solo dove serve, come `Authorization: Bearer`) e le manda solo a `https://sigylo.net/api` (niente redirect, niente cookie, corpo massimo 100 KiB, risposta massima 128 KiB), e `open_legal`, che apre nel browser di sistema solo i termini o l'informativa. Nessun permesso di Tauri o dei plugin è concesso alla pagina, e `window.__TAURI__` non esiste.
+- **Due comandi soltanto** (`capabilities/main.json`, dichiarati in `build.rs`): `relay`, che accetta solo le chiamate dell'API del relay (segreti, file, richieste e account; il token di sessione solo dove serve, come `Authorization: Bearer`) e le manda solo a `https://sigylo.net/api` (niente redirect, niente cookie, corpo massimo 100 KiB, risposta massima 128 KiB; i blocchi dei file, in base64url, fino a 1 MiB + 16 byte), e `open_legal`, che apre nel browser di sistema solo i termini o l'informativa. Nessun permesso di Tauri o dei plugin è concesso alla pagina, e `window.__TAURI__` non esiste.
 - **Niente navigazione:** la webview non lascia mai il bundle (`src/navigation.rs`).
 - **Niente aggiornamenti automatici:** il codice cambia solo installando una nuova versione.
 

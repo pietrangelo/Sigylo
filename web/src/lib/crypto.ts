@@ -21,6 +21,8 @@ export type SealErrorCode =
   | 'MalformedEnvelope'
   | 'PlaintextTooLarge'
   | 'PlaintextEmpty'
+  | 'FileTooLarge'
+  | 'InvalidFileName'
   | 'InvalidPassphrase'
   | 'WrongMode'
   | 'InvalidSenderCode'
@@ -29,7 +31,7 @@ export type SealErrorCode =
 
 export function errorCode(error: unknown): SealErrorCode {
   const message = error instanceof Error ? error.message : '';
-  const known: SealErrorCode[] = ['NotAuthentic', 'FingerprintMismatch', 'PassphraseExpectationMismatch', 'MalformedEnvelope', 'PlaintextTooLarge', 'PlaintextEmpty', 'InvalidPassphrase', 'WrongMode', 'InvalidSenderCode', 'UnexpectedSender'];
+  const known: SealErrorCode[] = ['NotAuthentic', 'FingerprintMismatch', 'PassphraseExpectationMismatch', 'MalformedEnvelope', 'PlaintextTooLarge', 'PlaintextEmpty', 'FileTooLarge', 'InvalidFileName', 'InvalidPassphrase', 'WrongMode', 'InvalidSenderCode', 'UnexpectedSender'];
   return known.find((code) => code === message) ?? 'Unknown';
 }
 
@@ -39,6 +41,11 @@ const decoder = new TextDecoder('utf-8', { fatal: true });
 /** Passphrases are NFC-normalized so "è" typed on any keyboard is the same bytes. */
 export function passphraseBytes(passphrase: string): Uint8Array | undefined {
   return passphrase === '' ? undefined : encoder.encode(passphrase.normalize('NFC'));
+}
+
+/** File names are NFC-normalized too: the name the recipient sees is the one that was sealed. */
+export function fileName(name: string): string {
+  return name.normalize('NFC');
 }
 
 export function textBytes(text: string): Uint8Array {

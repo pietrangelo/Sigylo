@@ -108,7 +108,7 @@ const it: LegalTexts = {
       {
         heading: `Cosa conserviamo`,
         body: [
-          `Per ogni segreto: la busta cifrata, la scadenza, la regola di distruzione e l'impronta SHA-256 del codice di revoca. Per ogni richiesta: la chiave pubblica di chi la crea e, se arriva, la risposta cifrata.`,
+          `Per ogni segreto: la busta cifrata, la scadenza, la regola di distruzione e l'impronta SHA-256 del codice di revoca. Per ogni richiesta: la chiave pubblica di chi la crea e, se arriva, la risposta cifrata. Per un file, in più: i suoi pezzi cifrati (su Cloudflare R2, nell'Unione europea, sotto nomi casuali), quanti sono e, dopo l'apertura, l'impronta SHA-256 del codice che li consegna solo a chi l'ha aperto.`,
           `Niente altro: né orario di creazione, né indirizzo IP, né identità. Anche se un segreto contiene dati personali, per noi resta illeggibile.`,
         ],
       },
@@ -128,7 +128,7 @@ const it: LegalTexts = {
       {
         heading: `Per quanto tempo`,
         body: [
-          `I dati vengono cancellati alla prima lettura, alla revoca o alla scadenza, al massimo dopo 7 giorni. Ciò che scade viene eliminato fisicamente entro circa 15 minuti. Le eventuali copie di ripristino dei fornitori contengono gli stessi dati cifrati e si rinnovano secondo i loro cicli.`,
+          `I dati vengono cancellati alla prima lettura, alla revoca o alla scadenza, al massimo dopo 7 giorni. Un file a lettura unica viene cancellato pezzo per pezzo mentre lo scarichi; se il download si interrompe, ciò che resta scade entro un'ora. Ciò che scade viene eliminato fisicamente entro circa 15 minuti. Le eventuali copie di ripristino dei fornitori contengono gli stessi dati cifrati e si rinnovano secondo i loro cicli.`,
         ],
       },
       {
@@ -147,7 +147,7 @@ const it: LegalTexts = {
       {
         heading: `Fornitori e trasferimenti`,
         body: [
-          `Cloudflare, Inc.: hosting, rete e limitazione della frequenza, su una rete globale; i trasferimenti verso gli Stati Uniti si basano sull'EU-U.S. Data Privacy Framework e sulle clausole contrattuali tipo.`,
+          `Cloudflare, Inc.: hosting, rete e limitazione della frequenza, su una rete globale, e archiviazione dei pezzi cifrati dei file su Cloudflare R2 nella giurisdizione dell'Unione europea; i trasferimenti verso gli Stati Uniti si basano sull'EU-U.S. Data Privacy Framework e sulle clausole contrattuali tipo.`,
           `Supabase, Inc.: database PostgreSQL ospitato nella regione eu-central-1 (Francoforte, Germania). Entrambi agiscono come responsabili del trattamento in base ai rispettivi accordi sul trattamento dei dati.`,
         ],
       },
@@ -240,7 +240,7 @@ const en: LegalTexts = {
       {
         heading: `What we keep`,
         body: [
-          `For each secret: the encrypted envelope, its expiry, its destruction rule and the SHA-256 digest of the revocation code. For each request: the public key of whoever creates it and, once it arrives, the encrypted answer.`,
+          `For each secret: the encrypted envelope, its expiry, its destruction rule and the SHA-256 digest of the revocation code. For each request: the public key of whoever creates it and, once it arrives, the encrypted answer. For a file, in addition: its encrypted pieces (on Cloudflare R2, in the European Union, under random names), how many there are and, once opened, the SHA-256 digest of the code that releases them only to whoever opened it.`,
           `Nothing else: no creation time, no IP address, no identity. Even if a secret contains personal data, it stays unreadable to us.`,
         ],
       },
@@ -260,7 +260,7 @@ const en: LegalTexts = {
       {
         heading: `For how long`,
         body: [
-          `Data is deleted at the first read, on revocation or at expiry, after 7 days at most. Whatever expires is physically removed within about 15 minutes. Any recovery copies held by our providers contain the same encrypted data and roll over on their own cycles.`,
+          `Data is deleted at the first read, on revocation or at expiry, after 7 days at most. A burn-after-reading file is deleted piece by piece as it downloads; if the download stops, what is left expires within an hour. Whatever expires is physically removed within about 15 minutes. Any recovery copies held by our providers contain the same encrypted data and roll over on their own cycles.`,
         ],
       },
       {
@@ -279,7 +279,7 @@ const en: LegalTexts = {
       {
         heading: `Providers and transfers`,
         body: [
-          `Cloudflare, Inc.: hosting, network and rate limiting, on a global network; transfers to the United States rely on the EU-U.S. Data Privacy Framework and the standard contractual clauses.`,
+          `Cloudflare, Inc.: hosting, network and rate limiting, on a global network, and storage of the encrypted pieces of files on Cloudflare R2 in the European Union jurisdiction; transfers to the United States rely on the EU-U.S. Data Privacy Framework and the standard contractual clauses.`,
           `Supabase, Inc.: PostgreSQL database hosted in the eu-central-1 region (Frankfurt, Germany). Both act as processors under their data processing agreements.`,
         ],
       },
@@ -372,7 +372,7 @@ const fr: LegalTexts = {
       {
         heading: `Ce que nous conservons`,
         body: [
-          `Pour chaque secret : l'enveloppe chiffrée, son expiration, sa règle de destruction et l'empreinte SHA-256 du code de révocation. Pour chaque demande : la clé publique de son auteur et, si elle arrive, la réponse chiffrée.`,
+          `Pour chaque secret : l'enveloppe chiffrée, son expiration, sa règle de destruction et l'empreinte SHA-256 du code de révocation. Pour chaque demande : la clé publique de son auteur et, si elle arrive, la réponse chiffrée. Pour un fichier, en plus : ses morceaux chiffrés (sur Cloudflare R2, dans l'Union européenne, sous des noms aléatoires), leur nombre et, après l'ouverture, l'empreinte SHA-256 du code qui ne les remet qu'à la personne qui l'a ouvert.`,
           `Rien d'autre : ni heure de création, ni adresse IP, ni identité. Même si un secret contient des données personnelles, il reste illisible pour nous.`,
         ],
       },
@@ -392,7 +392,7 @@ const fr: LegalTexts = {
       {
         heading: `Pendant combien de temps`,
         body: [
-          `Les données sont supprimées à la première lecture, à la révocation ou à l'expiration, au plus tard après 7 jours. Ce qui expire est effacé physiquement en 15 minutes environ. Les éventuelles copies de restauration de nos prestataires contiennent les mêmes données chiffrées et se renouvellent selon leurs propres cycles.`,
+          `Les données sont supprimées à la première lecture, à la révocation ou à l'expiration, au plus tard après 7 jours. Un fichier à lecture unique est supprimé morceau par morceau pendant son téléchargement ; si celui-ci s'interrompt, le reste expire dans l'heure. Ce qui expire est effacé physiquement en 15 minutes environ. Les éventuelles copies de restauration de nos prestataires contiennent les mêmes données chiffrées et se renouvellent selon leurs propres cycles.`,
         ],
       },
       {
@@ -411,7 +411,7 @@ const fr: LegalTexts = {
       {
         heading: `Prestataires et transferts`,
         body: [
-          `Cloudflare, Inc. : hébergement, réseau et limitation de fréquence, sur un réseau mondial ; les transferts vers les États-Unis reposent sur l'EU-U.S. Data Privacy Framework et les clauses contractuelles types.`,
+          `Cloudflare, Inc. : hébergement, réseau et limitation de fréquence, sur un réseau mondial, et stockage des morceaux chiffrés des fichiers sur Cloudflare R2 dans la juridiction de l'Union européenne ; les transferts vers les États-Unis reposent sur l'EU-U.S. Data Privacy Framework et les clauses contractuelles types.`,
           `Supabase, Inc. : base de données PostgreSQL hébergée dans la région eu-central-1 (Francfort, Allemagne). Tous deux agissent en tant que sous-traitants selon leurs accords de traitement des données.`,
         ],
       },
@@ -504,7 +504,7 @@ const es: LegalTexts = {
       {
         heading: `Qué guardamos`,
         body: [
-          `Para cada secreto: el sobre cifrado, su vencimiento, su regla de destrucción y la huella SHA-256 del código de revocación. Para cada solicitud: la clave pública de quien la crea y, si llega, la respuesta cifrada.`,
+          `Para cada secreto: el sobre cifrado, su vencimiento, su regla de destrucción y la huella SHA-256 del código de revocación. Para cada solicitud: la clave pública de quien la crea y, si llega, la respuesta cifrada. Para un archivo, además: sus fragmentos cifrados (en Cloudflare R2, en la Unión Europea, con nombres aleatorios), cuántos son y, tras abrirlo, la huella SHA-256 del código que solo se los entrega a quien lo abrió.`,
           `Nada más: ni hora de creación, ni dirección IP, ni identidad. Aunque un secreto contenga datos personales, para nosotros sigue siendo ilegible.`,
         ],
       },
@@ -524,7 +524,7 @@ const es: LegalTexts = {
       {
         heading: `Durante cuánto tiempo`,
         body: [
-          `Los datos se borran en la primera lectura, con la revocación o al vencer, como máximo a los 7 días. Lo que vence se elimina físicamente en unos 15 minutos. Las posibles copias de restauración de nuestros proveedores contienen los mismos datos cifrados y se renuevan según sus propios ciclos.`,
+          `Los datos se borran en la primera lectura, con la revocación o al vencer, como máximo a los 7 días. Un archivo de lectura única se borra fragmento a fragmento mientras se descarga; si la descarga se interrumpe, lo que queda vence en una hora. Lo que vence se elimina físicamente en unos 15 minutos. Las posibles copias de restauración de nuestros proveedores contienen los mismos datos cifrados y se renuevan según sus propios ciclos.`,
         ],
       },
       {
@@ -543,7 +543,7 @@ const es: LegalTexts = {
       {
         heading: `Proveedores y transferencias`,
         body: [
-          `Cloudflare, Inc.: alojamiento, red y limitación de frecuencia, en una red global; las transferencias a Estados Unidos se basan en el EU-U.S. Data Privacy Framework y en las cláusulas contractuales tipo.`,
+          `Cloudflare, Inc.: alojamiento, red y limitación de frecuencia, en una red global, y almacenamiento de los fragmentos cifrados de los archivos en Cloudflare R2 en la jurisdicción de la Unión Europea; las transferencias a Estados Unidos se basan en el EU-U.S. Data Privacy Framework y en las cláusulas contractuales tipo.`,
           `Supabase, Inc.: base de datos PostgreSQL alojada en la región eu-central-1 (Fráncfort, Alemania). Ambos actúan como encargados del tratamiento según sus acuerdos de tratamiento de datos.`,
         ],
       },
@@ -636,7 +636,7 @@ const de: LegalTexts = {
       {
         heading: `Was wir speichern`,
         body: [
-          `Für jedes Geheimnis: den verschlüsselten Umschlag, den Ablauf, die Vernichtungsregel und den SHA-256-Fingerabdruck des Widerrufscodes. Für jede Anfrage: den öffentlichen Schlüssel der Person, die sie erstellt, und, falls sie eintrifft, die verschlüsselte Antwort.`,
+          `Für jedes Geheimnis: den verschlüsselten Umschlag, den Ablauf, die Vernichtungsregel und den SHA-256-Fingerabdruck des Widerrufscodes. Für jede Anfrage: den öffentlichen Schlüssel der Person, die sie erstellt, und, falls sie eintrifft, die verschlüsselte Antwort. Bei einer Datei zusätzlich: ihre verschlüsselten Teile (auf Cloudflare R2, in der Europäischen Union, unter zufälligen Namen), deren Anzahl und, nach dem Öffnen, den SHA-256-Fingerabdruck des Codes, der sie nur an die Person ausgibt, die sie geöffnet hat.`,
           `Sonst nichts: keine Erstellungszeit, keine IP-Adresse, keine Identität. Selbst wenn ein Geheimnis personenbezogene Daten enthält, bleibt es für uns unlesbar.`,
         ],
       },
@@ -656,7 +656,7 @@ const de: LegalTexts = {
       {
         heading: `Wie lange`,
         body: [
-          `Die Daten werden beim ersten Lesen, beim Widerruf oder zum Ablauf gelöscht, spätestens nach 7 Tagen. Was abläuft, wird binnen etwa 15 Minuten physisch entfernt. Etwaige Wiederherstellungskopien unserer Anbieter enthalten dieselben verschlüsselten Daten und erneuern sich nach deren eigenen Zyklen.`,
+          `Die Daten werden beim ersten Lesen, beim Widerruf oder zum Ablauf gelöscht, spätestens nach 7 Tagen. Eine Datei zum einmaligen Lesen wird beim Herunterladen Teil für Teil gelöscht; bricht der Download ab, läuft der Rest binnen einer Stunde ab. Was abläuft, wird binnen etwa 15 Minuten physisch entfernt. Etwaige Wiederherstellungskopien unserer Anbieter enthalten dieselben verschlüsselten Daten und erneuern sich nach deren eigenen Zyklen.`,
         ],
       },
       {
@@ -675,7 +675,7 @@ const de: LegalTexts = {
       {
         heading: `Anbieter und Übermittlungen`,
         body: [
-          `Cloudflare, Inc.: Hosting, Netzwerk und Ratenbegrenzung in einem globalen Netz; Übermittlungen in die Vereinigten Staaten stützen sich auf das EU-U.S. Data Privacy Framework und die Standardvertragsklauseln.`,
+          `Cloudflare, Inc.: Hosting, Netzwerk und Ratenbegrenzung in einem globalen Netz sowie Speicherung der verschlüsselten Teile von Dateien auf Cloudflare R2 im Rechtsraum der Europäischen Union; Übermittlungen in die Vereinigten Staaten stützen sich auf das EU-U.S. Data Privacy Framework und die Standardvertragsklauseln.`,
           `Supabase, Inc.: PostgreSQL-Datenbank in der Region eu-central-1 (Frankfurt, Deutschland). Beide handeln als Auftragsverarbeiter auf Grundlage ihrer Auftragsverarbeitungsverträge.`,
         ],
       },
