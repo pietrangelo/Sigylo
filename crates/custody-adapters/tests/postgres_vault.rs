@@ -149,7 +149,8 @@ async fn request_is_answered_into_its_private_inbox() {
         lifetime: Lifetime::ONE_HOUR,
         chunks: None,
     };
-    custodian.answer_request(receipt.id, answer).await.unwrap();
+    let answered = custodian.answer_request(receipt.id, answer).await.unwrap();
+    assert_eq!(answered.id, receipt.inbox, "the sender learns the inbox, for a file's chunks");
     assert_eq!(custodian.fetch_request(&receipt.id).await, Err(CustodyError::NotFound));
     assert!(custodian.open(&receipt.inbox).await.unwrap().burned);
 }
@@ -170,7 +171,7 @@ async fn a_request_posted_before_inboxes_is_still_answered_under_its_id() {
     let custodian = custodian(&relay);
     let answer =
         Answer { payload: payload(), retention: Retention::UntilExpiry, lifetime: Lifetime::ONE_HOUR, chunks: None };
-    custodian.answer_request(id, answer).await.unwrap();
+    assert_eq!(custodian.answer_request(id, answer).await.unwrap().id, id);
     assert_eq!(custodian.open(&id).await.unwrap().payload, payload());
 }
 
@@ -374,6 +375,10 @@ mod adversary {
                 chunks: None,
             };
             assert_eq!(custodian.answer_request(request.id, answer).await, Err(CustodyError::StorageFull));
+            // A file's manifest is a deposit like any other.
+            let two = ChunkCount::new(2).unwrap();
+            let file = custodian.deposit_file(payload(), two, Retention::UntilExpiry, Lifetime::ONE_DAY, None).await;
+            assert_eq!(file, Err(CustodyError::StorageFull));
             assert_eq!(custodian.open(&old).await.unwrap().payload, payload());
         })
         .await;
@@ -501,20 +506,41 @@ mod files {
     async fn largest_chunk_and_file_answers_fit() {
         databases!(relay, _admin);
         let custodian = custodian(&relay);
-        let request = custodian.post_request(recipient_key(), Lifetime::ONE_DAY).await.unwrap().id;
+        let request = custodian.post_request(recipient_key(), Lifetime::ONE_DAY).await.unwrap();
         let answer = Answer {
             payload: payload(),
             retention: Retention::UntilExpiry,
             lifetime: Lifetime::ONE_HOUR,
             chunks: Some(count(custody::MAX_CHUNKS)),
         };
-        custodian.answer_request(request, answer).await.unwrap();
+        let inbox = custodian.answer_request(request.id, answer).await.unwrap().id;
+        assert_eq!(inbox, request.inbox);
         let big = SealedChunk::new(vec![0xAB; MAX_CHUNK_LEN]).unwrap();
         for i in 0..custody::MAX_CHUNKS {
-            custodian.put_chunk(&request, at(i), big.clone()).await.unwrap();
+            custodian.put_chunk(&inbox, at(i), big.clone()).await.unwrap();
         }
-        assert_eq!(custodian.open(&request).await.unwrap().chunks, Some(count(custody::MAX_CHUNKS)));
-        assert_eq!(custodian.open_chunk(&request, at(9), None).await, Ok(big));
+        assert_eq!(custodian.open(&inbox).await.unwrap().chunks, Some(count(custody::MAX_CHUNKS)));
+        assert_eq!(custodian.open_chunk(&inbox, at(9), None).await, Ok(big));
+    }
+
+    #[tokio::test]
+    async fn the_request_link_cannot_push_chunks_into_a_file_answer() {
+        // adversary: whoever saw the request link races the sender to chunk 0.
+        databases!(relay, _admin);
+        let custodian = custodian(&relay);
+        let request = custodian.post_request(recipient_key(), Lifetime::ONE_DAY).await.unwrap();
+        let answer = Answer {
+            payload: payload(),
+            retention: Retention::BurnAfterReading,
+            lifetime: Lifetime::ONE_HOUR,
+            chunks: Some(count(1)),
+        };
+        let inbox = custodian.answer_request(request.id, answer).await.unwrap().id;
+        let junk = SealedChunk::new(vec![0xEE; 300]).unwrap();
+        assert_eq!(custodian.put_chunk(&request.id, at(0), junk).await, Err(CustodyError::NotFound));
+        custodian.put_chunk(&inbox, at(0), chunk(0)).await.unwrap();
+        let opened = custodian.open(&request.inbox).await.unwrap();
+        assert_eq!(custodian.open_chunk(&request.inbox, at(0), opened.claim.as_ref()).await, Ok(chunk(0)));
     }
 
     #[tokio::test]

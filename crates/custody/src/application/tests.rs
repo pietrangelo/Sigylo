@@ -326,11 +326,32 @@ mod files {
             lifetime: Lifetime::ONE_HOUR,
             chunks: Some(count(2)),
         };
-        block_on(c.answer_request(request.id, answer)).unwrap();
-        assert_eq!(block_on(c.open(&request.id)), Err(CustodyError::NotFound), "not before the chunks");
-        upload_all(&c, &request.id, 2);
-        let opened = block_on(c.open(&request.id)).unwrap();
-        assert_eq!(block_on(c.open_chunk(&request.id, at(0), opened.claim.as_ref())), Ok(chunk(0)));
+        // The sender learns where the answer went, so it can upload the chunks there.
+        let receipt = block_on(c.answer_request(request.id, answer)).unwrap();
+        assert_eq!(receipt.id, request.inbox);
+        assert_eq!(block_on(c.open(&request.inbox)), Err(CustodyError::NotFound), "not before the chunks");
+        upload_all(&c, &receipt.id, 2);
+        let opened = block_on(c.open(&request.inbox)).unwrap();
+        assert_eq!(block_on(c.open_chunk(&request.inbox, at(0), opened.claim.as_ref())), Ok(chunk(0)));
+    }
+
+    #[test]
+    fn the_request_link_cannot_spoil_a_file_answer() {
+        // adversary: whoever saw the request link races the sender to the chunks.
+        let vault = FakeVault::default();
+        let c = custodian(&vault);
+        let request = block_on(c.post_request(key(), Lifetime::ONE_DAY)).unwrap();
+        let answer = Answer {
+            payload: payload(),
+            retention: Retention::UntilExpiry,
+            lifetime: Lifetime::ONE_HOUR,
+            chunks: Some(count(1)),
+        };
+        let receipt = block_on(c.answer_request(request.id, answer)).unwrap();
+        let junk = SealedChunk::new(vec![0xEE; 300]).unwrap();
+        assert_eq!(block_on(c.put_chunk(&request.id, at(0), junk)), Err(CustodyError::NotFound));
+        block_on(c.put_chunk(&receipt.id, at(0), chunk(0))).unwrap();
+        assert_eq!(block_on(c.open_chunk(&request.inbox, at(0), None)), Ok(chunk(0)));
     }
 
     #[test]

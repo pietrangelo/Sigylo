@@ -435,7 +435,12 @@ test.describe('adversary', () => {
   test('one client address gets 30 writes a minute, then 429', async ({ request }) => {
     const data = { payload: 'U0dZAQEA' + 'A'.repeat(400), retention: 'burn_after_reading', lifetime_seconds: 300 };
     const headers = { 'CF-Connecting-IP': '2001:db8:7:7::1' };
-    for (let i = 0; i < 30; i++) expect((await request.post('/api/secrets', { data, headers })).status()).toBe(201);
+    // The limiter counts in fixed one-minute windows: a run that straddles two
+    // of them gets up to 60 writes through before the 429.
+    let allowed = 0;
+    while (allowed <= 60 && (await request.post('/api/secrets', { data, headers })).status() === 201) allowed++;
+    expect(allowed).toBeGreaterThanOrEqual(30);
+    expect(allowed).toBeLessThanOrEqual(60);
     // Another address in the same IPv6 /64 is the same client.
     const next = await request.post('/api/secrets', { data, headers: { 'CF-Connecting-IP': '2001:db8:7:7::2' } });
     expect(next.status()).toBe(429);

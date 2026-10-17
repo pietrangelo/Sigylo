@@ -135,8 +135,9 @@ mod runtime {
             Command::FetchRequest(id) => {
                 Reply::Json(200, api::posted_request_body(custodian.fetch_request(&id).await?))
             }
+            // The receipt names the inbox, where the sender uploads a file's chunks.
             Command::AnswerRequest(id, answer) => {
-                Reply::Json(201, api::expires_body(custodian.answer_request(id, answer).await?))
+                Reply::Json(201, api::receipt_body(custodian.answer_request(id, answer).await?))
             }
         })
     }

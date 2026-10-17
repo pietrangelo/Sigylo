@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use super::ports::{ChunkStore, IdSource, TokenDigest, Vault};
 use crate::core::{
     CLAIM_WINDOW_SECONDS, ChunkIndex, ChunkRef, ClaimDigest, ClaimToken, CustodyError, Deposit, DropId, ObjectName,
-    Opened, PostedRequest, Request, Retention, RevocationDigest, RevocationToken, SealedChunk, UnixTime,
+    Opened, PostedRequest, Receipt, Request, Retention, RevocationDigest, RevocationToken, SealedChunk, UnixTime,
 };
 
 /// Drive a future that never actually waits (all fakes complete immediately).
@@ -224,14 +224,14 @@ impl Vault for &FakeVault {
         Ok(Some(PostedRequest { recipient_key: request.recipient_key.clone(), expires_at: UnixTime(*expires) }))
     }
 
-    async fn answer_request(&self, answer: &Deposit) -> Result<Option<UnixTime>, CustodyError> {
+    async fn answer_request(&self, answer: &Deposit) -> Result<Option<Receipt>, CustodyError> {
         if !self.live(&self.requests, &answer.id) {
             return Ok(None);
         }
         let inbox = self.requests.borrow()[&answer.id].0.inbox;
-        let expires = self.insert_deposit(&Deposit { id: inbox, ..answer.clone() })?;
+        let expires_at = self.insert_deposit(&Deposit { id: inbox, ..answer.clone() })?;
         self.requests.borrow_mut().remove(&answer.id);
-        Ok(Some(expires))
+        Ok(Some(Receipt { id: inbox, expires_at }))
     }
 
     async fn purge_expired(&self) -> Result<u64, CustodyError> {

@@ -6,7 +6,6 @@ use super::ports::{ChunkStore, IdSource, TokenDigest, Vault};
 use crate::core::{
     ChunkCount, ChunkIndex, ClaimToken, CustodyError, Deposit, DropId, GARBAGE_BATCH, Lifetime, Opened, PostedRequest,
     Receipt, RecipientKeyBlob, Request, RequestReceipt, Retention, RevocationToken, SealedChunk, SealedPayload,
-    UnixTime,
 };
 
 /// What a sender hands over when answering a request. For a file, the
@@ -169,7 +168,9 @@ impl<V: Vault, S: ChunkStore, D: TokenDigest, I: IdSource> Custodian<V, S, D, I>
     /// Answer a request: the request disappears and the answer is stored in
     /// its private inbox, where only the recipient's link will look.
     /// A request can be answered once; answers cannot be revoked by a token.
-    pub async fn answer_request(&self, id: DropId, answer: Answer) -> Result<UnixTime, CustodyError> {
+    /// The receipt names the inbox for the one who answered, so a file's
+    /// chunks can follow it there; the request link alone never reveals it.
+    pub async fn answer_request(&self, id: DropId, answer: Answer) -> Result<Receipt, CustodyError> {
         // `id` names the request; the vault files the deposit in its inbox.
         let deposit = Deposit {
             id,
