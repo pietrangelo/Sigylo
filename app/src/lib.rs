@@ -18,8 +18,14 @@ use relay::{Call, Relay, Reply};
 
 /// Forward one call of the relay API to sigylo.net.
 #[tauri::command]
-async fn relay(relay: State<'_, Relay>, method: String, path: String, body: Option<String>) -> Result<Reply, String> {
-    let call = Call::new(&method, &path, body).map_err(|e| format!("{e:?}"))?;
+async fn relay(
+    relay: State<'_, Relay>,
+    method: String,
+    path: String,
+    body: Option<String>,
+    session: Option<String>,
+) -> Result<Reply, String> {
+    let call = Call::new(&method, &path, body, session).map_err(|e| format!("{e:?}"))?;
     relay.send(&call).await.map_err(|e| format!("{e:?}"))
 }
 

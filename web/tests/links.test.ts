@@ -38,6 +38,10 @@ describe('links', () => {
     expect(parseFragment('#/me')).toEqual({ kind: 'me' });
   });
 
+  it('the account has its own page', () => {
+    expect(parseFragment('#/account')).toEqual({ kind: 'account' });
+  });
+
   it('an empty fragment is the compose page', () => {
     expect(parseFragment('')).toEqual({ kind: 'compose' });
     expect(parseFragment('#/')).toEqual({ kind: 'compose' });
@@ -62,6 +66,9 @@ describe('links', () => {
         '#/Terms',
         '#terms',
         '#/privacy/p',
+        '#/account/',
+        '#/account/x',
+        '#/Account',
         '#/me/x',
         `#/s/${i}/${k}/${encode(pin)}`,
         `#/x/${i}/${k}/${encode(pin)}`,
