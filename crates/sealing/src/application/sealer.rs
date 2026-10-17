@@ -103,6 +103,14 @@ impl<'a> Sealer<'a> {
         Ok((envelope, link_key))
     }
 
+    /// Link mode under a key the caller already holds (an account's keyring
+    /// key): the same envelope as [`Self::seal_for_link`], opened with
+    /// [`Self::open_link`]. A fresh nonce every time, so resealing is safe.
+    pub fn seal_with_link_key(&self, plaintext: &Plaintext, key: &LinkKey) -> Result<Envelope, SealError> {
+        let header = self.header(KeySource::LinkKey, None, false)?;
+        self.encrypt(header, key.expose(), plaintext, None)
+    }
+
     pub fn open_link(
         &self,
         envelope: &Envelope,

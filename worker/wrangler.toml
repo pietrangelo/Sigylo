@@ -46,8 +46,20 @@ simple = { limit = 30, period = 60 }
 
 [[ratelimits]]
 name = "READ_LIMITER"
-namespace_id = "7302"
+namespace_id = "7303"
 simple = { limit = 60, period = 60 }
+
+# Throttles login attempts per account, from any address, so a botnet cannot
+# guess one account's password at leisure. Keyed by a prefix of the account's
+# keyed hash; nothing is stored by us.
+[[ratelimits]]
+name = "LOGIN_LIMITER"
+namespace_id = "7302"
+simple = { limit = 10, period = 60 }
+
+# The relay's OPAQUE keys derive from the secret OPAQUE_SERVER_SEED (32 random
+# bytes, base64url). The deploy workflow creates it once if it is missing;
+# changing it afterwards locks every account out.
 
 # Physically delete expired rows (reads already ignore them), then the R2 objects
 # of every chunk that went.

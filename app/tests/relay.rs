@@ -12,8 +12,15 @@ use tokio::sync::mpsc;
 
 const ID: &str = "AAECAwQFBgcICQoLDA0ODw";
 
+/// A 32-byte session token in base64url, as the web client sends it.
+const SESSION: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+
 fn call(method: &str, path: &str, body: Option<&str>) -> Result<Call, Refusal> {
-    Call::new(method, path, body.map(String::from))
+    Call::new(method, path, body.map(String::from), None)
+}
+
+fn signed_in(method: &str, path: &str, body: Option<&str>, session: &str) -> Result<Call, Refusal> {
+    Call::new(method, path, body.map(String::from), Some(session.to_string()))
 }
 
 /// Serves one canned HTTP response per connection and reports every raw request.
@@ -101,6 +108,45 @@ fn every_route_of_the_relay_api_is_allowed() {
         assert_eq!(checked.path(), path);
         assert_eq!(checked.method(), if method == "GET" { Method::Get } else { Method::Post });
     }
+}
+
+#[test]
+fn every_account_route_is_allowed() {
+    let body = Some("{}");
+    for path in ["/account/register/start", "/account/register/finish", "/account/login/start", "/account/login/finish"]
+    {
+        call("POST", path, body).unwrap_or_else(|e| panic!("{path}: {e:?}"));
+    }
+    for (method, path, body) in [
+        ("POST", "/account/logout", None),
+        ("GET", "/account/keyring", None),
+        ("POST", "/account/keyring", body),
+        ("POST", "/account/close", None),
+    ] {
+        let checked = signed_in(method, path, body, SESSION).unwrap_or_else(|e| panic!("{method} {path}: {e:?}"));
+        assert_eq!(checked.method(), if method == "GET" { Method::Get } else { Method::Post });
+    }
+}
+
+#[tokio::test]
+async fn a_session_travels_as_a_bearer_token() {
+    let (base, mut requests) = server(http("200 OK", "", r#"{"keyring":null,"version":0}"#)).await;
+    let relay = Relay::new(&base, false);
+    let reply = relay.send(&signed_in("GET", "/account/keyring", None, SESSION).unwrap()).await.unwrap();
+    assert_eq!(reply.status, 200);
+    let request = requests.recv().await.unwrap();
+    assert!(request.starts_with("GET /api/account/keyring HTTP/1.1\r\n"), "{request}");
+    assert!(
+        request.to_ascii_lowercase().contains(&format!("authorization: bearer {}\r\n", SESSION.to_ascii_lowercase())),
+        "{request}"
+    );
+}
+
+#[tokio::test]
+async fn calls_without_a_session_carry_no_authorization() {
+    let (base, mut requests) = server(http("200 OK", "", "{}")).await;
+    Relay::new(&base, false).send(&call("POST", "/account/login/start", Some("{}")).unwrap()).await.unwrap();
+    assert!(!requests.recv().await.unwrap().to_ascii_lowercase().contains("authorization"));
 }
 
 #[tokio::test]
@@ -307,6 +353,56 @@ mod adversary {
     }
 
     #[test]
+    fn a_session_goes_only_to_the_routes_that_need_one() {
+        assert_eq!(call("GET", "/account/keyring", None).unwrap_err(), Refusal::MissingSession);
+        assert_eq!(call("POST", "/account/close", None).unwrap_err(), Refusal::MissingSession);
+        for path in ["/secrets", "/requests", "/account/login/start", "/account/register/finish"] {
+            assert_eq!(signed_in("POST", path, Some("{}"), SESSION).unwrap_err(), Refusal::UnexpectedSession, "{path}");
+        }
+        assert_eq!(
+            signed_in("POST", &format!("/secrets/{ID}/open"), None, SESSION).unwrap_err(),
+            Refusal::UnexpectedSession
+        );
+    }
+
+    #[test]
+    fn a_malformed_session_never_reaches_a_header() {
+        for bad in [
+            "",
+            &SESSION[1..],
+            &format!("{SESSION}A"),
+            &format!("{}=", &SESSION[1..]),
+            &format!("{}+", &SESSION[1..]),
+            &format!("{}\r", &SESSION[1..]),
+            &format!("{}\n", &SESSION[1..]),
+            "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGx\r\nHost: x",
+        ] {
+            assert_eq!(
+                signed_in("GET", "/account/keyring", None, bad).unwrap_err(),
+                Refusal::MalformedSession,
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn account_paths_outside_the_api_are_refused() {
+        for path in [
+            "/account",
+            "/account/",
+            "/account/login",
+            "/account/login/start/",
+            "/account/keyring/x",
+            "/account/admin",
+            "/ACCOUNT/close",
+        ] {
+            assert_eq!(signed_in("POST", path, None, SESSION).unwrap_err(), Refusal::UnknownRoute, "{path}");
+        }
+        assert_eq!(signed_in("PUT", "/account/keyring", Some("{}"), SESSION).unwrap_err(), Refusal::WrongMethod);
+        assert_eq!(signed_in("GET", "/account/close", None, SESSION).unwrap_err(), Refusal::WrongMethod);
+    }
+
+    #[test]
     fn a_body_larger_than_the_relay_accepts_never_leaves_the_device() {
         let largest = "x".repeat(MAX_BODY_LEN);
         assert!(call("POST", "/secrets", Some(&largest)).is_ok());
@@ -362,5 +458,11 @@ mod adversary {
     fn debug_never_prints_a_body() {
         let checked = call("POST", "/secrets", Some(r#"{"payload":"SEKRIT"}"#)).unwrap();
         assert!(!format!("{checked:?}").contains("SEKRIT"));
+    }
+
+    #[test]
+    fn debug_never_prints_a_session() {
+        let checked = signed_in("POST", "/account/keyring", Some("{}"), SESSION).unwrap();
+        assert!(!format!("{checked:?}").contains(SESSION));
     }
 }

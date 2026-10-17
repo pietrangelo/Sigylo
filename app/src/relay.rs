@@ -1,9 +1,10 @@
 //! The page inside the app has no network access: its only way out is this
 //! command, which knows the calls of the relay API and nothing else, and
 //! sends them to https://sigylo.net only. Bodies are the JSON the web client
-//! already sends to the relay in a browser (sealed envelopes, opaque here),
-//! except a file's sealed chunks: they cross the IPC boundary in base64url and
-//! travel to and from the relay as raw bytes, as they do in a browser.
+//! already sends to the relay in a browser (sealed envelopes and OPAQUE
+//! messages, opaque here), except a file's sealed chunks: they cross the IPC
+//! boundary in base64url and travel to and from the relay as raw bytes, as
+//! they do in a browser. A signed-in call adds its session as a bearer token.
 
 use std::fmt;
 use std::time::Duration;
@@ -27,6 +28,9 @@ pub const MAX_CHUNK_LEN: usize = 1024 * 1024 + 16;
 /// Length of a 16-byte id in base64url without padding.
 const ID_LEN: usize = 22;
 
+/// Length of a 32-byte session token in base64url without padding.
+const SESSION_LEN: usize = 43;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
     Get,
@@ -42,6 +46,9 @@ pub enum Refusal {
     UnexpectedBody,
     BodyTooLarge,
     MalformedBody,
+    MissingSession,
+    UnexpectedSession,
+    MalformedSession,
 }
 
 /// Why a checked call got no usable reply.
@@ -59,6 +66,7 @@ pub struct Call {
     path: String,
     body: Body,
     binary_reply: bool,
+    session: Option<String>,
 }
 
 /// What goes to the relay with a call.
@@ -83,8 +91,12 @@ impl fmt::Debug for Call {
     }
 }
 
+fn is_base64url(text: &str, len: usize) -> bool {
+    text.len() == len && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 fn is_id(segment: &str) -> bool {
-    segment.len() == ID_LEN && segment.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    is_base64url(segment, ID_LEN)
 }
 
 /// One of a file's ten chunks, written as the relay writes it: a single digit.
@@ -92,18 +104,39 @@ fn is_chunk_index(segment: &str) -> bool {
     matches!(segment.as_bytes(), [b'0'..=b'9'])
 }
 
-/// The method, the body and whether the reply is bytes, for each route of the API.
-fn route(path: &str) -> Option<(Method, Shape, bool)> {
+/// What a route expects: its method, its body, whether the reply is bytes,
+/// and whether it needs a session.
+struct Expected {
+    method: Method,
+    shape: Shape,
+    binary_reply: bool,
+    session: bool,
+}
+
+const fn expect(method: Method, shape: Shape, binary_reply: bool) -> Option<Expected> {
+    Some(Expected { method, shape, binary_reply, session: false })
+}
+
+const fn signed_in(method: Method, shape: Shape) -> Option<Expected> {
+    Some(Expected { method, shape, binary_reply: false, session: true })
+}
+
+/// The shape of each route of the API, by method too where a path has two.
+fn route(method: Method, path: &str) -> Option<Expected> {
     let segments: Vec<&str> = path.strip_prefix('/')?.split('/').collect();
     match segments.as_slice() {
-        ["secrets"] | ["requests"] => Some((Method::Post, Shape::Json, false)),
-        ["secrets", id, "open"] if is_id(id) => Some((Method::Post, Shape::None, false)),
-        ["secrets", id, "revoke"] | ["requests", id, "answer"] if is_id(id) => Some((Method::Post, Shape::Json, false)),
-        ["requests", id] if is_id(id) => Some((Method::Get, Shape::None, false)),
-        ["secrets", id, "chunks", n] if is_id(id) && is_chunk_index(n) => Some((Method::Post, Shape::Chunk, false)),
+        ["secrets"] | ["requests"] => expect(Method::Post, Shape::Json, false),
+        ["secrets", id, "open"] if is_id(id) => expect(Method::Post, Shape::None, false),
+        ["secrets", id, "revoke"] | ["requests", id, "answer"] if is_id(id) => expect(Method::Post, Shape::Json, false),
+        ["requests", id] if is_id(id) => expect(Method::Get, Shape::None, false),
+        ["secrets", id, "chunks", n] if is_id(id) && is_chunk_index(n) => expect(Method::Post, Shape::Chunk, false),
         ["secrets", id, "chunks", n, "open"] if is_id(id) && is_chunk_index(n) => {
-            Some((Method::Post, Shape::Json, true))
+            expect(Method::Post, Shape::Json, true)
         }
+        ["account", "register" | "login", "start" | "finish"] => expect(Method::Post, Shape::Json, false),
+        ["account", "logout" | "close"] => signed_in(Method::Post, Shape::None),
+        ["account", "keyring"] if method == Method::Get => signed_in(Method::Get, Shape::None),
+        ["account", "keyring"] => signed_in(Method::Post, Shape::Json),
         _ => None,
     }
 }
@@ -123,16 +156,18 @@ fn chunk(text: &str) -> Result<Vec<u8>, Refusal> {
 }
 
 impl Call {
-    pub fn new(method: &str, path: &str, body: Option<String>) -> Result<Self, Refusal> {
-        let (expected, shape, binary_reply) = route(path).ok_or(Refusal::UnknownRoute)?;
+    pub fn new(method: &str, path: &str, body: Option<String>, session: Option<String>) -> Result<Self, Refusal> {
         let method = match method {
-            "GET" => Method::Get,
-            "POST" => Method::Post,
-            _ => return Err(Refusal::WrongMethod),
+            "GET" => Some(Method::Get),
+            "POST" => Some(Method::Post),
+            _ => None,
         };
-        if method != expected {
+        let expected = route(method.unwrap_or(Method::Post), path).ok_or(Refusal::UnknownRoute)?;
+        let method = method.ok_or(Refusal::WrongMethod)?;
+        if method != expected.method {
             return Err(Refusal::WrongMethod);
         }
+        let (shape, binary_reply) = (expected.shape, expected.binary_reply);
         let body = match (body, shape) {
             (None, Shape::None) => Body::None,
             (None, _) => return Err(Refusal::MissingBody),
@@ -141,7 +176,13 @@ impl Call {
             (Some(b), Shape::Json) => Body::Json(b),
             (Some(b), Shape::Chunk) => Body::Chunk(chunk(&b)?),
         };
-        Ok(Self { method, path: path.to_string(), body, binary_reply })
+        match (&session, expected.session) {
+            (None, true) => return Err(Refusal::MissingSession),
+            (Some(_), false) => return Err(Refusal::UnexpectedSession),
+            (Some(s), true) if !is_base64url(s, SESSION_LEN) => return Err(Refusal::MalformedSession),
+            _ => {}
+        }
+        Ok(Self { method, path: path.to_string(), body, binary_reply, session })
     }
 
     pub fn method(&self) -> Method {
@@ -201,6 +242,9 @@ impl Relay {
                 request.header(reqwest::header::CONTENT_TYPE, "application/octet-stream").body(bytes.clone())
             }
         };
+        if let Some(session) = &call.session {
+            request = request.bearer_auth(session);
+        }
         let mut response = request.send().await.map_err(|_| Failure::Network)?;
         let limit = if call.binary_reply { MAX_CHUNK_LEN } else { MAX_REPLY_LEN };
         if response.content_length().is_some_and(|n| n > limit as u64) {

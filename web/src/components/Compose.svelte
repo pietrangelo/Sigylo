@@ -5,6 +5,10 @@
   import { inboxLink, requestLink, revokeLink, secretLink } from '../lib/links';
   import { formatExpiry, relayMessage, sealMessage } from '../lib/messages';
   import { Relay, type Retention } from '../lib/relay';
+  import { Accounts } from '../lib/account';
+  import { encode } from '../lib/base64url';
+  import { addSeal } from '../lib/keyring';
+  import { currentSession } from '../lib/session.svelte';
   import { linkOrigin, relayFetch } from '../lib/platform';
   import LinkBox from './LinkBox.svelte';
   import SealOptions from './SealOptions.svelte';
@@ -21,7 +25,7 @@
   let passphrase = $state('');
   let busy = $state(false);
   let error = $state('');
-  let sent: { link: string; revoke: string; expires: number } | null = $state(null);
+  let sent: { link: string; revoke: string; expires: number; saved: boolean | null } | null = $state(null);
   let requested: { request: string; inbox: string; expires: number } | null = $state(null);
   let expectedCode = $state('');
 
@@ -75,16 +79,27 @@
         link: secretLink(linkOrigin, result.value.id, key, pass !== undefined),
         revoke: revokeLink(linkOrigin, result.value.id, token),
         expires: result.value.expiresAt,
+        saved: null,
       };
       secret = '';
       file = null;
       passphrase = '';
+      await remember(result.value.id, token, result.value.expiresAt);
     } catch (e) {
       error = sealMessage(errorCode(e));
     } finally {
       busy = false;
       uploading = false;
     }
+  }
+
+  /** Signed in: keep the revocation token in the account's sealed keyring. */
+  async function remember(id: Uint8Array, token: Uint8Array, expires: number) {
+    const session = currentSession();
+    if (session === null || sent === null) return;
+    const seal = { id: encode(id), token: encode(token), sealed: Math.floor(Date.now() / 1000), expires };
+    const saved = await new Accounts(engine, relay).update(session, (k) => addSeal(k, seal));
+    if (sent !== null) sent.saved = saved.ok;
   }
 
   async function createRequest(event: SubmitEvent) {
@@ -135,6 +150,8 @@
       <LinkBox label={t.shareThis} value={sent.link} testid="secret-link" />
       <p class="muted small">{t.expiresAt} {formatExpiry(sent.expires)}</p>
       <LinkBox label={t.keepRevoke} value={sent.revoke} testid="revoke-link" />
+      {#if sent.saved === true}<p class="success small" data-testid="saved-to-account">{t.savedToAccount}</p>{/if}
+      {#if sent.saved === false}<p class="error small">{t.notSaved}</p>{/if}
       <button class="secondary" onclick={reset}>{t.another}</button>
     </div>
   {:else if tab === 'send'}

@@ -66,3 +66,42 @@ begin
     assert (select count(*) from information_schema.columns where table_schema = 'custody') = 16,
         'custody tables must keep exactly the 16 documented columns';
 end $$;
+
+-- The access schema follows the same layout.
+do $$
+begin
+    assert has_function_privilege('sigylo_relay', 'access.take_login(bytea)', 'execute'),
+        'relay must be able to finish logins';
+    assert has_function_privilege('sigylo_relay', 'access.store_keyring(bytea, bytea, bigint)', 'execute'),
+        'relay must be able to store keyrings';
+    assert not has_table_privilege('sigylo_relay', 'access.accounts', 'select,insert,update,delete,truncate'),
+        'relay must not touch access.accounts directly';
+    assert not has_table_privilege('sigylo_relay', 'access.logins', 'select,insert,update,delete,truncate'),
+        'relay must not touch access.logins directly';
+    assert not has_table_privilege('sigylo_relay', 'access.sessions', 'select,insert,update,delete,truncate'),
+        'relay must not touch access.sessions directly';
+    assert not has_function_privilege('sigylo_relay', 'access.lifetime(integer)', 'execute'),
+        'relay must only reach the documented functions';
+    assert not has_schema_privilege('public', 'access', 'usage'),
+        'PUBLIC must not use the access schema';
+    assert (select bool_and(relrowsecurity and relforcerowsecurity) from pg_class
+            where relnamespace = 'access'::regnamespace and relkind = 'r'),
+        'RLS must be enabled and forced on every access table';
+    assert not exists (
+        select 1
+        from (
+            select coalesce(nspacl, acldefault('n', nspowner)) as acl, nspowner as owner
+            from pg_namespace where nspname = 'access'
+            union all
+            select coalesce(relacl, acldefault('r', relowner)), relowner
+            from pg_class where relnamespace = 'access'::regnamespace
+            union all
+            select coalesce(proacl, acldefault('f', proowner)), proowner
+            from pg_proc where pronamespace = 'access'::regnamespace
+        ) as objects, aclexplode(objects.acl) as grant_
+        where grant_.grantee not in (objects.owner, 'sigylo_relay'::regrole)
+    ), 'only the owner and sigylo_relay may hold privileges in the access schema';
+    -- No username, e-mail, address or creation time can hide anywhere.
+    assert (select count(*) from information_schema.columns where table_schema = 'access') = 11,
+        'access tables must keep exactly the 11 documented columns';
+end $$;
