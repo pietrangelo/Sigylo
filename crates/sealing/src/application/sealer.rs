@@ -19,12 +19,13 @@ use zeroize::Zeroizing;
 use super::ports::CryptoSuite;
 use crate::core::{
     Envelope, EnvelopeHeader, Fingerprint, KdfCost, KeySource, LinkKey, MAX_SIGNED_PLAINTEXT_LEN, Nonce, Passphrase,
-    PassphraseLock, Plaintext, RecipientPublicKey, RecipientSeed, Salt, SealError, SenderFingerprint, SenderPublicKey,
-    SenderSeed, SignedPlaintext, SymmetricKey, padding, signed_message,
+    PassphraseLock, Plaintext, RecipientPublicKey, RecipientSeed, Salt, SealError, SenderCode, SenderFingerprint,
+    SenderPin, SenderPublicKey, SenderSeed, SignedPlaintext, SymmetricKey, padding, signed_message,
 };
 
 const HKDF_SALT: &[u8] = b"sigylo/v1";
 const AEAD_INFO: &[u8] = b"sigylo/v1/aead";
+const PIN_INFO: &[u8] = b"sigylo/v1/expected-sender";
 
 /// A recipient key pair fresh from [`Sealer::new_recipient`].
 #[derive(Debug)]
@@ -124,8 +125,28 @@ impl<'a> Sealer<'a> {
         self.suite.signer.fingerprint(&self.suite.signer.public_key(seed))
     }
 
+    /// Request mode, recipient side: commit to the sender expected to
+    /// answer the request whose key has fingerprint `recipient`.
+    ///
+    /// ```text
+    /// pin = HKDF-SHA3-256(salt = "sigylo/v1", ikm = code, info = "sigylo/v1/expected-sender" || recipient)
+    /// ```
+    ///
+    /// Every request has its own key, so the same code gives unrelated pins.
+    pub fn sender_pin(&self, recipient: &Fingerprint, code: &SenderCode) -> SenderPin {
+        let key = self.suite.kdf.derive(HKDF_SALT, code.as_bytes(), &[PIN_INFO, recipient.as_bytes()]);
+        SenderPin::from_array(*key.expose())
+    }
+
+    /// Request mode, sender side: whether `seed` is the sender `pin` expects.
+    pub fn is_expected_sender(&self, recipient: &Fingerprint, pin: &SenderPin, seed: &SenderSeed) -> bool {
+        self.sender_pin(recipient, &self.sender_fingerprint(seed).sender_code()) == *pin
+    }
+
     /// Request mode, sender side. Refuses to seal if the relay served a
-    /// public key that does not match the fingerprint from the request link.
+    /// public key that does not match the fingerprint from the request link,
+    /// or if the request expects another sender (`expected_sender`): an
+    /// honest sender then keeps the request's single answer free.
     /// With a `sender` identity the answer is signed, bound to this recipient
     /// and to this very envelope.
     pub fn seal_for_recipient(
@@ -135,9 +156,15 @@ impl<'a> Sealer<'a> {
         expected: &Fingerprint,
         passphrase: Option<&Passphrase>,
         sender: Option<&SenderSeed>,
+        expected_sender: Option<&SenderPin>,
     ) -> Result<Envelope, SealError> {
         if self.suite.kem.fingerprint(public_key) != *expected {
             return Err(SealError::FingerprintMismatch);
+        }
+        if let Some(pin) = expected_sender
+            && !sender.is_some_and(|seed| self.is_expected_sender(expected, pin, seed))
+        {
+            return Err(SealError::UnexpectedSender);
         }
         if sender.is_some() && plaintext.expose().len() > MAX_SIGNED_PLAINTEXT_LEN {
             return Err(SealError::PlaintextTooLarge);
@@ -158,8 +185,28 @@ impl<'a> Sealer<'a> {
 
     /// Request mode, recipient side. A signed answer opens only if its
     /// signature verifies for this recipient; a bad one is as
-    /// [`SealError::NotAuthentic`] as a tampered envelope.
+    /// [`SealError::NotAuthentic`] as a tampered envelope. With an
+    /// `expected_sender`, an answer from anyone else, or unsigned, is
+    /// [`SealError::UnexpectedSender`] and its plaintext is wiped unread.
     pub fn open_as_recipient(
+        &self,
+        envelope: &Envelope,
+        seed: &RecipientSeed,
+        passphrase: Option<&Passphrase>,
+        expected_sender: Option<&SenderPin>,
+    ) -> Result<Received, SealError> {
+        let received = self.open_answer(envelope, seed, passphrase)?;
+        if let Some(pin) = expected_sender {
+            let me = self.suite.kem.fingerprint(&self.suite.kem.public_key(seed));
+            let matches = received.sender.is_some_and(|sender| self.sender_pin(&me, &sender.sender_code()) == *pin);
+            if !matches {
+                return Err(SealError::UnexpectedSender);
+            }
+        }
+        Ok(received)
+    }
+
+    fn open_answer(
         &self,
         envelope: &Envelope,
         seed: &RecipientSeed,

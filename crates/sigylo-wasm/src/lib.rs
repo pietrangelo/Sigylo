@@ -22,7 +22,7 @@
 use js_sys::Uint8Array;
 use sealing::{
     Envelope, Fingerprint, LinkKey, Passphrase, Plaintext, RecipientPublicKey, RecipientSeed, SealError, Sealer,
-    SenderSeed,
+    SenderCode, SenderPin, SenderSeed,
 };
 use sealing_adapters::rustcrypto_suite;
 use wasm_bindgen::prelude::*;
@@ -226,7 +226,31 @@ pub fn sender_code(seed: Vec<u8>) -> Result<String, JsError> {
     })
 }
 
-/// Seals an answer to a request; signed when `sender_seed` is given.
+fn expected_sender(bytes: Option<Vec<u8>>) -> Result<Option<SenderPin>, SealError> {
+    bytes.map(|bytes| SenderPin::from_slice(&bytes)).transpose()
+}
+
+/// The pin that makes a request accept only the sender with this `code`.
+#[wasm_bindgen(js_name = senderPin)]
+pub fn sender_pin(recipient_fingerprint: &[u8], code: &str) -> Result<Vec<u8>, JsError> {
+    let recipient = Fingerprint::from_slice(recipient_fingerprint).map_err(js_error)?;
+    let code = SenderCode::parse(code).map_err(js_error)?;
+    Ok(sealer().sender_pin(&recipient, &code).as_bytes().to_vec())
+}
+
+/// Whether the sender with `sender_seed` is the one a request's pin expects.
+#[wasm_bindgen(js_name = isExpectedSender)]
+pub fn is_expected_sender(recipient_fingerprint: &[u8], pin: &[u8], sender_seed: Vec<u8>) -> Result<bool, JsError> {
+    scrubbed(|| {
+        let recipient = Fingerprint::from_slice(recipient_fingerprint).map_err(js_error)?;
+        let pin = SenderPin::from_slice(pin).map_err(js_error)?;
+        let seed = SenderSeed::from_slice(&Zeroizing::new(sender_seed)).map_err(js_error)?;
+        Ok(sealer().is_expected_sender(&recipient, &pin, &seed))
+    })
+}
+
+/// Seals an answer to a request; signed when `sender_seed` is given, and
+/// refused with `UnexpectedSender` if `expected_sender` names someone else.
 #[wasm_bindgen(js_name = sealForRecipient)]
 pub fn seal_for_recipient(
     plaintext: Vec<u8>,
@@ -234,6 +258,7 @@ pub fn seal_for_recipient(
     fingerprint: &[u8],
     passphrase_utf8: Option<Vec<u8>>,
     sender_seed: Option<Vec<u8>>,
+    expected_sender: Option<Vec<u8>>,
 ) -> Result<Vec<u8>, JsError> {
     scrubbed(|| {
         let plaintext = Plaintext::new(plaintext).map_err(js_error)?;
@@ -241,8 +266,16 @@ pub fn seal_for_recipient(
         let fingerprint = Fingerprint::from_slice(fingerprint).map_err(js_error)?;
         let passphrase = passphrase(passphrase_utf8).map_err(js_error)?;
         let sender = sender_identity(sender_seed).map_err(js_error)?;
+        let pin = self::expected_sender(expected_sender).map_err(js_error)?;
         let envelope = sealer()
-            .seal_for_recipient(&plaintext, &public_key, &fingerprint, passphrase.as_ref(), sender.as_ref())
+            .seal_for_recipient(
+                &plaintext,
+                &public_key,
+                &fingerprint,
+                passphrase.as_ref(),
+                sender.as_ref(),
+                pin.as_ref(),
+            )
             .map_err(js_error)?;
         Ok(envelope.to_bytes())
     })
@@ -253,13 +286,16 @@ pub fn open_as_recipient(
     envelope: &[u8],
     seed: Vec<u8>,
     passphrase_utf8: Option<Vec<u8>>,
+    expected_sender: Option<Vec<u8>>,
 ) -> Result<Received, JsError> {
     scrubbed(|| {
+        let pin = self::expected_sender(expected_sender).map_err(js_error)?;
         let seed = Zeroizing::new(seed);
         let seed = RecipientSeed::from_slice(&seed).map_err(js_error)?;
         let envelope = Envelope::parse(envelope).map_err(js_error)?;
         let passphrase = passphrase(passphrase_utf8).map_err(js_error)?;
-        let received = sealer().open_as_recipient(&envelope, &seed, passphrase.as_ref()).map_err(js_error)?;
+        let received =
+            sealer().open_as_recipient(&envelope, &seed, passphrase.as_ref(), pin.as_ref()).map_err(js_error)?;
         Ok(Received {
             plaintext: hand_over(received.plaintext.expose()),
             sender_code: received.sender.map(|sender| sender.code()),

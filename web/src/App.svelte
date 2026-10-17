@@ -6,6 +6,7 @@
   import Answer from './components/Answer.svelte';
   import Revoke from './components/Revoke.svelte';
   import Legal from './components/Legal.svelte';
+  import Me from './components/Me.svelte';
 
   let route: Route = $state(parseFragment(location.hash));
 
@@ -35,9 +36,11 @@
     {:else if route.kind === 'secret'}
       <Opener mode="link" id={route.id} secret={route.key} expectsPassphrase={route.passphrase} />
     {:else if route.kind === 'inbox'}
-      <Opener mode="inbox" id={route.id} secret={route.seed} expectsPassphrase={false} />
+      <Opener mode="inbox" id={route.id} secret={route.seed} expectsPassphrase={false} expectedSender={route.expectedSender} />
     {:else if route.kind === 'answer'}
-      <Answer id={route.id} fingerprint={route.fingerprint} />
+      <Answer id={route.id} fingerprint={route.fingerprint} expectedSender={route.expectedSender} />
+    {:else if route.kind === 'me'}
+      <Me />
     {:else if route.kind === 'revoke'}
       <Revoke id={route.id} token={route.token} />
     {:else if route.kind === 'terms' || route.kind === 'privacy'}
@@ -53,6 +56,7 @@
     <nav>
       <a href="#/terms" target="_blank" rel="noopener noreferrer" data-testid="terms-link">{t.termsLink}</a>
       <a href="#/privacy" target="_blank" rel="noopener noreferrer" data-testid="privacy-link">{t.privacyLink}</a>
+      <a href="#/me" target="_blank" rel="noopener noreferrer" data-testid="me-link">{t.myCodeLink}</a>
     </nav>
   </footer>
 </main>

@@ -13,7 +13,10 @@
     id,
     secret,
     expectsPassphrase,
-  }: { mode: 'link' | 'inbox'; id: Uint8Array; secret: Uint8Array; expectsPassphrase: boolean } = $props();
+    expectedSender = null,
+  }: { mode: 'link' | 'inbox'; id: Uint8Array; secret: Uint8Array; expectsPassphrase: boolean;
+    expectedSender?: Uint8Array | null;
+  } = $props();
 
   const relay = new Relay();
   let envelope: Uint8Array | null = null;
@@ -53,7 +56,7 @@
         bytes = engine.openLink(envelope, secret, pass);
       } else {
         // Throws NotAuthentic, like a tampered envelope, if a signature does not verify.
-        const received = engine.openAsRecipient(envelope, secret, pass);
+        const received = engine.openAsRecipient(envelope, secret, pass, expectedSender ?? undefined);
         bytes = received.plaintext;
         senderCode = received.senderCode ?? null;
         received.free();
@@ -83,7 +86,7 @@
       <div class="sender" data-testid="signed">
         <p class="small muted">{t.signedBy}</p>
         <p class="code" data-testid="sender-code">{senderCode}</p>
-        <p class="small muted">{t.signedHint}</p>
+        <p class="small muted">{expectedSender === null ? t.signedHint : t.expectedSenderOk}</p>
       </div>
     {:else if mode === 'inbox'}
       <p class="notice" data-testid="unsigned">{t.unsigned}</p>

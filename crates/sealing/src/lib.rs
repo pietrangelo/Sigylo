@@ -27,7 +27,7 @@ pub mod core;
 
 pub use crate::core::{
     Encapsulation, Envelope, Fingerprint, KdfCost, LinkKey, MAX_PASSPHRASE_LEN, MAX_PLAINTEXT_LEN,
-    MAX_SIGNED_PLAINTEXT_LEN, Passphrase, Plaintext, RecipientPublicKey, RecipientSeed, SealError, SenderFingerprint,
-    SenderPublicKey, SenderSeed, SenderSignature, SymmetricKey,
+    MAX_SIGNED_PLAINTEXT_LEN, Passphrase, Plaintext, RecipientPublicKey, RecipientSeed, SealError, SenderCode,
+    SenderFingerprint, SenderPin, SenderPublicKey, SenderSeed, SenderSignature, SymmetricKey,
 };
 pub use application::{CryptoSuite, NewRecipient, NewSender, Received, Sealer};
