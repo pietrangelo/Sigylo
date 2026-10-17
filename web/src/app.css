@@ -1,0 +1,181 @@
+/* Design tokens. Spacing, type and proportions follow the golden ratio
+   (φ ≈ 1.618) from an 8px base, as in the ModusNote design system. */
+:root {
+  --phi: 1.618;
+  --s1: 3px;
+  --s2: 5px;
+  --s3: 8px;
+  --s4: 13px;
+  --s5: 21px;
+  --s6: 34px;
+  --s7: 55px;
+  --s8: 89px;
+
+  --t-caption: 10px;
+  --t-small: 13px;
+  --t-body: 16px;
+  --t-title: 26px;
+  --t-display: 42px;
+
+  --radius: 8px;
+  --column: 610px; /* ≈ 377 × φ */
+
+  /* "Ceralacca": sealing wax on parchment and ink. */
+  --ink: #0e1016;
+  --surface: #171a23;
+  --raised: #20242f;
+  --line: #2e3442;
+  --text: #f3e9dc;
+  --muted: #a7adba;
+  --wax: #b8382f;
+  --wax-strong: #d24a3f;
+  --on-wax: #ffffff;
+  --ok: #4fb38a;
+  --warn: #e3a64a;
+
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --ink: #f7f2ea;
+    --surface: #fffdf9;
+    --raised: #f1ebe1;
+    --line: #ddd3c3;
+    --text: #1c1a17;
+    --muted: #5d574e;
+    --wax: #a32d25;
+    --wax-strong: #8c241d;
+    --ok: #1f7a55;
+    --warn: #8a5a12;
+    color-scheme: light;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--ink);
+  color: var(--text);
+  font: var(--t-body) / var(--phi) system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2 {
+  line-height: 1.2;
+  margin: 0 0 var(--s4);
+}
+
+h1 {
+  font-size: var(--t-display);
+  letter-spacing: -0.02em;
+}
+
+h2 {
+  font-size: var(--t-title);
+}
+
+p {
+  margin: 0 0 var(--s4);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: var(--t-small);
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  padding: var(--s3) var(--s5);
+}
+
+button.primary {
+  background: var(--wax);
+  color: var(--on-wax);
+  font-weight: 600;
+  padding: var(--s4) var(--s6);
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--wax-strong);
+}
+
+button.secondary {
+  background: var(--raised);
+  color: var(--text);
+  border-color: var(--line);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--wax-strong);
+  outline-offset: 2px;
+}
+
+input,
+textarea,
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--s3) var(--s4);
+  width: 100%;
+}
+
+textarea {
+  resize: vertical;
+  min-height: calc(var(--s8) * var(--phi));
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: var(--s2);
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: calc(var(--radius) * var(--phi));
+  padding: var(--s6);
+}
+
+.stack > * + * {
+  margin-top: var(--s5);
+}
+
+.error {
+  color: var(--wax-strong);
+  font-weight: 600;
+}
+
+.notice {
+  border-left: 3px solid var(--warn);
+  padding-left: var(--s4);
+}
+
+.success {
+  border-left: 3px solid var(--ok);
+  padding-left: var(--s4);
+}
