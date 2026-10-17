@@ -255,9 +255,11 @@ mod adversary {
 }
 
 mod files {
+    use super::super::{ChunkStore, Vault};
     use super::*;
     use crate::core::{
-        CLAIM_WINDOW_SECONDS, ChunkCount, ChunkIndex, ClaimToken, DropId, MAX_CHUNK_LEN, MIN_CHUNK_LEN, SealedChunk,
+        CLAIM_WINDOW_SECONDS, ChunkCount, ChunkIndex, ClaimToken, DropId, GARBAGE_BATCH, GARBAGE_GRACE_SECONDS,
+        MAX_CHUNK_LEN, MIN_CHUNK_LEN, ObjectName, RESERVATION_FRESH_SECONDS, RESERVATION_SECONDS, SealedChunk,
     };
 
     fn count(n: u16) -> ChunkCount {
@@ -373,8 +375,9 @@ mod files {
         upload_all(&c, &id, 2);
         block_on(c.revoke(&id, &token(3))).unwrap();
         assert!(vault.is_empty());
-        assert_eq!(block_on(c.collect_garbage()), Ok(2));
+        // Revoked chunks leave the store at once, not with the next collection.
         assert_eq!((vault.store.objects(), vault.garbage()), (0, 0));
+        assert_eq!(block_on(c.collect_garbage(|| true)), Ok(0));
     }
 
     #[test]
@@ -400,13 +403,12 @@ mod files {
         assert_eq!(vault.store.objects(), 1);
         block_on(c.open_chunk(&id, at(1), Some(&claim))).unwrap();
         assert_eq!(vault.store.objects(), 0);
-        // What the store already dropped costs nothing more to collect.
-        block_on(c.collect_garbage()).unwrap();
+        // What the store already dropped is forgotten too: nothing left to collect.
         assert_eq!(vault.garbage(), 0);
     }
 
     #[test]
-    fn expired_files_leave_the_store_with_the_next_collection() {
+    fn expired_files_leave_the_store_once_their_grace_is_over() {
         let vault = FakeVault::default();
         let c = custodian(&vault);
         let id = deposit_file(&c, 3, Retention::BurnAfterReading);
@@ -414,9 +416,26 @@ mod files {
         vault.advance(i64::from(Lifetime::ONE_DAY.seconds()));
         assert_eq!(block_on(c.purge_expired()), Ok(1));
         assert_eq!(vault.store.objects(), 3);
-        assert_eq!(block_on(c.collect_garbage()), Ok(3));
+        assert_eq!(block_on(c.collect_garbage(|| true)), Ok(0), "not before the grace time");
+        vault.advance(i64::from(GARBAGE_GRACE_SECONDS));
+        assert_eq!(block_on(c.collect_garbage(|| true)), Ok(3));
         assert_eq!(vault.store.objects(), 0);
-        assert_eq!(block_on(c.collect_garbage()), Ok(0));
+        assert_eq!(block_on(c.collect_garbage(|| true)), Ok(0));
+    }
+
+    #[test]
+    fn collection_goes_on_batch_after_batch_while_there_is_time() {
+        let vault = FakeVault::default();
+        let c = custodian(&vault);
+        vault.add_garbage(2 * GARBAGE_BATCH + 7);
+        let mut rounds = 0;
+        let out_of_time = block_on(c.collect_garbage(|| {
+            rounds += 1;
+            false
+        }));
+        assert_eq!((out_of_time, rounds), (Ok(usize::from(GARBAGE_BATCH)), 1));
+        assert_eq!(block_on(c.collect_garbage(|| true)), Ok(usize::from(GARBAGE_BATCH) + 7));
+        assert_eq!(vault.garbage(), 0);
     }
 
     mod adversary {
@@ -440,9 +459,75 @@ mod files {
             let id = deposit_file(&c, 2, Retention::UntilExpiry);
             block_on(c.put_chunk(&id, at(0), chunk(0))).unwrap();
             let forged = SealedChunk::new(vec![0xF0; MAX_CHUNK_LEN]).unwrap();
-            assert_eq!(block_on(c.put_chunk(&id, at(0), forged.clone())), Err(CustodyError::AlreadyExists));
+            assert_eq!(block_on(c.put_chunk(&id, at(0), forged.clone())), Err(CustodyError::NotFound));
             assert_eq!(block_on(c.put_chunk(&id, at(2), forged)), Err(CustodyError::NotFound));
             assert_eq!(vault.stored_chunks(), 1);
+        }
+
+        #[test]
+        fn a_chunk_already_in_does_not_tell_whether_the_file_was_opened() {
+            // A refusal that differed before and after opening would let anyone
+            // with the link watch for the recipient without burning anything.
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let id = deposit_file(&c, 1, Retention::BurnAfterReading);
+            upload_all(&c, &id, 1);
+            let before = block_on(c.put_chunk(&id, at(0), chunk(7)));
+            block_on(c.open(&id)).unwrap();
+            let after = block_on(c.put_chunk(&id, at(0), chunk(7)));
+            assert_eq!((before, after), (Err(CustodyError::NotFound), Err(CustodyError::NotFound)));
+            assert_eq!(vault.store.puts.get(), 1, "neither probe wrote to the store");
+        }
+
+        #[test]
+        fn a_chunk_nobody_takes_never_reaches_the_store() {
+            // Each write is a billed operation: random ids must not cost any.
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let unknown = DropId::from_slice(&[0x77; 16]).unwrap();
+            let text = block_on(c.deposit(payload(), Retention::UntilExpiry, Lifetime::ONE_DAY, None)).unwrap();
+            let file = deposit_file(&c, 2, Retention::UntilExpiry);
+            let short = SealedChunk::new(vec![3; MIN_CHUNK_LEN]).unwrap();
+            for (id, index, chunk) in
+                [(unknown, 0, chunk(0)), (text.id, 0, chunk(0)), (file, 2, chunk(0)), (file, 0, short)]
+            {
+                assert_eq!(block_on(c.put_chunk(&id, at(index), chunk)), Err(CustodyError::NotFound));
+            }
+            assert_eq!((vault.store.puts.get(), vault.garbage()), (0, 0));
+        }
+
+        #[test]
+        fn an_upload_cut_short_after_the_store_is_still_collected() {
+            // The store kept the bytes but the chunk was never recorded (lost
+            // connection, Worker cancelled): the object is on record anyway.
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let id = deposit_file(&c, 1, Retention::UntilExpiry);
+            vault.unreachable_on_record.set(true);
+            assert_eq!(block_on(c.put_chunk(&id, at(0), chunk(0))), Err(CustodyError::VaultUnavailable));
+            vault.unreachable_on_record.set(false);
+            assert_eq!((vault.stored_chunks(), vault.store.objects(), vault.garbage()), (0, 1, 1));
+            assert_eq!(block_on(c.collect_garbage(|| true)), Ok(0), "the upload may still be on its way");
+            vault.advance(i64::from(RESERVATION_SECONDS));
+            assert_eq!(block_on(c.collect_garbage(|| true)), Ok(1));
+            assert_eq!(vault.store.objects(), 0);
+        }
+
+        #[test]
+        fn a_stale_reservation_cannot_be_recorded() {
+            // Its object may be on its way out of the store by then.
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let id = deposit_file(&c, 1, Retention::UntilExpiry);
+            let object = SequentialIds::starting_at(1).fresh_object().unwrap();
+            let len = MAX_CHUNK_LEN as u32;
+            assert_eq!(block_on((&vault).reserve_chunk(&id, at(0), &object, len)), Ok(true));
+            block_on((&vault.store).put(&object, &chunk(0))).unwrap();
+            vault.advance(i64::from(RESERVATION_FRESH_SECONDS));
+            assert_eq!(block_on((&vault).put_chunk(&id, at(0), &object, len)), Ok(false));
+            let unreserved = ObjectName::from_array([9; ObjectName::LEN]);
+            assert_eq!(block_on((&vault).put_chunk(&id, at(0), &unreserved, len)), Ok(false));
+            assert_eq!(vault.stored_chunks(), 0);
         }
 
         #[test]
@@ -533,11 +618,11 @@ mod files {
             let c = custodian(&vault);
             let id = deposit_file(&c, 1, Retention::BurnAfterReading);
             upload_all(&c, &id, 1);
-            assert_eq!(block_on(c.put_chunk(&id, at(0), chunk(5))), Err(CustodyError::AlreadyExists));
+            assert_eq!(block_on(c.put_chunk(&id, at(0), chunk(5))), Err(CustodyError::NotFound));
             assert_eq!(block_on(c.put_chunk(&id, at(1), chunk(5))), Err(CustodyError::NotFound));
             let unknown = DropId::from_slice(&[0x77; 16]).unwrap();
             assert_eq!(block_on(c.put_chunk(&unknown, at(0), chunk(5))), Err(CustodyError::NotFound));
-            assert_eq!(vault.store.objects(), 1);
+            assert_eq!((vault.store.objects(), vault.garbage()), (1, 0));
         }
 
         #[test]
@@ -547,7 +632,7 @@ mod files {
             let id = deposit_file(&c, 1, Retention::UntilExpiry);
             vault.full.set(true);
             assert_eq!(block_on(c.put_chunk(&id, at(0), chunk(0))), Err(CustodyError::StorageFull));
-            assert_eq!((vault.stored_chunks(), vault.store.objects()), (0, 0));
+            assert_eq!((vault.stored_chunks(), vault.store.puts.get(), vault.garbage()), (0, 0, 0));
         }
 
         #[test]
@@ -559,6 +644,7 @@ mod files {
             assert_eq!(block_on(c.put_chunk(&id, at(0), chunk(0))), Err(CustodyError::VaultUnavailable));
             vault.store.fail.set(false);
             assert_eq!(vault.stored_chunks(), 0);
+            assert_eq!(vault.garbage(), 1, "whatever the store half-wrote is on record");
             assert_eq!(block_on(c.open(&id)), Err(CustodyError::NotFound), "the file is still incomplete");
             upload_all(&c, &id, 1);
             assert!(block_on(c.open(&id)).is_ok());
@@ -600,13 +686,48 @@ mod files {
             let c = custodian(&vault);
             let id = deposit_file(&c, 2, Retention::UntilExpiry);
             upload_all(&c, &id, 2);
-            block_on(c.revoke(&id, &token(3))).unwrap();
             vault.store.fail.set(true);
-            assert_eq!(block_on(c.collect_garbage()), Err(CustodyError::VaultUnavailable));
+            block_on(c.revoke(&id, &token(3))).unwrap();
+            vault.advance(i64::from(GARBAGE_GRACE_SECONDS));
+            assert_eq!(block_on(c.collect_garbage(|| true)), Err(CustodyError::VaultUnavailable));
             vault.store.fail.set(false);
             assert_eq!(vault.store.objects(), 2, "nothing was lost track of");
-            assert_eq!(block_on(c.collect_garbage()), Ok(2));
+            assert_eq!(block_on(c.collect_garbage(|| true)), Ok(2));
             assert_eq!(vault.store.objects(), 0);
+        }
+
+        #[test]
+        fn a_chunk_the_store_fails_to_hand_out_is_not_burned() {
+            // Burning first would lose the chunk for good on a passing store error.
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let id = deposit_file(&c, 2, Retention::BurnAfterReading);
+            upload_all(&c, &id, 2);
+            let claim = block_on(c.open(&id)).unwrap().claim.unwrap();
+            vault.store.fail.set(true);
+            assert_eq!(block_on(c.open_chunk(&id, at(0), Some(&claim))), Err(CustodyError::VaultUnavailable));
+            vault.store.fail.set(false);
+            assert_eq!(block_on(c.open_chunk(&id, at(0), Some(&claim))), Ok(chunk(0)));
+            assert_eq!(block_on(c.open_chunk(&id, at(0), Some(&claim))), Err(CustodyError::NotFound));
+        }
+
+        #[test]
+        fn a_burned_chunk_is_never_collected_before_it_is_read() {
+            // The vault only says where it is; the burn comes after the read,
+            // and what goes to the garbage then waits out its grace time.
+            let vault = FakeVault::default();
+            let c = custodian(&vault);
+            let id = deposit_file(&c, 1, Retention::BurnAfterReading);
+            upload_all(&c, &id, 1);
+            let claim = block_on(c.open(&id)).unwrap().claim.unwrap();
+            let digest = ToyDigest.digest_claim(&claim);
+            let found = block_on((&vault).open_chunk(&id, at(0), Some(&digest))).unwrap().unwrap();
+            assert!(found.burns);
+            assert_eq!(block_on(c.collect_garbage(|| true)), Ok(0));
+            assert_eq!(block_on((&vault.store).get(&found.object)), Ok(Some(chunk(0))));
+            assert_eq!(block_on((&vault).burn_chunk(&id, at(0), &digest)), Ok(true));
+            assert_eq!(block_on((&vault).burn_chunk(&id, at(0), &digest)), Ok(false), "burned once only");
+            assert_eq!(block_on(c.collect_garbage(|| true)), Ok(0));
         }
 
         #[test]

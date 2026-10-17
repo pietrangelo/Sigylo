@@ -259,7 +259,17 @@ mod runtime {
         if let (Ok(client), Ok(store)) = (connect(&env).await, chunk_store(&env)) {
             let custodian = Custodian::new(PostgresVault::new(&client), store, Sha256TokenDigest, RandomIds);
             let _ = custodian.purge_expired().await;
-            let _ = custodian.collect_garbage().await;
+            // Batch after batch, within a few rounds and seconds: the work is
+            // waiting on the database and R2, and stays inside the free
+            // plan's CPU allowance.
+            let deadline = worker::Date::now().as_millis() + api::GARBAGE_MILLIS;
+            let mut rounds = 1;
+            let _ = custodian
+                .collect_garbage(|| {
+                    rounds += 1;
+                    rounds <= api::GARBAGE_ROUNDS && worker::Date::now().as_millis() < deadline
+                })
+                .await;
             if let Ok(keys) = opaque_keys(&env) {
                 let store = PostgresAccounts::new(&client);
                 let gatekeeper = Gatekeeper::new(keys, store, RandomTokens, Sha256SessionDigest, LoginLimiter(&env));
