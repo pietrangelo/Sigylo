@@ -18,6 +18,7 @@
   let error = $state('');
   let sent: { link: string; revoke: string; expires: number } | null = $state(null);
   let requested: { request: string; inbox: string; expires: number } | null = $state(null);
+  let expectedCode = $state('');
 
   async function seal(event: SubmitEvent) {
     event.preventDefault();
@@ -61,15 +62,17 @@
       const publicKey = recipient.publicKey;
       const fingerprint = recipient.fingerprint;
       recipient.free();
+      // Throws InvalidSenderCode before anything reaches the relay.
+      const pin = expectedCode.trim() === '' ? undefined : engine.senderPin(fingerprint, expectedCode);
       const result = await relay.postRequest(publicKey, lifetime);
       if (!result.ok) {
         error = relayMessage(result.error);
         return;
       }
       requested = {
-        request: requestLink(linkOrigin, result.value.id, fingerprint),
+        request: requestLink(linkOrigin, result.value.id, fingerprint, pin),
         // The answer is filed in the private inbox, never under the public id.
-        inbox: inboxLink(linkOrigin, result.value.inbox, seed),
+        inbox: inboxLink(linkOrigin, result.value.inbox, seed, pin),
         expires: result.value.expiresAt,
       };
     } catch (e) {
@@ -124,6 +127,11 @@
           <option value={86400}>{t.life1d}</option>
           <option value={604800}>{t.life7d}</option>
         </select>
+      </div>
+      <div>
+        <label for="expected-sender">{t.expectedSenderLabel}</label>
+        <input id="expected-sender" bind:value={expectedCode} placeholder="XXXX-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false" data-testid="expected-sender" />
+        <p class="muted small">{t.expectedSenderHint}</p>
       </div>
       {#if error}<p class="error" role="alert">{error}</p>{/if}
       <button class="primary" type="submit" disabled={busy} data-testid="create-request">{t.createRequest}</button>

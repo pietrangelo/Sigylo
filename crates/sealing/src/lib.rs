@@ -15,13 +15,19 @@
 //!   and recorded traffic stays safe unless both X25519 and ML-KEM fall.
 //!
 //! Either mode can add a passphrase, stretched with Argon2id.
+//!
+//! In recipient mode the sender can also **sign** the answer with a hybrid
+//! Ed25519 + ML-DSA-65 identity ([`Sealer::new_sender`]): the recipient sees
+//! the sender's [`SenderFingerprint::code`] and compares it out of band, so
+//! whoever races the legitimate sender to the request link is caught.
 #![forbid(unsafe_code)]
 
 pub mod application;
 pub mod core;
 
 pub use crate::core::{
-    Encapsulation, Envelope, Fingerprint, KdfCost, LinkKey, MAX_PASSPHRASE_LEN, MAX_PLAINTEXT_LEN, Passphrase,
-    Plaintext, RecipientPublicKey, RecipientSeed, SealError, SymmetricKey,
+    Encapsulation, Envelope, Fingerprint, KdfCost, LinkKey, MAX_PASSPHRASE_LEN, MAX_PLAINTEXT_LEN,
+    MAX_SIGNED_PLAINTEXT_LEN, Passphrase, Plaintext, RecipientPublicKey, RecipientSeed, SealError, SenderCode,
+    SenderFingerprint, SenderPin, SenderPublicKey, SenderSeed, SenderSignature, SymmetricKey,
 };
-pub use application::{CryptoSuite, NewRecipient, Sealer};
+pub use application::{CryptoSuite, NewRecipient, NewSender, Received, Sealer};
