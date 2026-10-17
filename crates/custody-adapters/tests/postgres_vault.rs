@@ -80,7 +80,14 @@ fn custodian(relay: &Client) -> Custodian<PostgresVault<'_>, &'static MemoryStor
 }
 
 fn payload() -> SealedPayload {
-    SealedPayload::new(b"SGY\x01 opaque".to_vec()).unwrap()
+    sealed(b"SGY\x01 opaque")
+}
+
+/// An envelope-sized payload that starts with `head`.
+fn sealed(head: &[u8]) -> SealedPayload {
+    let mut bytes = head.to_vec();
+    bytes.resize(custody::MIN_PAYLOAD_LEN, 0xA0);
+    SealedPayload::new(bytes).unwrap()
 }
 
 fn token(n: u8) -> RevocationToken {
@@ -244,7 +251,7 @@ mod adversary {
         let outcomes = join_all(clients.iter().enumerate().map(|(n, c)| async move {
             let answer = Deposit {
                 id,
-                payload: SealedPayload::new(vec![n as u8 + 1; 64]).unwrap(),
+                payload: sealed(&[n as u8 + 1]),
                 retention: Retention::UntilExpiry,
                 lifetime: Lifetime::ONE_HOUR,
                 revocation: None,
@@ -272,7 +279,7 @@ mod adversary {
         };
         let first = deposit(payload(), Lifetime::ONE_DAY);
         vault.deposit(&first).await.unwrap();
-        let evil = SealedPayload::new(b"attacker".to_vec()).unwrap();
+        let evil = sealed(b"attacker");
         let overwrite = Deposit { id: first.id, ..deposit(evil.clone(), Lifetime::MAX) };
         assert_eq!(vault.deposit(&overwrite).await, Err(CustodyError::AlreadyExists));
         expire(&admin, "deposits", &first.id).await;
@@ -288,7 +295,7 @@ mod adversary {
         let original =
             custodian.deposit(payload(), Retention::BurnAfterReading, Lifetime::ONE_DAY, None).await.unwrap();
         custodian.open(&original.id).await.unwrap();
-        let forgery = SealedPayload::new(b"SGY\x01 forged".to_vec()).unwrap();
+        let forgery = sealed(b"SGY\x01 forged");
         let refill = custodian.deposit(forgery, Retention::BurnAfterReading, Lifetime::ONE_DAY, None).await.unwrap();
         assert_ne!(refill.id, original.id);
         assert_eq!(custodian.open(&original.id).await, Err(CustodyError::NotFound));
@@ -425,7 +432,8 @@ mod files {
     }
 
     fn chunk(i: u16) -> SealedChunk {
-        SealedChunk::new(vec![i as u8 + 1; 4096]).unwrap()
+        // Every chunk but a file's last is full; a full one fits the end too.
+        SealedChunk::new(vec![i as u8 + 1; MAX_CHUNK_LEN]).unwrap()
     }
 
     async fn file(relay: &Client, n: u16, retention: Retention) -> DropId {
@@ -536,7 +544,7 @@ mod files {
             chunks: Some(count(1)),
         };
         let inbox = custodian.answer_request(request.id, answer).await.unwrap().id;
-        let junk = SealedChunk::new(vec![0xEE; 300]).unwrap();
+        let junk = SealedChunk::new(vec![0xEE; custody::MIN_CHUNK_LEN]).unwrap();
         assert_eq!(custodian.put_chunk(&request.id, at(0), junk).await, Err(CustodyError::NotFound));
         custodian.put_chunk(&inbox, at(0), chunk(0)).await.unwrap();
         let opened = custodian.open(&request.inbox).await.unwrap();
@@ -565,7 +573,7 @@ mod files {
         assert_eq!(rows.len(), 2);
         for row in rows {
             assert_eq!(row.get::<_, &[u8]>(0).len(), ObjectName::LEN);
-            assert_eq!(row.get::<_, i32>(1), 4096);
+            assert_eq!(row.get::<_, i32>(1), MAX_CHUNK_LEN as i32);
         }
     }
 

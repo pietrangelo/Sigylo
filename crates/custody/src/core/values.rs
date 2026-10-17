@@ -6,10 +6,20 @@ use super::CustodyError;
 
 /// Largest payload the relay keeps: a 64 KiB padded secret plus envelope header.
 pub const MAX_PAYLOAD_LEN: usize = 72 * 1024;
+/// Smallest payload the relay keeps: the smallest envelope a sealer makes,
+/// a 6-byte header, a 24-byte nonce, 256 bytes of padded secret and the
+/// 16-byte tag. Anything shorter is not an envelope, and every row costs
+/// the database far more than its bytes.
+pub const MIN_PAYLOAD_LEN: usize = 6 + 24 + 256 + 16;
 /// Most chunks a file deposit can have: a 10 MiB file in 1 MiB chunks.
 pub const MAX_CHUNKS: u16 = 10;
 /// Largest chunk the relay keeps: 1 MiB of padded file plus the 16-byte tag.
+/// Every chunk of a file but the last is exactly this long.
 pub const MAX_CHUNK_LEN: usize = 1024 * 1024 + 16;
+/// Smallest chunk: the last chunk of a file is padded to a power of two of
+/// at least 256 bytes, plus the tag.
+pub const MIN_CHUNK_LEN: usize = 256 + 16;
+const CHUNK_TAG_LEN: usize = 16;
 /// How long whoever opened a burn-after-reading file has to fetch its chunks.
 pub const CLAIM_WINDOW_SECONDS: u32 = 60 * 60;
 /// How many orphaned chunk objects one garbage collection deletes at most.
@@ -46,6 +56,7 @@ impl SealedPayload {
     pub fn new(bytes: Vec<u8>) -> Result<Self, CustodyError> {
         match bytes.len() {
             0 => Err(CustodyError::PayloadEmpty),
+            n if n < MIN_PAYLOAD_LEN => Err(CustodyError::PayloadTooSmall),
             n if n > MAX_PAYLOAD_LEN => Err(CustodyError::PayloadTooLarge),
             _ => Ok(Self(bytes)),
         }
@@ -82,6 +93,13 @@ impl ChunkCount {
     pub fn contains(&self, index: ChunkIndex) -> bool {
         index.0 < self.0
     }
+
+    /// Whether a sealed chunk of `len` bytes fits position `index` of the
+    /// file: inside the count, and full ([`MAX_CHUNK_LEN`]) unless it is the
+    /// last one. A short chunk anywhere else is not something a sealer makes.
+    pub fn takes(&self, index: ChunkIndex, len: usize) -> bool {
+        self.contains(index) && (index.0 + 1 == self.0 || len == MAX_CHUNK_LEN)
+    }
 }
 
 /// The position of a chunk in its file, from 0.
@@ -98,7 +116,8 @@ impl ChunkIndex {
     }
 }
 
-/// One opaque piece of a sealed file.
+/// One opaque piece of a sealed file: a power of two from 256 bytes to
+/// 1 MiB, plus the 16-byte tag, as the sealer pads it.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SealedChunk(Vec<u8>);
 
@@ -107,6 +126,7 @@ impl SealedChunk {
         match bytes.len() {
             0 => Err(CustodyError::PayloadEmpty),
             n if n > MAX_CHUNK_LEN => Err(CustodyError::PayloadTooLarge),
+            n if n < MIN_CHUNK_LEN || !(n - CHUNK_TAG_LEN).is_power_of_two() => Err(CustodyError::InvalidChunk),
             _ => Ok(Self(bytes)),
         }
     }
@@ -371,6 +391,7 @@ mod tests {
         assert_eq!(SealedPayload::new(vec![]), Err(CustodyError::PayloadEmpty));
         assert!(SealedPayload::new(vec![1; MAX_PAYLOAD_LEN]).is_ok());
         assert_eq!(SealedPayload::new(vec![1; MAX_PAYLOAD_LEN + 1]), Err(CustodyError::PayloadTooLarge));
+        assert!(SealedPayload::new(vec![1; MIN_PAYLOAD_LEN]).is_ok());
     }
 
     #[test]
@@ -394,10 +415,44 @@ mod tests {
         assert_eq!(SealedChunk::new(vec![]), Err(CustodyError::PayloadEmpty));
         assert!(SealedChunk::new(vec![1; MAX_CHUNK_LEN]).is_ok());
         assert_eq!(SealedChunk::new(vec![1; MAX_CHUNK_LEN + 1]), Err(CustodyError::PayloadTooLarge));
+        // What the sealer makes: a power of two from 256 B to 1 MiB, plus the tag.
+        for padded in (8..=20).map(|k| 1usize << k) {
+            assert!(SealedChunk::new(vec![1; padded + 16]).is_ok(), "{padded}");
+        }
+    }
+
+    #[test]
+    fn only_the_last_chunk_may_be_short() {
+        let three = ChunkCount::new(3).unwrap();
+        let at = |i| ChunkIndex::new(i).unwrap();
+        assert!(three.takes(at(0), MAX_CHUNK_LEN) && three.takes(at(1), MAX_CHUNK_LEN));
+        assert!(!three.takes(at(0), MIN_CHUNK_LEN) && !three.takes(at(1), 512 + 16));
+        assert!(three.takes(at(2), MIN_CHUNK_LEN) && three.takes(at(2), MAX_CHUNK_LEN));
+        assert!(!three.takes(at(3), MAX_CHUNK_LEN));
+        let one = ChunkCount::new(1).unwrap();
+        assert!(one.takes(at(0), MIN_CHUNK_LEN));
     }
 
     mod adversary {
         use super::*;
+
+        #[test]
+        fn payloads_smaller_than_any_envelope_are_refused() {
+            // Each row costs the database far more than its bytes: tiny
+            // payloads would fill it while the ceiling saw almost nothing.
+            assert_eq!(MIN_PAYLOAD_LEN, 6 + 24 + 256 + 16);
+            for len in [1, 4, MIN_PAYLOAD_LEN - 1] {
+                assert_eq!(SealedPayload::new(vec![1; len]), Err(CustodyError::PayloadTooSmall), "{len}");
+            }
+        }
+
+        #[test]
+        fn chunks_the_sealer_never_makes_are_refused() {
+            assert_eq!(MIN_CHUNK_LEN, 256 + 16);
+            for len in [1, 16, 271, 273, 300, 4096, 4096 + 15, 4096 + 17, MAX_CHUNK_LEN - 1, 128 + 16] {
+                assert_eq!(SealedChunk::new(vec![1; len]), Err(CustodyError::InvalidChunk), "{len}");
+            }
+        }
 
         #[test]
         fn debug_never_prints_capabilities_or_ciphertext() {
@@ -405,9 +460,9 @@ mod tests {
             let rendered = format!(
                 "{id:?} {:?} {:?} {:?} {:?}",
                 RevocationToken::from_slice(&[0xCD; 32]).unwrap(),
-                SealedPayload::new(vec![0xEF; 40]).unwrap(),
+                SealedPayload::new(vec![0xEF; MIN_PAYLOAD_LEN]).unwrap(),
                 ClaimToken::from_array([0xCD; 32]),
-                SealedChunk::new(vec![0xEF; 40]).unwrap(),
+                SealedChunk::new(vec![0xEF; MIN_CHUNK_LEN]).unwrap(),
             );
             assert!(!rendered.contains("abababab"));
             assert!(!rendered.to_lowercase().contains("cd") && !rendered.to_lowercase().contains("ef"));

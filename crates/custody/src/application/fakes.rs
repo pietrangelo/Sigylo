@@ -145,12 +145,12 @@ impl Vault for &FakeVault {
         id: &DropId,
         index: ChunkIndex,
         object: &ObjectName,
-        _len: u32,
+        len: u32,
     ) -> Result<bool, CustodyError> {
         if !self.live(&self.deposits, id) || self.stored_claim(id).is_some() {
             return Ok(false);
         }
-        if !self.deposits.borrow()[id].0.chunks.is_some_and(|count| count.contains(index)) {
+        if !self.deposits.borrow()[id].0.chunks.is_some_and(|count| count.takes(index, len as usize)) {
             return Ok(false);
         }
         if self.chunks.borrow().contains_key(&(*id, index)) {
