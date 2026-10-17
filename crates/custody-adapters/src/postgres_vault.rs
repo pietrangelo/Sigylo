@@ -42,6 +42,7 @@ fn vault_error(error: Error) -> CustodyError {
     match error.code() {
         Some(code) if *code == SqlState::UNIQUE_VIOLATION => CustodyError::AlreadyExists,
         Some(code) if *code == SqlState::INVALID_PARAMETER_VALUE => CustodyError::LifetimeOutOfRange,
+        Some(code) if *code == SqlState::DISK_FULL => CustodyError::CustodyFull,
         _ => CustodyError::VaultUnavailable,
     }
 }

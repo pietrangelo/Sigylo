@@ -14,6 +14,7 @@ export type RelayError =
   | 'RateLimited'
   | 'PayloadTooLarge'
   | 'VaultUnavailable'
+  | 'CustodyFull'
   | 'Network'
   | 'Unexpected';
 
@@ -30,7 +31,7 @@ export type RequestReceipt = { id: Uint8Array; inbox: Uint8Array; expiresAt: num
 
 type Fetch = (input: string, init: RequestInit) => Promise<Response>;
 
-const KNOWN: ReadonlySet<string> = new Set(['NotFound', 'AlreadyExists', 'RateLimited', 'PayloadTooLarge', 'VaultUnavailable']);
+const KNOWN: ReadonlySet<string> = new Set(['NotFound', 'AlreadyExists', 'RateLimited', 'PayloadTooLarge', 'VaultUnavailable', 'CustodyFull']);
 
 export class Relay {
   constructor(

@@ -53,6 +53,7 @@ impl ApiError {
             Self::CrossOrigin => 403,
             Self::BodyTooLarge | Self::Custody(CustodyError::PayloadTooLarge) => 413,
             Self::Custody(CustodyError::AlreadyExists) => 409,
+            Self::Custody(CustodyError::CustodyFull) => 507,
             Self::Custody(CustodyError::VaultUnavailable | CustodyError::RandomnessUnavailable) => 503,
             Self::InvalidJson | Self::InvalidEncoding | Self::Custody(_) => 400,
         }
@@ -407,6 +408,8 @@ mod tests {
         assert_eq!(ApiError::Custody(CustodyError::LifetimeOutOfRange).status(), 400);
         assert_eq!(ApiError::Custody(CustodyError::VaultUnavailable).status(), 503);
         assert_eq!(ApiError::Custody(CustodyError::RandomnessUnavailable).status(), 503);
+        assert_eq!(ApiError::Custody(CustodyError::CustodyFull).status(), 507);
+        assert_eq!(ApiError::Custody(CustodyError::CustodyFull).body(), r#"{"error":"CustodyFull"}"#);
         assert_eq!(ApiError::Custody(CustodyError::NotFound).body(), r#"{"error":"NotFound"}"#);
     }
 

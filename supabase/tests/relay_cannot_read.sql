@@ -11,7 +11,9 @@ begin
         'update custody.deposits set expires_at = now() + interval ''1 year''',
         'insert into custody.requests values (''\x00''::bytea, ''\x00''::bytea, now())',
         'truncate custody.deposits',
-        'select custody.lifetime(300)'
+        'select custody.lifetime(300)',
+        'select custody.used_bytes()',
+        'select custody.ensure_room(0)'
     ] loop
         begin
             execute attempt;

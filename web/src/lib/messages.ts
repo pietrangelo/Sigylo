@@ -35,6 +35,8 @@ export function relayMessage(error: RelayError): string {
       return t.errRateLimited;
     case 'PayloadTooLarge':
       return t.errTooLarge;
+    case 'CustodyFull':
+      return t.errFull;
     default:
       return t.errGeneric;
   }
