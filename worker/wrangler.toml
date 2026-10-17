@@ -1,0 +1,34 @@
+# Sigylo relay + web client on one origin (Workers Static Assets).
+name = "sigylo"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-10-01"
+
+[build]
+command = "cargo install -q worker-build@0.8.7 --locked && worker-build --release"
+
+# The Svelte client (web/dist) is served as static assets; only /api/* runs the Worker.
+[assets]
+directory = "../web/dist"
+run_worker_first = ["/api/*"]
+not_found_handling = "single-page-application"
+
+# PostgreSQL (Supabase) through Hyperdrive. Create it with:
+#   npx wrangler hyperdrive create sigylo-db --connection-string="postgres://sigylo_relay:<password>@<host>:5432/postgres"
+# then paste its id here. The local connection string is used by `wrangler dev`.
+[[hyperdrive]]
+binding = "DB"
+id = "00000000000000000000000000000000"
+localConnectionString = "postgres://sigylo_relay:relay-test-only@127.0.0.1:55432/postgres"
+
+# Throttles POSTs per client address (kept in memory by Cloudflare, never stored by us).
+[[ratelimits]]
+name = "WRITE_LIMITER"
+namespace_id = "7301"
+simple = { limit = 30, period = 60 }
+
+# Physically delete expired rows (reads already ignore them).
+[triggers]
+crons = ["*/15 * * * *"]
+
+[observability]
+enabled = false
