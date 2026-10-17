@@ -98,6 +98,20 @@ fn recipient_key() -> RecipientKeyBlob {
     RecipientKeyBlob::new(vec![7; RecipientKeyBlob::LEN]).unwrap()
 }
 
+/// What the ceiling charges a deposit row on top of its payload.
+const DEPOSIT_ROW: i64 = 192;
+
+/// The one-step `custody.put_chunk` the relay deployed before this one calls.
+async fn legacy_put_chunk(client: &Client, id: &DropId, object: &ObjectName, size: i32) -> Result<bool, CustodyError> {
+    let put = "select custody.put_chunk($1, 0::smallint, $2, $3)";
+    let (id, object) = (id.as_bytes().as_slice(), object.as_bytes().as_slice());
+    match client.query_one(put, &[&id, &object, &size]).await {
+        Ok(row) => Ok(row.get(0)),
+        Err(e) if e.code() == Some(&tokio_postgres::error::SqlState::DISK_FULL) => Err(CustodyError::StorageFull),
+        Err(_) => Err(CustodyError::VaultUnavailable),
+    }
+}
+
 fn claim(n: usize) -> ClaimDigest {
     ClaimDigest::from_array([n as u8 + 1; 32])
 }
@@ -337,9 +351,94 @@ mod adversary {
         assert!(bad_id.is_err(), "5-byte id accepted");
     }
 
+    #[tokio::test]
+    async fn the_database_refuses_payloads_smaller_than_any_envelope() {
+        // Every row costs far more than one byte: a flood of tiny deposits
+        // would fill the database while the ceiling saw nothing.
+        databases!(relay, _admin);
+        let tiny = vec![1u8; custody::MIN_PAYLOAD_LEN - 1];
+        let tiny = tiny.as_slice();
+        for statement in [
+            "select custody.deposit($1, $2, false, 300, null)",
+            "select custody.deposit($1, $2, false, 300, null, 0::smallint)",
+            "select custody.deposit($1, $2, false, 300, null, 1::smallint)",
+        ] {
+            let id = fresh_id();
+            let refused = relay.query_one(statement, &[&id.as_bytes().as_slice(), &tiny]).await;
+            assert!(refused.is_err(), "{statement}");
+        }
+        let custodian = custodian(&relay);
+        let request = custodian.post_request(recipient_key(), Lifetime::ONE_DAY).await.unwrap();
+        let answer = "select * from custody.answer_into_inbox($1, $2, false, 300, 0::smallint)";
+        assert!(relay.query(answer, &[&request.id.as_bytes().as_slice(), &tiny]).await.is_err());
+        assert!(custodian.fetch_request(&request.id).await.is_ok(), "the refused answer used nothing up");
+    }
+
+    #[tokio::test]
+    async fn many_small_rows_reach_the_ceiling_long_before_their_bytes_would() {
+        databases!(relay, admin);
+        let custodian = custodian(&relay);
+        let row = custody::MIN_PAYLOAD_LEN as i64 + DEPOSIT_ROW;
+        with_capacity(&admin, 10 * row, async {
+            for _ in 0..10 {
+                custodian.deposit(payload(), Retention::UntilExpiry, Lifetime::MIN, None).await.unwrap();
+            }
+            // Counting bytes alone, six more would have fit.
+            let next = custodian.deposit(payload(), Retention::UntilExpiry, Lifetime::MIN, None).await;
+            assert_eq!(next, Err(CustodyError::StorageFull));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn the_running_count_matches_what_the_tables_hold() {
+        // The ceiling reads a counter instead of summing tables under a lock:
+        // every way rows come and go must keep it exact.
+        databases!(relay, admin);
+        let custodian = custodian(&relay);
+        let text = custodian.deposit(payload(), Retention::BurnAfterReading, Lifetime::ONE_DAY, None).await.unwrap();
+        custodian.open(&text.id).await.unwrap();
+        let request = custodian.post_request(recipient_key(), Lifetime::ONE_DAY).await.unwrap();
+        let answer = Answer {
+            payload: payload(),
+            retention: Retention::BurnAfterReading,
+            lifetime: Lifetime::ONE_HOUR,
+            chunks: Some(ChunkCount::new(2).unwrap()),
+        };
+        let inbox = custodian.answer_request(request.id, answer).await.unwrap().id;
+        let full = SealedChunk::new(vec![1; MAX_CHUNK_LEN]).unwrap();
+        let last = SealedChunk::new(vec![2; custody::MIN_CHUNK_LEN]).unwrap();
+        custodian.put_chunk(&inbox, ChunkIndex::new(0).unwrap(), full).await.unwrap();
+        custodian.put_chunk(&inbox, ChunkIndex::new(1).unwrap(), last).await.unwrap();
+        let claim = custodian.open(&inbox).await.unwrap().claim;
+        custodian.open_chunk(&inbox, ChunkIndex::new(0).unwrap(), claim.as_ref()).await.unwrap();
+        let revoked = custodian.deposit(payload(), Retention::UntilExpiry, Lifetime::ONE_DAY, Some(&token(9))).await;
+        custodian.revoke(&revoked.unwrap().id, &token(9)).await.unwrap();
+        let expired = custodian.deposit(payload(), Retention::UntilExpiry, Lifetime::MIN, None).await.unwrap();
+        expire(&admin, "deposits", &expired.id).await;
+        custodian.purge_expired().await.unwrap();
+        let counted = admin
+            .query_one(
+                "select (select used_bytes from custody.usage) = (
+                            coalesce((select sum(octet_length(payload) + 192) from custody.deposits), 0)
+                          + coalesce((select sum(octet_length(recipient_key) + 128) from custody.requests), 0)
+                          + 192 * (select count(*) from custody.chunks) + 128 * (select count(*) from custody.garbage)),
+                        (select chunk_bytes from custody.usage) = (
+                            coalesce((select sum(size) from custody.chunks), 0)
+                          + coalesce((select sum(size) from custody.garbage), 0)),
+                        (select count(*) from custody.usage)",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(counted.get::<_, bool>(0), "used_bytes drifted");
+        assert!(counted.get::<_, bool>(1), "chunk_bytes drifted");
+        assert_eq!(counted.get::<_, i64>(2), 1, "one counter row");
+    }
+
     /// Runs `body` with the custody capacity set to what is stored now plus
     /// `headroom` bytes, then puts the real capacity back.
-    async fn with_capacity<F: std::future::Future<Output = ()>>(admin: &Client, headroom: i64, body: F) {
+    pub(crate) async fn with_capacity<F: std::future::Future<Output = ()>>(admin: &Client, headroom: i64, body: F) {
         let original: String = admin
             .query_one("select pg_get_functiondef('custody.capacity_bytes()'::regprocedure)", &[])
             .await
@@ -397,7 +496,8 @@ mod adversary {
     async fn room_comes_back_when_a_secret_is_burned_or_expires() {
         databases!(relay, admin);
         let custodian = custodian(&relay);
-        let size = payload().as_bytes().len() as i64;
+        // A deposit costs its payload and the fixed cost of its row.
+        let size = payload().as_bytes().len() as i64 + DEPOSIT_ROW;
         with_capacity(&admin, size, async {
             let first = custodian.deposit(payload(), Retention::BurnAfterReading, Lifetime::ONE_DAY, None).await;
             let first = first.unwrap().id;
@@ -491,7 +591,11 @@ mod files {
             assert_eq!(custodian.open_chunk(&id, at(i), Some(&claim)).await, Err(CustodyError::NotFound));
         }
         assert_eq!((rows(&admin, "deposits", &id).await, rows(&admin, "chunks", &id).await), (0, 0));
-        assert_eq!(in_garbage(&admin, &objects).await, 3, "each burned chunk's object is to be deleted");
+        // Each burned chunk left the store as it went, and was then forgotten.
+        assert_eq!(in_garbage(&admin, &objects).await, 0);
+        for object in &objects {
+            assert_eq!(store().get(object).await, Ok(None));
+        }
     }
 
     #[tokio::test]
@@ -559,7 +663,32 @@ mod files {
         let objects = objects_of(&admin, &id).await;
         custodian.revoke(&id, &token(5)).await.unwrap();
         assert_eq!(rows(&admin, "chunks", &id).await, 0);
-        assert_eq!(in_garbage(&admin, &objects).await, 2);
+        // Out of the store at once, not with the next collection.
+        assert_eq!(in_garbage(&admin, &objects).await, 0);
+        for object in &objects {
+            assert_eq!(store().get(object).await, Ok(None));
+        }
+    }
+
+    #[tokio::test]
+    async fn revocation_names_the_objects_of_the_chunks_it_took() {
+        databases!(relay, admin);
+        let id = file(&relay, 2, Retention::UntilExpiry).await;
+        let mut objects = objects_of(&admin, &id).await;
+        let digest = custody::TokenDigest::digest(&Sha256TokenDigest, &token(5));
+        let vault = PostgresVault::new(&relay);
+        let mut named = vault.revoke(&id, &digest).await.unwrap().unwrap();
+        objects.sort_by_key(|o| *o.as_bytes());
+        named.sort_by_key(|o| *o.as_bytes());
+        assert_eq!(named, objects);
+        assert_eq!(in_garbage(&admin, &objects).await, 2, "on record until the store deleted them");
+        assert_eq!(vault.revoke(&id, &digest).await, Ok(None));
+        let custodian = custodian(&relay);
+        let text = custodian.deposit(payload(), Retention::UntilExpiry, Lifetime::ONE_DAY, Some(&token(6))).await;
+        let text = text.unwrap().id;
+        let digest = custody::TokenDigest::digest(&Sha256TokenDigest, &token(6));
+        assert_eq!(vault.revoke(&text, &digest).await, Ok(Some(vec![])));
+        vault.forget_garbage(&objects).await.unwrap();
     }
 
     #[tokio::test]
@@ -586,11 +715,21 @@ mod files {
         expire(&admin, "deposits", &id).await;
         custodian.purge_expired().await.unwrap();
         assert_eq!(in_garbage(&admin, &objects).await, 3, "expiry hands the objects over too");
-        while custodian.collect_garbage().await.unwrap() > 0 {}
+        custodian.collect_garbage(|| true).await.unwrap();
+        assert_eq!(in_garbage(&admin, &objects).await, 3, "not before their grace time");
+        make_due(&admin, &objects).await;
+        custodian.collect_garbage(|| true).await.unwrap();
         assert_eq!(in_garbage(&admin, &objects).await, 0);
         for object in &objects {
             assert_eq!(store().get(object).await, Ok(None));
         }
+    }
+
+    /// Time travel: the grace time of these garbage objects is over.
+    async fn make_due(admin: &Client, objects: &[ObjectName]) {
+        let names: Vec<&[u8]> = objects.iter().map(|o| o.as_bytes().as_slice()).collect();
+        let sql = "update custody.garbage set not_before = now() where object = any($1)";
+        admin.execute(sql, &[&names]).await.unwrap();
     }
 
     #[tokio::test]
@@ -598,7 +737,8 @@ mod files {
         databases!(relay, admin);
         admin
             .batch_execute(
-                "insert into custody.garbage select decode('ee' || lpad(to_hex(n), 30, '0'), 'hex') from generate_series(1, 1200) n",
+                "insert into custody.garbage (object, size, not_before)
+                 select decode('ee' || lpad(to_hex(n), 30, '0'), 'hex'), 272, now() from generate_series(1, 1200) n",
             )
             .await
             .unwrap();
@@ -608,6 +748,25 @@ mod files {
         vault.forget_garbage(&batch).await.unwrap();
         assert_eq!(vault.garbage(0).await.unwrap().len(), 0);
         admin.batch_execute("delete from custody.garbage where substring(object for 1) = '\\xee'").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn collection_goes_on_batch_after_batch() {
+        databases!(relay, admin);
+        admin
+            .batch_execute(
+                "insert into custody.garbage (object, size, not_before)
+                 select decode('ef' || lpad(to_hex(n), 30, '0'), 'hex'), 272, now() from generate_series(1, 2500) n",
+            )
+            .await
+            .unwrap();
+        let collected = custodian(&relay).collect_garbage(|| true).await.unwrap();
+        let left: i64 = admin
+            .query_one("select count(*) from custody.garbage where substring(object for 1) = '\\xef'", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert!(collected >= 2500 && left == 0, "{collected} collected, {left} left");
     }
 
     mod adversary {
@@ -631,7 +790,7 @@ mod files {
             let id = custodian.deposit_file(payload(), count(2), Retention::BurnAfterReading, Lifetime::ONE_DAY, None);
             let id = id.await.unwrap().id;
             custodian.put_chunk(&id, at(0), chunk(0)).await.unwrap();
-            assert_eq!(custodian.put_chunk(&id, at(0), chunk(7)).await, Err(CustodyError::AlreadyExists));
+            assert_eq!(custodian.put_chunk(&id, at(0), chunk(7)).await, Err(CustodyError::NotFound));
             assert_eq!(custodian.put_chunk(&id, at(2), chunk(7)).await, Err(CustodyError::NotFound));
             custodian.put_chunk(&id, at(1), chunk(1)).await.unwrap();
             custodian.open(&id).await.unwrap();
@@ -662,11 +821,13 @@ mod files {
             let loser = (winners[0] + 1) % 16;
             assert_eq!(vault.open_chunk(&id, at(0), Some(&claim(loser))).await, Ok(None));
             let found = vault.open_chunk(&id, at(0), Some(&claim(winners[0]))).await.unwrap().unwrap();
-            assert!(found.burned);
+            assert!(found.burns);
+            assert!(!vault.burn_chunk(&id, at(0), &claim(loser)).await.unwrap(), "only the claim burns");
         }
 
         #[tokio::test]
-        async fn concurrent_reads_of_one_burning_chunk_get_it_once() {
+        async fn concurrent_burns_of_one_chunk_count_once() {
+            // Only the caller whose burn counted hands the chunk out.
             databases!(relay, admin);
             let id = file(&relay, 2, Retention::BurnAfterReading).await;
             PostgresVault::new(&relay).open(&id, &claim(0)).await.unwrap().unwrap();
@@ -675,12 +836,56 @@ mod files {
                 clients.push(connect("SIGYLO_TEST_RELAY_URL").await.unwrap());
             }
             let outcomes = join_all(clients.iter().enumerate().map(|(n, c)| async move {
-                PostgresVault::new(c).open_chunk(&id, at((n % 2) as u16), Some(&claim(0))).await
+                PostgresVault::new(c).burn_chunk(&id, at((n % 2) as u16), &claim(0)).await
             }))
             .await;
-            assert_eq!(outcomes.iter().filter(|o| matches!(o, Ok(Some(_)))).count(), 2, "{outcomes:?}");
+            assert_eq!(outcomes.iter().filter(|o| matches!(o, Ok(true))).count(), 2, "{outcomes:?}");
             assert!(outcomes.iter().all(|o| o.is_ok()));
             assert_eq!(rows(&admin, "deposits", &id).await, 0, "the last chunk takes the deposit along");
+        }
+
+        #[tokio::test]
+        async fn finding_a_chunk_burns_nothing_and_its_object_waits_after_the_burn() {
+            // An R2 error between the burn and the read would lose the chunk,
+            // and a collector running in between would delete it unread.
+            databases!(relay, admin);
+            let id = file(&relay, 1, Retention::BurnAfterReading).await;
+            let vault = PostgresVault::new(&relay);
+            vault.open(&id, &claim(0)).await.unwrap().unwrap();
+            let first = vault.open_chunk(&id, at(0), Some(&claim(0))).await.unwrap().unwrap();
+            let again = vault.open_chunk(&id, at(0), Some(&claim(0))).await.unwrap().unwrap();
+            assert_eq!((first, rows(&admin, "chunks", &id).await), (again, 1));
+            assert!(vault.burn_chunk(&id, at(0), &claim(0)).await.unwrap());
+            assert_eq!(in_garbage(&admin, &[first.object]).await, 1);
+            assert!(!vault.garbage(1000).await.unwrap().contains(&first.object), "due only after its grace time");
+            let due: bool = admin
+                .query_one(
+                    "select not_before > now() + interval '4 minutes' from custody.garbage where object = $1",
+                    &[&first.object.as_bytes().as_slice()],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            assert!(due);
+            vault.forget_garbage(&[first.object]).await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn the_old_one_step_chunk_read_still_works_and_waits_too() {
+            // The relay live while the migration runs burns in open_chunk.
+            databases!(relay, _admin);
+            let id = file(&relay, 1, Retention::BurnAfterReading).await;
+            PostgresVault::new(&relay).open(&id, &claim(0)).await.unwrap().unwrap();
+            let old = "select object, burned from custody.open_chunk($1, 0::smallint, $2)";
+            let claimed = claim(0);
+            let args: [&(dyn tokio_postgres::types::ToSql + Sync); 2] =
+                [&id.as_bytes().as_slice(), &claimed.as_bytes().as_slice()];
+            let row = relay.query_one(old, &args).await.unwrap();
+            assert!(row.get::<_, bool>(1));
+            assert!(relay.query(old, &args).await.unwrap().is_empty());
+            let object = ObjectName::from_slice(row.get(0)).unwrap();
+            assert!(!PostgresVault::new(&relay).garbage(1000).await.unwrap().contains(&object));
+            PostgresVault::new(&relay).forget_garbage(&[object]).await.unwrap();
         }
 
         #[tokio::test]
@@ -727,26 +932,31 @@ mod files {
             assert_eq!(custodian.open(&receipt.id).await.unwrap().chunks, Some(count(2)));
         }
 
+        /// Fills the 5 GiB chunk budget, whatever other tests left, up to
+        /// `room` bytes short of it, with objects waiting in the garbage (not
+        /// due for a day): what is still in R2 counts until it is deleted.
+        async fn fill_chunk_budget(admin: &Client, room: i64) {
+            let sql = format!(
+                "with need as (
+                     select 5::bigint * 1024 * 1024 * 1024 - {room} - (select chunk_bytes from custody.usage) as bytes
+                 )
+                 insert into custody.garbage (object, size, not_before)
+                 select decode('dd' || lpad(to_hex(n), 30, '0'), 'hex'),
+                        least(1048592, need.bytes - (n - 1) * 1048592::bigint), now() + interval '1 day'
+                 from need, generate_series(1, (select ceil(bytes / 1048592.0)::int from need)) n"
+            );
+            admin.batch_execute(&sql).await.unwrap();
+        }
+
+        async fn drain_chunk_budget(admin: &Client) {
+            let sql = "delete from custody.garbage where substring(object for 1) in ('\\xdd', '\\xcc')";
+            admin.batch_execute(sql).await.unwrap();
+        }
+
         #[tokio::test]
         async fn concurrent_chunks_never_overshoot_the_ceiling() {
             databases!(relay, admin);
-            // Exactly one MiB short of the 5 GiB budget, whatever other tests left.
-            admin
-                .batch_execute(
-                    "insert into custody.deposits (id, payload, burn_after_reading, expires_at, chunk_count)
-                     select decode('fe' || lpad(to_hex(n), 30, '0'), 'hex'), '\\x00', false, now() + interval '1 hour', 10
-                     from generate_series(1, 512) n;
-                     insert into custody.chunks (deposit_id, idx, object, size)
-                     select decode('fe' || lpad(to_hex(n), 30, '0'), 'hex'), i,
-                            decode('dd' || lpad(to_hex(n * 16 + i), 30, '0'), 'hex'), 1048576
-                     from generate_series(1, 512) n, generate_series(0, 9) i
-                     where (n - 1) * 10 + i < 5118;
-                     insert into custody.chunks (deposit_id, idx, object, size)
-                     select decode('fe' || lpad(to_hex(512), 30, '0'), 'hex'), 9, decode('dd' || lpad('ffff', 30, '0'), 'hex'),
-                            5::bigint * 1024 * 1024 * 1024 - 1048576 - (select sum(size) from custody.chunks);",
-                )
-                .await
-                .unwrap();
+            fill_chunk_budget(&admin, MAX_CHUNK_LEN as i64).await;
             let custodian = custodian(&relay);
             let mut ids = Vec::new();
             for _ in 0..16 {
@@ -758,20 +968,113 @@ mod files {
             for _ in 0..16 {
                 clients.push(connect("SIGYLO_TEST_RELAY_URL").await.unwrap());
             }
-            let outcomes = join_all(clients.iter().zip(&ids).map(|(c, id)| async move {
-                PostgresVault::new(c).put_chunk(id, at(0), &object(0xCC), 1_048_576).await
+            let outcomes = join_all(clients.iter().zip(&ids).enumerate().map(|(n, (c, id))| async move {
+                let vault = PostgresVault::new(c);
+                // Half through the new reservation, half through the deployed relay's one step.
+                if n % 2 == 0 {
+                    vault.reserve_chunk(id, at(0), &object(0xCC), MAX_CHUNK_LEN as u32).await
+                } else {
+                    legacy_put_chunk(c, id, &object(0xCC), MAX_CHUNK_LEN as i32).await
+                }
             }))
             .await;
-            admin
-                .batch_execute(
-                    "delete from custody.deposits where chunk_count = 10 and payload = '\\x00';
-                     delete from custody.chunks where substring(object for 1) = '\\xcc';
-                     delete from custody.garbage where substring(object for 1) in ('\\xdd', '\\xcc')",
-                )
-                .await
-                .unwrap();
+            drain_chunk_budget(&admin).await;
+            admin.batch_execute("delete from custody.chunks where substring(object for 1) = '\\xcc'").await.unwrap();
+            drain_chunk_budget(&admin).await;
             assert_eq!(outcomes.iter().filter(|o| matches!(o, Ok(true))).count(), 1, "{outcomes:?}");
             assert!(outcomes.iter().all(|o| matches!(o, Ok(true) | Err(CustodyError::StorageFull))), "{outcomes:?}");
+        }
+
+        #[tokio::test]
+        async fn objects_waiting_in_the_garbage_count_against_the_chunk_budget() {
+            // Otherwise uploading and revoking in a loop grows R2 past the
+            // budget faster than the collector empties it.
+            databases!(relay, admin);
+            let custodian = custodian(&relay);
+            let id = file(&relay, 2, Retention::UntilExpiry).await;
+            fill_chunk_budget(&admin, 0).await;
+            let other = custodian.deposit_file(payload(), count(1), Retention::UntilExpiry, Lifetime::ONE_DAY, None);
+            let other = other.await.unwrap().id;
+            let small = SealedChunk::new(vec![1; custody::MIN_CHUNK_LEN]).unwrap();
+            assert_eq!(custodian.put_chunk(&other, at(0), small.clone()).await, Err(CustodyError::StorageFull));
+            // Revoking moves the chunks to the garbage: the room is not free yet...
+            let objects = objects_of(&admin, &id).await;
+            let digest = custody::TokenDigest::digest(&Sha256TokenDigest, &token(5));
+            PostgresVault::new(&relay).revoke(&id, &digest).await.unwrap().unwrap();
+            assert_eq!(custodian.put_chunk(&other, at(0), small.clone()).await, Err(CustodyError::StorageFull));
+            // ...until the store has deleted them.
+            store().delete(&objects).await.unwrap();
+            PostgresVault::new(&relay).forget_garbage(&objects).await.unwrap();
+            custodian.put_chunk(&other, at(0), small).await.unwrap();
+            drain_chunk_budget(&admin).await;
+        }
+
+        #[tokio::test]
+        async fn a_chunk_already_in_is_a_refusal_whether_or_not_the_file_was_opened() {
+            // A unique violation (409) before opening and a 404 after would let
+            // anyone with the link watch for the recipient without burning anything.
+            databases!(relay, admin);
+            let custodian = custodian(&relay);
+            let id = file(&relay, 1, Retention::BurnAfterReading).await;
+            let probe = async || {
+                let old = legacy_put_chunk(&relay, &id, &object(0xCB), MAX_CHUNK_LEN as i32).await;
+                (custodian.put_chunk(&id, at(0), chunk(9)).await, old)
+            };
+            let before = store().len();
+            assert_eq!(probe().await, (Err(CustodyError::NotFound), Ok(false)));
+            custodian.open(&id).await.unwrap();
+            assert_eq!(probe().await, (Err(CustodyError::NotFound), Ok(false)));
+            assert_eq!(store().len(), before, "no probe wrote to the store");
+            assert_eq!(rows(&admin, "chunks", &id).await, 1);
+        }
+
+        #[tokio::test]
+        async fn a_chunk_nobody_takes_is_refused_before_anything_is_written() {
+            databases!(relay, admin);
+            let custodian = custodian(&relay);
+            let unknown = fresh_id();
+            let text = custodian.deposit(payload(), Retention::UntilExpiry, Lifetime::ONE_DAY, None).await.unwrap().id;
+            let two = custodian.deposit_file(payload(), count(2), Retention::UntilExpiry, Lifetime::ONE_DAY, None);
+            let two = two.await.unwrap().id;
+            let short = SealedChunk::new(vec![1; custody::MIN_CHUNK_LEN]).unwrap();
+            let garbage_before: i64 =
+                admin.query_one("select count(*) from custody.garbage", &[]).await.unwrap().get(0);
+            let before = store().len();
+            for (id, index, chunk) in [(unknown, 0, chunk(0)), (text, 0, chunk(0)), (two, 2, chunk(0)), (two, 0, short)]
+            {
+                assert_eq!(custodian.put_chunk(&id, at(index), chunk).await, Err(CustodyError::NotFound));
+            }
+            let garbage_after: i64 = admin.query_one("select count(*) from custody.garbage", &[]).await.unwrap().get(0);
+            assert_eq!((store().len(), garbage_after), (before, garbage_before));
+        }
+
+        #[tokio::test]
+        async fn a_reserved_object_is_on_record_before_the_store_has_it() {
+            // Whatever happens after the reservation (store error, cancelled
+            // Worker, lost connection), the object is collected in the end.
+            databases!(relay, admin);
+            let custodian = custodian(&relay);
+            let id = custodian.deposit_file(payload(), count(1), Retention::UntilExpiry, Lifetime::ONE_DAY, None).await;
+            let id = id.unwrap().id;
+            let vault = PostgresVault::new(&relay);
+            let name = object(0xCA);
+            let len = custody::MIN_CHUNK_LEN as u32;
+            assert!(vault.reserve_chunk(&id, at(0), &name, len).await.unwrap());
+            assert_eq!(in_garbage(&admin, &[name]).await, 1);
+            assert!(!vault.garbage(1000).await.unwrap().contains(&name), "the upload may still be on its way");
+            // Late: by now its object could be on its way out of the store.
+            let sql = "update custody.garbage set not_before = now() + interval '9 minutes' where object = $1";
+            admin.execute(sql, &[&name.as_bytes().as_slice()]).await.unwrap();
+            assert!(!vault.put_chunk(&id, at(0), &name, len).await.unwrap());
+            assert_eq!(rows(&admin, "chunks", &id).await, 0);
+            // A name that was never reserved is not recorded either.
+            assert!(!vault.put_chunk(&id, at(0), &object(0xC9), len).await.unwrap());
+            // A fresh reservation is recorded, and leaves the garbage.
+            let fresh = object(0xCA);
+            assert!(vault.reserve_chunk(&id, at(0), &fresh, len).await.unwrap());
+            assert!(vault.put_chunk(&id, at(0), &fresh, len).await.unwrap());
+            assert_eq!(in_garbage(&admin, &[fresh]).await, 0);
+            vault.forget_garbage(&[name]).await.unwrap();
         }
 
         #[tokio::test]
@@ -788,20 +1091,7 @@ mod files {
         #[tokio::test]
         async fn chunk_storage_has_a_ceiling() {
             databases!(relay, admin);
-            // Fill custody.chunks up to its 5 GiB budget: only sizes are stored, so this is cheap.
-            admin
-                .batch_execute(
-                    "insert into custody.deposits (id, payload, burn_after_reading, expires_at, chunk_count)
-                     select decode('fe' || lpad(to_hex(n), 30, '0'), 'hex'), '\\x00', false, now() + interval '1 hour', 10
-                     from generate_series(1, 513) n;
-                     insert into custody.chunks (deposit_id, idx, object, size)
-                     select decode('fe' || lpad(to_hex(n), 30, '0'), 'hex'), i,
-                            decode('dd' || lpad(to_hex(n * 16 + i), 30, '0'), 'hex'), 1048576
-                     from generate_series(1, 513) n, generate_series(0, 9) i
-                     where (n - 1) * 10 + i < 5120;",
-                )
-                .await
-                .unwrap();
+            fill_chunk_budget(&admin, 0).await;
             let custodian = custodian(&relay);
             let id = custodian.deposit_file(payload(), count(1), Retention::UntilExpiry, Lifetime::ONE_DAY, None);
             let id = id.await.unwrap().id;
@@ -809,15 +1099,30 @@ mod files {
             let before = store().len();
             let outcome = custodian.put_chunk(&id, at(0), big).await;
             let after = store().len();
-            admin
-                .batch_execute(
-                    "delete from custody.deposits where chunk_count = 10 and payload = '\\x00';
-                     delete from custody.garbage where substring(object for 1) = '\\xdd'",
-                )
-                .await
-                .unwrap();
+            drain_chunk_budget(&admin).await;
             assert_eq!(outcome, Err(CustodyError::StorageFull));
-            assert!(after <= before, "the refused object was not taken back");
+            assert_eq!(after, before, "a refused chunk never reaches the store");
+        }
+
+        #[tokio::test]
+        async fn many_small_chunk_rows_reach_the_ceiling() {
+            // A chunk row costs the database the same whatever its object
+            // holds: the ceiling counts it.
+            databases!(relay, admin);
+            let custodian = custodian(&relay);
+            let mut ids = Vec::new();
+            for _ in 0..3 {
+                let id = custodian.deposit_file(payload(), count(1), Retention::UntilExpiry, Lifetime::ONE_DAY, None);
+                ids.push(id.await.unwrap().id);
+            }
+            let small = SealedChunk::new(vec![1; custody::MIN_CHUNK_LEN]).unwrap();
+            // Room for two chunk rows (192 B each, their objects in R2), not three.
+            crate::adversary::with_capacity(&admin, 2 * 192 + 100, async {
+                custodian.put_chunk(&ids[0], at(0), small.clone()).await.unwrap();
+                custodian.put_chunk(&ids[1], at(0), small.clone()).await.unwrap();
+                assert_eq!(custodian.put_chunk(&ids[2], at(0), small.clone()).await, Err(CustodyError::StorageFull));
+            })
+            .await;
         }
 
         #[tokio::test]
@@ -825,26 +1130,42 @@ mod files {
             databases!(relay, _admin);
             let id = fresh_id();
             let id = id.as_bytes().as_slice();
+            let manifest = payload();
+            let manifest = manifest.as_bytes();
             let too_many = relay
-                .query_one("select custody.deposit($1, $2, false, 300, null, 11::smallint)", &[&id, &b"x".as_slice()])
+                .query_one("select custody.deposit($1, $2, false, 300, null, 11::smallint)", &[&id, &manifest])
                 .await;
             assert!(too_many.is_err(), "11 chunks accepted");
             relay
-                .query_one("select custody.deposit($1, $2, false, 300, null, 10::smallint)", &[&id, &b"x".as_slice()])
+                .query_one("select custody.deposit($1, $2, false, 300, null, 10::smallint)", &[&id, &manifest])
                 .await
                 .unwrap();
             let name = object(1);
             let name = name.as_bytes().as_slice();
+            let full = MAX_CHUNK_LEN as i32;
+            for put in [
+                "select custody.put_chunk($1, $2::smallint, $3, $4)",
+                "select custody.reserve_chunk($1, $2::smallint, $3, $4)",
+            ] {
+                let oversized = relay.query_one(put, &[&id, &0i16, &name, &(full + 1)]).await;
+                assert!(!oversized.unwrap().get::<_, bool>(0), "oversized chunk accepted: {put}");
+                let past = relay.query_one(put, &[&id, &10i16, &name, &full]).await;
+                assert!(!past.unwrap().get::<_, bool>(0), "index 10 accepted: {put}");
+                // Only what a sealer makes, and short only at the end.
+                for (index, size) in [(0i16, 1i32), (9, 1), (9, 271), (9, 300), (9, 4096), (0, 272), (8, 4112)] {
+                    let odd = relay.query_one(put, &[&id, &index, &name, &size]).await;
+                    assert!(!odd.unwrap().get::<_, bool>(0), "chunk {index} of {size} B accepted: {put}");
+                }
+            }
             let put = "select custody.put_chunk($1, $2::smallint, $3, $4)";
-            let oversized = relay.query_one(put, &[&id, &0i16, &name, &(MAX_CHUNK_LEN as i32 + 1)]).await;
-            assert!(oversized.is_err(), "oversized chunk accepted");
-            let short_name = relay.query_one(put, &[&id, &0i16, &&name[..15], &1i32]).await;
+            let short_name = relay.query_one(put, &[&id, &0i16, &&name[..15], &full]).await;
             assert!(short_name.is_err(), "malformed object name accepted");
-            let past = relay.query_one(put, &[&id, &10i16, &name, &1i32]).await;
-            assert!(!past.unwrap().get::<_, bool>(0), "index 10 accepted");
-            relay.query_one(put, &[&id, &0i16, &name, &1i32]).await.unwrap();
-            let reused = relay.query_one(put, &[&id, &1i16, &name, &1i32]).await;
+            assert!(relay.query_one(put, &[&id, &0i16, &name, &full]).await.unwrap().get::<_, bool>(0));
+            let reused = relay.query_one(put, &[&id, &1i16, &name, &full]).await;
             assert!(reused.is_err(), "one object recorded for two chunks");
+            let last = object(2);
+            let last = relay.query_one(put, &[&id, &9i16, &last.as_bytes().as_slice(), &272i32]).await;
+            assert!(last.unwrap().get::<_, bool>(0), "a short last chunk is what a sealer makes");
         }
     }
 }

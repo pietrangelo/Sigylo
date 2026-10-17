@@ -28,6 +28,13 @@ use std::net::IpAddr;
 /// Largest JSON request body accepted (a maximal payload in base64 plus JSON).
 pub const MAX_BODY_LEN: usize = 100 * 1024;
 
+/// Most garbage batches one cron run deletes from R2 ([`custody::GARBAGE_BATCH`]
+/// objects each): the run waits on the database and R2 and stays within the
+/// free plan's 10 ms of CPU.
+pub const GARBAGE_ROUNDS: u32 = 5;
+/// Wall time after which a cron run starts no new garbage batch.
+pub const GARBAGE_MILLIS: u64 = 10_000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Route {
     Deposit,
@@ -943,6 +950,15 @@ mod tests {
             }
             assert_eq!(ApiError::LengthRequired.status(), 411);
             assert_eq!(ApiError::LengthRequired.body(), r#"{"error":"LengthRequired"}"#);
+        }
+
+        #[test]
+        fn one_collection_outpaces_many_addresses_filling_the_garbage() {
+            // 30 writes a minute per address, each at most one chunk, and a
+            // cron run every 15 minutes.
+            let per_address_per_run = 30 * 15;
+            let per_run = GARBAGE_ROUNDS as usize * usize::from(custody::GARBAGE_BATCH);
+            assert!(per_run >= 10 * per_address_per_run, "{per_run}");
         }
 
         #[test]

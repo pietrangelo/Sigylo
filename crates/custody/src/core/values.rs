@@ -22,8 +22,17 @@ pub const MIN_CHUNK_LEN: usize = 256 + 16;
 const CHUNK_TAG_LEN: usize = 16;
 /// How long whoever opened a burn-after-reading file has to fetch its chunks.
 pub const CLAIM_WINDOW_SECONDS: u32 = 60 * 60;
-/// How many orphaned chunk objects one garbage collection deletes at most.
+/// How many orphaned chunk objects one garbage batch deletes at most.
 pub const GARBAGE_BATCH: u16 = 1000;
+/// How long the object of a chunk that went waits in the garbage before it
+/// may be deleted from the store: a burned chunk is read well before that.
+pub const GARBAGE_GRACE_SECONDS: u32 = 5 * 60;
+/// How long the object of a reserved upload waits in the garbage, in case
+/// its chunk is never recorded.
+pub const RESERVATION_SECONDS: u32 = 15 * 60;
+/// How long after its reservation a chunk may still be recorded: long before
+/// its object could be collected.
+pub const RESERVATION_FRESH_SECONDS: u32 = 5 * 60;
 
 /// An unguessable 128-bit identifier, always chosen by the custodian.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -208,11 +217,11 @@ impl ObjectName {
     }
 }
 
-/// Where the vault found a chunk, and whether handing it out burned it.
+/// Where the vault found a chunk, and whether it burns once handed out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChunkRef {
     pub object: ObjectName,
-    pub burned: bool,
+    pub burns: bool,
 }
 
 /// What happens after a successful read.
