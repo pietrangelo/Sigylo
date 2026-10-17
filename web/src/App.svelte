@@ -26,7 +26,7 @@
     <a class="brand" href="#/">
       <svg viewBox="0 0 64 64" aria-hidden="true">
         <circle cx="32" cy="32" r="28" class="wax" />
-        <circle cx="32" cy="32" r="20" class="ring" />
+        <circle cx="32" cy="32" r="22" class="ring" />
         <path d="M38 24c-2-3-11-3-12 2s12 5 12 10-10 6-13 2" class="mark" />
       </svg>
       <span>{t.home}</span>
@@ -115,13 +115,13 @@
 
   .ring {
     fill: none;
-    stroke: #f3e9dc;
-    stroke-width: 3;
+    stroke: var(--seal-mark);
+    stroke-width: 2.5; /* the S's stroke / φ */
   }
 
   .mark {
     fill: none;
-    stroke: #f3e9dc;
+    stroke: var(--seal-mark);
     stroke-width: 4;
     stroke-linecap: round;
   }
