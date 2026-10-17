@@ -113,6 +113,12 @@ const it: LegalTexts = {
         ],
       },
       {
+        heading: `Sul tuo dispositivo`,
+        body: [
+          `Quando rispondi a una richiesta, il browser crea la tua chiave di firma di mittente e la tiene nella memoria locale (localStorage) di sigylo.net, così il tuo codice mittente resta sempre lo stesso. Non ci viene mai inviata e non ti identifica presso di noi: in ogni risposta firmata viaggia solo la chiave pubblica, cifrata insieme al segreto, che soltanto il destinatario può leggere. Puoi cancellarla quando vuoi eliminando i dati del sito dal browser.`,
+        ],
+      },
+      {
         heading: `Per quanto tempo`,
         body: [
           `I dati vengono cancellati alla prima lettura, alla revoca o alla scadenza, al massimo dopo 7 giorni. Un file a lettura unica viene cancellato pezzo per pezzo mentre lo scarichi; se il download si interrompe, ciò che resta scade entro un'ora. Ciò che scade viene eliminato fisicamente entro circa 15 minuti. Le eventuali copie di ripristino dei fornitori contengono gli stessi dati cifrati e si rinnovano secondo i loro cicli.`,
@@ -227,6 +233,12 @@ const en: LegalTexts = {
         body: [
           `For each secret: the encrypted envelope, its expiry, its destruction rule and the SHA-256 digest of the revocation code. For each request: the public key of whoever creates it and, once it arrives, the encrypted answer. For a file, in addition: its encrypted pieces (on Cloudflare R2, in the European Union, under random names), how many there are and, once opened, the SHA-256 digest of the code that releases them only to whoever opened it.`,
           `Nothing else: no creation time, no IP address, no identity. Even if a secret contains personal data, it stays unreadable to us.`,
+        ],
+      },
+      {
+        heading: `On your device`,
+        body: [
+          `When you answer a request, your browser creates your sender signing key and keeps it in the local storage (localStorage) of sigylo.net, so your sender code stays the same. It is never sent to us and does not identify you to us: each signed answer carries only the public key, encrypted together with the secret, which only the recipient can read. You can delete it at any time by clearing the site data in your browser.`,
         ],
       },
       {
@@ -347,6 +359,12 @@ const fr: LegalTexts = {
         ],
       },
       {
+        heading: `Sur votre appareil`,
+        body: [
+          `Lorsque vous répondez à une demande, votre navigateur crée votre clé de signature d'expéditeur et la garde dans le stockage local (localStorage) de sigylo.net, afin que votre code d'expéditeur reste le même. Elle ne nous est jamais envoyée et ne vous identifie pas auprès de nous : chaque réponse signée ne transporte que la clé publique, chiffrée avec le secret, que seul le destinataire peut lire. Vous pouvez la supprimer à tout moment en effaçant les données du site dans votre navigateur.`,
+        ],
+      },
+      {
         heading: `Pendant combien de temps`,
         body: [
           `Les données sont supprimées à la première lecture, à la révocation ou à l'expiration, au plus tard après 7 jours. Un fichier à lecture unique est supprimé morceau par morceau pendant son téléchargement ; si celui-ci s'interrompt, le reste expire dans l'heure. Ce qui expire est effacé physiquement en 15 minutes environ. Les éventuelles copies de restauration de nos prestataires contiennent les mêmes données chiffrées et se renouvellent selon leurs propres cycles.`,
@@ -464,6 +482,12 @@ const es: LegalTexts = {
         ],
       },
       {
+        heading: `En tu dispositivo`,
+        body: [
+          `Cuando respondes a una solicitud, tu navegador crea tu clave de firma de remitente y la guarda en el almacenamiento local (localStorage) de sigylo.net, para que tu código de remitente sea siempre el mismo. Nunca se nos envía y no te identifica ante nosotros: cada respuesta firmada lleva solo la clave pública, cifrada junto con el secreto, que solo el destinatario puede leer. Puedes borrarla cuando quieras eliminando los datos del sitio en tu navegador.`,
+        ],
+      },
+      {
         heading: `Durante cuánto tiempo`,
         body: [
           `Los datos se borran en la primera lectura, con la revocación o al vencer, como máximo a los 7 días. Un archivo de lectura única se borra fragmento a fragmento mientras se descarga; si la descarga se interrumpe, lo que queda vence en una hora. Lo que vence se elimina físicamente en unos 15 minutos. Las posibles copias de restauración de nuestros proveedores contienen los mismos datos cifrados y se renuevan según sus propios ciclos.`,
@@ -578,6 +602,12 @@ const de: LegalTexts = {
         body: [
           `Für jedes Geheimnis: den verschlüsselten Umschlag, den Ablauf, die Vernichtungsregel und den SHA-256-Fingerabdruck des Widerrufscodes. Für jede Anfrage: den öffentlichen Schlüssel der Person, die sie erstellt, und, falls sie eintrifft, die verschlüsselte Antwort. Bei einer Datei zusätzlich: ihre verschlüsselten Teile (auf Cloudflare R2, in der Europäischen Union, unter zufälligen Namen), deren Anzahl und, nach dem Öffnen, den SHA-256-Fingerabdruck des Codes, der sie nur an die Person ausgibt, die sie geöffnet hat.`,
           `Sonst nichts: keine Erstellungszeit, keine IP-Adresse, keine Identität. Selbst wenn ein Geheimnis personenbezogene Daten enthält, bleibt es für uns unlesbar.`,
+        ],
+      },
+      {
+        heading: `Auf deinem Gerät`,
+        body: [
+          `Wenn du eine Anfrage beantwortest, erzeugt dein Browser deinen Absender-Signaturschlüssel und bewahrt ihn im lokalen Speicher (localStorage) von sigylo.net auf, damit dein Absendercode gleich bleibt. Er wird nie an uns gesendet und identifiziert dich uns gegenüber nicht: Jede signierte Antwort enthält nur den öffentlichen Schlüssel, zusammen mit dem Geheimnis verschlüsselt, den nur die empfangende Person lesen kann. Du kannst ihn jederzeit löschen, indem du die Websitedaten in deinem Browser entfernst.`,
         ],
       },
       {

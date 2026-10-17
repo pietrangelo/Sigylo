@@ -8,5 +8,5 @@ mod fakes;
 #[cfg(test)]
 mod tests;
 
-pub use ports::{Aead, CryptoSuite, HybridKem, KeyDerivation, PassphraseStretcher, Randomness};
-pub use sealer::{NewRecipient, SealedFile, Sealer};
+pub use ports::{Aead, CryptoSuite, HybridKem, HybridSigner, KeyDerivation, PassphraseStretcher, Randomness};
+pub use sealer::{NewRecipient, NewSender, Received, SealedFile, Sealer};

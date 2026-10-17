@@ -25,11 +25,13 @@ export type SealErrorCode =
   | 'InvalidFileName'
   | 'InvalidPassphrase'
   | 'WrongMode'
+  | 'InvalidSenderCode'
+  | 'UnexpectedSender'
   | 'Unknown';
 
 export function errorCode(error: unknown): SealErrorCode {
   const message = error instanceof Error ? error.message : '';
-  const known: SealErrorCode[] = ['NotAuthentic', 'FingerprintMismatch', 'PassphraseExpectationMismatch', 'MalformedEnvelope', 'PlaintextTooLarge', 'PlaintextEmpty', 'FileTooLarge', 'InvalidFileName', 'InvalidPassphrase', 'WrongMode'];
+  const known: SealErrorCode[] = ['NotAuthentic', 'FingerprintMismatch', 'PassphraseExpectationMismatch', 'MalformedEnvelope', 'PlaintextTooLarge', 'PlaintextEmpty', 'FileTooLarge', 'InvalidFileName', 'InvalidPassphrase', 'WrongMode', 'InvalidSenderCode', 'UnexpectedSender'];
   return known.find((code) => code === message) ?? 'Unknown';
 }
 

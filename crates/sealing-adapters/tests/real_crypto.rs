@@ -1,9 +1,11 @@
 //! The Sealing use cases running on the real RustCrypto suite.
 
 use sealing::{
-    Envelope, KdfCost, LinkKey, Passphrase, Plaintext, RecipientSeed, SealError, Sealer, application::HybridKem,
+    Encapsulation, Envelope, KdfCost, LinkKey, Passphrase, Plaintext, RecipientSeed, SealError, Sealer, SenderCode,
+    SenderPublicKey, SenderSeed, SenderSignature,
+    application::{HybridKem, HybridSigner},
 };
-use sealing_adapters::{X25519MlKem768, rustcrypto_suite};
+use sealing_adapters::{Ed25519MlDsa65, X25519MlKem768, rustcrypto_suite};
 
 /// Tests use the cheapest accepted Argon2id cost; production uses RECOMMENDED.
 fn sealer() -> Sealer<'static> {
@@ -30,13 +32,70 @@ fn link_mode_roundtrip_over_the_wire() {
 fn recipient_mode_roundtrip_with_passphrase() {
     let recipient = sealer().new_recipient().unwrap();
     let envelope = sealer()
-        .seal_for_recipient(&secret(), &recipient.public_key, &recipient.fingerprint, Some(&pass("seconda chiave")))
+        .seal_for_recipient(
+            &secret(),
+            &recipient.public_key,
+            &recipient.fingerprint,
+            Some(&pass("seconda chiave")),
+            None,
+            None,
+        )
         .unwrap();
     let wire = envelope.to_bytes();
     let opened = sealer()
-        .open_as_recipient(&Envelope::parse(&wire).unwrap(), &recipient.seed, Some(&pass("seconda chiave")))
+        .open_as_recipient(&Envelope::parse(&wire).unwrap(), &recipient.seed, Some(&pass("seconda chiave")), None)
         .unwrap();
-    assert_eq!(opened, secret());
+    assert_eq!(opened.plaintext, secret());
+    assert_eq!(opened.sender, None);
+}
+
+#[test]
+fn signed_answer_roundtrip_over_the_wire() {
+    let recipient = sealer().new_recipient().unwrap();
+    let alice = sealer().new_sender().unwrap();
+    let envelope = sealer()
+        .seal_for_recipient(&secret(), &recipient.public_key, &recipient.fingerprint, None, Some(&alice.seed), None)
+        .unwrap();
+    let wire = envelope.to_bytes();
+    // A short secret still lands in a single fixed bucket once signed.
+    assert_eq!(wire.len(), 6 + Encapsulation::LEN + 24 + 8192 + 16);
+    let received = sealer().open_as_recipient(&Envelope::parse(&wire).unwrap(), &recipient.seed, None, None).unwrap();
+    assert_eq!(received.plaintext, secret());
+    assert_eq!(received.sender, Some(alice.fingerprint));
+    assert_eq!(sealer().sender_fingerprint(&alice.seed), alice.fingerprint);
+}
+
+#[test]
+fn only_the_expected_sender_gets_through() {
+    let recipient = sealer().new_recipient().unwrap();
+    let alice = sealer().new_sender().unwrap();
+    let mallory = sealer().new_sender().unwrap();
+    let pin = sealer().sender_pin(&recipient.fingerprint, &SenderCode::parse(&alice.fingerprint.code()).unwrap());
+    let seal = |seed: &SenderSeed| {
+        sealer()
+            .seal_for_recipient(&secret(), &recipient.public_key, &recipient.fingerprint, None, Some(seed), None)
+            .unwrap()
+    };
+    let from_alice = sealer().open_as_recipient(&seal(&alice.seed), &recipient.seed, None, Some(&pin)).unwrap();
+    assert_eq!(from_alice.sender, Some(alice.fingerprint));
+    let from_mallory = sealer().open_as_recipient(&seal(&mallory.seed), &recipient.seed, None, Some(&pin));
+    assert_eq!(from_mallory, Err(SealError::UnexpectedSender));
+}
+
+#[test]
+fn sender_public_key_is_a_pure_function_of_the_seed() {
+    let alice = sealer().new_sender().unwrap();
+    let again = SenderSeed::from_slice(alice.seed.expose()).unwrap();
+    assert_eq!(Ed25519MlDsa65.public_key(&again), alice.public_key);
+}
+
+#[test]
+fn hybrid_signature_verifies_and_is_deterministic() {
+    let seed = SenderSeed::from_array([3; 32]);
+    let pk = Ed25519MlDsa65.public_key(&seed);
+    let sig = Ed25519MlDsa65.sign(&seed, b"message");
+    assert!(Ed25519MlDsa65.verify(&pk, b"message", &sig));
+    assert_eq!(Ed25519MlDsa65.sign(&seed, b"message"), sig);
 }
 
 #[test]
@@ -68,7 +127,7 @@ mod adversary {
     fn every_single_bit_flip_is_detected() {
         let recipient = sealer().new_recipient().unwrap();
         let envelope = sealer()
-            .seal_for_recipient(&secret(), &recipient.public_key, &recipient.fingerprint, Some(&pass("pw")))
+            .seal_for_recipient(&secret(), &recipient.public_key, &recipient.fingerprint, Some(&pass("pw")), None, None)
             .unwrap()
             .to_bytes();
         for byte in 0..envelope.len() {
@@ -76,7 +135,7 @@ mod adversary {
             let mut bad = envelope.clone();
             bad[byte] ^= 1 << (byte % 8);
             let outcome = Envelope::parse(&bad)
-                .and_then(|env| sealer().open_as_recipient(&env, &recipient.seed, Some(&pass("pw"))));
+                .and_then(|env| sealer().open_as_recipient(&env, &recipient.seed, Some(&pass("pw")), None));
             assert!(outcome.is_err(), "flip in byte {byte} went undetected");
         }
     }
@@ -96,7 +155,7 @@ mod adversary {
     fn substituted_public_key_is_refused() {
         let alice = sealer().new_recipient().unwrap();
         let mallory = sealer().new_recipient().unwrap();
-        let result = sealer().seal_for_recipient(&secret(), &mallory.public_key, &alice.fingerprint, None);
+        let result = sealer().seal_for_recipient(&secret(), &mallory.public_key, &alice.fingerprint, None, None, None);
         assert_eq!(result.unwrap_err(), SealError::FingerprintMismatch);
     }
 
@@ -104,10 +163,11 @@ mod adversary {
     fn other_recipient_and_wrong_passphrase_fail_identically() {
         let alice = sealer().new_recipient().unwrap();
         let mallory = sealer().new_recipient().unwrap();
-        let envelope =
-            sealer().seal_for_recipient(&secret(), &alice.public_key, &alice.fingerprint, Some(&pass("pw"))).unwrap();
-        let wrong_seed = sealer().open_as_recipient(&envelope, &mallory.seed, Some(&pass("pw")));
-        let wrong_pass = sealer().open_as_recipient(&envelope, &alice.seed, Some(&pass("pW")));
+        let envelope = sealer()
+            .seal_for_recipient(&secret(), &alice.public_key, &alice.fingerprint, Some(&pass("pw")), None, None)
+            .unwrap();
+        let wrong_seed = sealer().open_as_recipient(&envelope, &mallory.seed, Some(&pass("pw")), None);
+        let wrong_pass = sealer().open_as_recipient(&envelope, &alice.seed, Some(&pass("pW")), None);
         assert_eq!(wrong_seed, Err(SealError::NotAuthentic));
         assert_eq!(wrong_pass, wrong_seed);
     }
@@ -119,7 +179,7 @@ mod adversary {
         bytes[..32].fill(0);
         let poisoned = sealing::RecipientPublicKey::from_slice(&bytes).unwrap();
         let fingerprint = X25519MlKem768.fingerprint(&poisoned);
-        let result = sealer().seal_for_recipient(&secret(), &poisoned, &fingerprint, None);
+        let result = sealer().seal_for_recipient(&secret(), &poisoned, &fingerprint, None, None, None);
         assert_eq!(result.unwrap_err(), SealError::InvalidKeyMaterial);
     }
 
@@ -138,6 +198,96 @@ mod adversary {
             let env = Envelope::parse(&bytes).unwrap();
             assert_eq!(sealer().open_link(&env, &key, None), Err(SealError::NotAuthentic));
         }
+    }
+
+    fn signed(seed: u8, message: &[u8]) -> (SenderPublicKey, SenderSignature) {
+        let seed = SenderSeed::from_array([seed; 32]);
+        (Ed25519MlDsa65.public_key(&seed), Ed25519MlDsa65.sign(&seed, message))
+    }
+
+    #[test]
+    fn bit_flips_all_over_a_signed_answer_are_detected() {
+        let recipient = sealer().new_recipient().unwrap();
+        let alice = sealer().new_sender().unwrap();
+        let envelope = sealer()
+            .seal_for_recipient(&secret(), &recipient.public_key, &recipient.fingerprint, None, Some(&alice.seed), None)
+            .unwrap()
+            .to_bytes();
+        for byte in (0..envelope.len()).step_by(11) {
+            let mut bad = envelope.clone();
+            bad[byte] ^= 1 << (byte % 8);
+            let outcome =
+                Envelope::parse(&bad).and_then(|env| sealer().open_as_recipient(&env, &recipient.seed, None, None));
+            assert!(outcome.is_err(), "flip in byte {byte} went undetected");
+        }
+    }
+
+    #[test]
+    fn both_halves_must_verify() {
+        let (pk, sig) = signed(1, b"m");
+        for (start, end) in [(0, 64), (64, SenderSignature::LEN)] {
+            for i in [start, (start + end) / 2, end - 1] {
+                let mut bad = sig.as_bytes().to_vec();
+                bad[i] ^= 0x01;
+                let bad = SenderSignature::from_slice(&bad).unwrap();
+                assert!(!Ed25519MlDsa65.verify(&pk, b"m", &bad), "flip at {i} accepted");
+            }
+        }
+        // Splicing a valid half from another signature does not help either.
+        let (_, other) = signed(1, b"n");
+        for spliced in [
+            [&sig.as_bytes()[..64], &other.as_bytes()[64..]].concat(),
+            [&other.as_bytes()[..64], &sig.as_bytes()[64..]].concat(),
+        ] {
+            assert!(!Ed25519MlDsa65.verify(&pk, b"m", &SenderSignature::from_slice(&spliced).unwrap()));
+        }
+    }
+
+    #[test]
+    fn a_signature_does_not_verify_under_another_key_or_message() {
+        let (pk, sig) = signed(1, b"pay alice");
+        let (mallory, _) = signed(2, b"");
+        assert!(!Ed25519MlDsa65.verify(&mallory, b"pay alice", &sig));
+        assert!(!Ed25519MlDsa65.verify(&pk, b"pay mallory", &sig));
+        // Mixing Alice's Ed25519 half with Mallory's ML-DSA half is another key.
+        let mixed = [pk.ed25519_part(), mallory.mldsa_part()].concat();
+        assert!(!Ed25519MlDsa65.verify(&SenderPublicKey::from_slice(&mixed).unwrap(), b"pay alice", &sig));
+    }
+
+    #[test]
+    fn hostile_keys_and_signatures_never_panic() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut noise = |len: usize| -> Vec<u8> {
+            (0..len)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    state as u8
+                })
+                .collect()
+        };
+        let (pk, sig) = signed(1, b"m");
+        for round in 0..20 {
+            let pk_bytes = if round % 2 == 0 { noise(SenderPublicKey::LEN) } else { pk.as_bytes().to_vec() };
+            let sig_bytes = if round % 3 == 0 { vec![0xFF; SenderSignature::LEN] } else { noise(SenderSignature::LEN) };
+            let hostile_pk = SenderPublicKey::from_slice(&pk_bytes).unwrap();
+            let hostile_sig = SenderSignature::from_slice(&sig_bytes).unwrap();
+            assert!(!Ed25519MlDsa65.verify(&hostile_pk, b"m", &hostile_sig));
+            assert!(!Ed25519MlDsa65.verify(&hostile_pk, b"m", &sig) || hostile_pk == pk);
+        }
+        // The Ed25519 identity point is a small-order key: verify_strict refuses it.
+        let mut weak = pk.as_bytes().to_vec();
+        weak[..32].copy_from_slice(&[
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
+        let mut weak_sig = sig.as_bytes().to_vec();
+        weak_sig[..64].copy_from_slice(&[[1u8].as_slice(), &[0; 63]].concat());
+        assert!(!Ed25519MlDsa65.verify(
+            &SenderPublicKey::from_slice(&weak).unwrap(),
+            b"m",
+            &SenderSignature::from_slice(&weak_sig).unwrap()
+        ));
     }
 }
 
@@ -177,10 +327,12 @@ mod files {
                 &recipient.public_key,
                 &recipient.fingerprint,
                 None,
+                None,
+                None,
             )
             .unwrap();
-        let plaintext = sealer().open_as_recipient(&file.manifest, &recipient.seed, None).unwrap();
-        let manifest = FileManifest::recognize(&plaintext).unwrap().unwrap();
+        let received = sealer().open_as_recipient(&file.manifest, &recipient.seed, None, None).unwrap();
+        let manifest = FileManifest::recognize(&received.plaintext).unwrap().unwrap();
         assert_eq!(sealer().open_file(&manifest, &file.chunks).unwrap(), contents(CHUNK_LEN + 1));
     }
 
