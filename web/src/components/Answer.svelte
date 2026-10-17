@@ -1,14 +1,19 @@
 <script lang="ts">
-  import { engine, errorCode, fileName, loadEngine, passphraseBytes, textBytes } from '../lib/crypto';
+  import { engine, errorCode, fileName, loadEngine, passphraseBytes, randomBytes, textBytes } from '../lib/crypto';
   import { MAX_FILE_LEN, uploadChunks } from '../lib/files';
   import { t } from '../lib/i18n';
+  import { SEED_LEN, browserStore, loadOrCreateSeed } from '../lib/identity';
   import { relayMessage, sealMessage } from '../lib/messages';
   import { Relay, type Retention } from '../lib/relay';
   import { relayFetch } from '../lib/platform';
   import SealOptions from './SealOptions.svelte';
   import SecretField from './SecretField.svelte';
 
-  let { id, fingerprint }: { id: Uint8Array; fingerprint: Uint8Array } = $props();
+  let {
+    id,
+    fingerprint,
+    expectedSender,
+  }: { id: Uint8Array; fingerprint: Uint8Array; expectedSender: Uint8Array | null } = $props();
 
   const relay = new Relay(relayFetch);
   let kind: 'text' | 'file' = $state('text');
@@ -21,6 +26,18 @@
   let busy = $state(false);
   let error = $state('');
   let done = $state(false);
+  // Every answer is signed with this browser's sender identity.
+  const senderSeed = loadOrCreateSeed(browserStore(), () => randomBytes(SEED_LEN));
+  let senderCode = $state('');
+  // False when the request names another expected sender: answering would only fail.
+  let expected = $state(true);
+
+  $effect(() => {
+    loadEngine().then(() => {
+      senderCode = engine.senderCode(senderSeed.slice());
+      expected = expectedSender === null || engine.isExpectedSender(fingerprint, expectedSender, senderSeed.slice());
+    });
+  });
 
   async function send(event: SubmitEvent) {
     event.preventDefault();
@@ -33,7 +50,8 @@
         error = request.error === 'NotFound' ? t.requestGone : relayMessage(request.error);
         return;
       }
-      // Both throw FingerprintMismatch if the relay served a substituted key.
+      // Both throw FingerprintMismatch if the relay served a substituted key, and
+      // UnexpectedSender if the request expects someone else.
       const { publicKey } = request.value;
       const pass = passphraseBytes(passphrase);
       let envelope: Uint8Array;
@@ -46,7 +64,7 @@
         }
         const contents = new Uint8Array(await file.arrayBuffer());
         try {
-          const sealed = engine.sealFileForRecipient(fileName(file.name), contents, publicKey, fingerprint, pass);
+          const sealed = engine.sealFileForRecipient(fileName(file.name), contents, publicKey, fingerprint, pass, senderSeed.slice(), expectedSender ?? undefined);
           envelope = sealed.envelope;
           chunks = sealed.chunks as Uint8Array[];
           sealed.free();
@@ -54,7 +72,7 @@
           contents.fill(0);
         }
       } else {
-        envelope = engine.sealForRecipient(textBytes(secret), publicKey, fingerprint, pass);
+        envelope = engine.sealForRecipient(textBytes(secret), publicKey, fingerprint, pass, senderSeed.slice(), expectedSender ?? undefined);
       }
       const result = await relay.answer(id, envelope, retention, lifetime, chunks?.length);
       if (!result.ok) {
@@ -84,8 +102,17 @@
 
 <section class="card stack">
   <h2>{t.answerTitle}</h2>
+  {#if senderCode}
+    <div class="sender">
+      <p class="small muted">{t.senderCodeLabel}</p>
+      <p class="code" data-testid="sender-code">{senderCode}</p>
+      <p class="small muted">{t.senderCodeHint}</p>
+    </div>
+  {/if}
   {#if done}
     <p class="success" data-testid="answered">{t.answered}</p>
+  {:else if !expected}
+    <p class="error" role="alert" data-testid="not-expected">{t.notExpectedSender}</p>
   {:else}
     <p class="muted">{t.answerIntro}</p>
     <form class="stack" onsubmit={send}>

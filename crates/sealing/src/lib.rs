@@ -19,6 +19,11 @@
 //! [`Sealer::seal_file_for_recipient`], [`Sealer::open_file`]).
 //!
 //! Either mode can add a passphrase, stretched with Argon2id.
+//!
+//! In recipient mode the sender can also **sign** the answer with a hybrid
+//! Ed25519 + ML-DSA-65 identity ([`Sealer::new_sender`]): the recipient sees
+//! the sender's [`SenderFingerprint::code`] and compares it out of band, so
+//! whoever races the legitimate sender to the request link is caught.
 #![forbid(unsafe_code)]
 
 pub mod application;
@@ -26,7 +31,8 @@ pub mod core;
 
 pub use crate::core::{
     CHUNK_LEN, Encapsulation, Envelope, FileBytes, FileManifest, FileName, Fingerprint, KdfCost, LinkKey, MAX_CHUNKS,
-    MAX_FILE_LEN, MAX_NAME_LEN, MAX_PASSPHRASE_LEN, MAX_PLAINTEXT_LEN, Passphrase, Plaintext, RecipientPublicKey,
-    RecipientSeed, SealError, SealedChunk, SymmetricKey,
+    MAX_FILE_LEN, MAX_NAME_LEN, MAX_PASSPHRASE_LEN, MAX_PLAINTEXT_LEN, MAX_SIGNED_PLAINTEXT_LEN, Passphrase, Plaintext,
+    RecipientPublicKey, RecipientSeed, SealError, SealedChunk, SenderCode, SenderFingerprint, SenderPin,
+    SenderPublicKey, SenderSeed, SenderSignature, SymmetricKey,
 };
-pub use application::{CryptoSuite, NewRecipient, SealedFile, Sealer};
+pub use application::{CryptoSuite, NewRecipient, NewSender, Received, SealedFile, Sealer};

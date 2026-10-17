@@ -19,6 +19,10 @@ export function sealMessage(code: SealErrorCode): string {
       return t.errFileTooLarge;
     case 'InvalidFileName':
       return t.errFileName;
+    case 'InvalidSenderCode':
+      return t.errSenderCode;
+    case 'UnexpectedSender':
+      return t.errUnexpectedSender;
     default:
       return t.errGeneric;
   }

@@ -33,6 +33,10 @@ pub enum SealError {
     PassphraseExpectationMismatch,
     /// The recipient public key does not match the fingerprint in the request link.
     FingerprintMismatch,
+    /// A sender code is not 20 characters of Crockford base32.
+    InvalidSenderCode,
+    /// The answer was not signed by the sender the request expects.
+    UnexpectedSender,
     /// Authentication failed.
     NotAuthentic,
 }
@@ -52,6 +56,8 @@ impl fmt::Display for SealError {
             Self::WrongMode => "envelope sealed for another mode",
             Self::PassphraseExpectationMismatch => "passphrase required or unexpected",
             Self::FingerprintMismatch => "recipient key fingerprint mismatch",
+            Self::InvalidSenderCode => "invalid sender code",
+            Self::UnexpectedSender => "answer signed by another sender",
             Self::NotAuthentic => "cannot open: wrong key, wrong passphrase or tampered",
         })
     }

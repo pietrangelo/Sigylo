@@ -6,10 +6,10 @@ use core::cell::Cell;
 
 use zeroize::Zeroizing;
 
-use super::ports::{Aead, HybridKem, KeyDerivation, PassphraseStretcher, Randomness};
+use super::ports::{Aead, HybridKem, HybridSigner, KeyDerivation, PassphraseStretcher, Randomness};
 use crate::core::{
     Encapsulation, Fingerprint, KdfCost, Nonce, Passphrase, RecipientPublicKey, RecipientSeed, Salt, SealError,
-    SymmetricKey,
+    SenderFingerprint, SenderPublicKey, SenderSeed, SenderSignature, SymmetricKey,
 };
 
 fn fnv(parts: &[&[u8]], out: &mut [u8]) {
@@ -146,5 +146,39 @@ impl HybridKem for ToyKem {
             *s = e ^ k;
         }
         Ok(SymmetricKey::from_array(shared))
+    }
+}
+
+/// Public key = seed || zeros; signature = hash(seed, message) || zeros, so
+/// anyone holding the public key could forge one: fine for testing rules.
+#[derive(Debug, Default)]
+pub struct ToySigner {
+    pub signatures: Cell<u32>,
+}
+
+impl HybridSigner for ToySigner {
+    fn public_key(&self, seed: &SenderSeed) -> SenderPublicKey {
+        let mut pk = vec![0u8; SenderPublicKey::LEN];
+        pk[..32].copy_from_slice(seed.expose());
+        SenderPublicKey::from_slice(&pk).unwrap()
+    }
+
+    fn fingerprint(&self, public_key: &SenderPublicKey) -> SenderFingerprint {
+        let mut out = [0u8; 32];
+        fnv(&[b"sender", public_key.as_bytes()], &mut out);
+        SenderFingerprint::from_array(out)
+    }
+
+    fn sign(&self, seed: &SenderSeed, message: &[u8]) -> SenderSignature {
+        self.signatures.set(self.signatures.get() + 1);
+        let mut sig = vec![0u8; SenderSignature::LEN];
+        fnv(&[seed.expose(), message], &mut sig[..32]);
+        SenderSignature::from_slice(&sig).unwrap()
+    }
+
+    fn verify(&self, public_key: &SenderPublicKey, message: &[u8], signature: &SenderSignature) -> bool {
+        let mut expected = vec![0u8; SenderSignature::LEN];
+        fnv(&[&public_key.as_bytes()[..32], message], &mut expected[..32]);
+        public_key.as_bytes()[32..].iter().all(|&b| b == 0) && expected == signature.as_bytes()
     }
 }
