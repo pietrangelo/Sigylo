@@ -15,6 +15,10 @@ export function sealMessage(code: SealErrorCode): string {
       return t.errTooLarge;
     case 'PlaintextEmpty':
       return t.errEmpty;
+    case 'InvalidSenderCode':
+      return t.errSenderCode;
+    case 'UnexpectedSender':
+      return t.errUnexpectedSender;
     default:
       return t.errGeneric;
   }

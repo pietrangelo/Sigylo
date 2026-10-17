@@ -6,7 +6,7 @@ use zeroize::Zeroizing;
 
 use crate::core::{
     Encapsulation, Fingerprint, KdfCost, Nonce, Passphrase, RecipientPublicKey, RecipientSeed, Salt, SealError,
-    SymmetricKey,
+    SenderFingerprint, SenderPublicKey, SenderSeed, SenderSignature, SymmetricKey,
 };
 
 /// A cryptographically secure random source.
@@ -56,6 +56,21 @@ pub trait HybridKem {
     fn decapsulate(&self, seed: &RecipientSeed, encapsulation: &Encapsulation) -> Result<SymmetricKey, SealError>;
 }
 
+/// The hybrid Ed25519 + ML-DSA-65 signature scheme of sender identities.
+pub trait HybridSigner {
+    /// The public key belonging to `seed` (deterministic).
+    fn public_key(&self, seed: &SenderSeed) -> SenderPublicKey;
+
+    /// A domain-separated hash of the public key.
+    fn fingerprint(&self, public_key: &SenderPublicKey) -> SenderFingerprint;
+
+    fn sign(&self, seed: &SenderSeed, message: &[u8]) -> SenderSignature;
+
+    /// True only if every half of the hybrid signature verifies under its
+    /// half of `public_key`. Must never panic, whatever the bytes.
+    fn verify(&self, public_key: &SenderPublicKey, message: &[u8], signature: &SenderSignature) -> bool;
+}
+
 /// The set of ports one [`crate::Sealer`] works with.
 #[derive(Clone, Copy)]
 pub struct CryptoSuite<'a> {
@@ -64,6 +79,7 @@ pub struct CryptoSuite<'a> {
     pub stretcher: &'a dyn PassphraseStretcher,
     pub kdf: &'a dyn KeyDerivation,
     pub kem: &'a dyn HybridKem,
+    pub signer: &'a dyn HybridSigner,
 }
 
 impl core::fmt::Debug for CryptoSuite<'_> {
