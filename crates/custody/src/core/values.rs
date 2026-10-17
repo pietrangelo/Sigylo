@@ -6,6 +6,12 @@ use super::CustodyError;
 
 /// Largest payload the relay keeps: a 64 KiB padded secret plus envelope header.
 pub const MAX_PAYLOAD_LEN: usize = 72 * 1024;
+/// Most chunks a file deposit can have: a 10 MiB file in 1 MiB chunks.
+pub const MAX_CHUNKS: u16 = 10;
+/// Largest chunk the relay keeps: 1 MiB of padded file plus the 16-byte tag.
+pub const MAX_CHUNK_LEN: usize = 1024 * 1024 + 16;
+/// How long whoever opened a burn-after-reading file has to fetch its chunks.
+pub const CLAIM_WINDOW_SECONDS: u32 = 60 * 60;
 
 /// An unguessable 128-bit identifier, always chosen by the custodian.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -55,6 +61,106 @@ impl SealedPayload {
 impl fmt::Debug for SealedPayload {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "SealedPayload({} bytes)", self.0.len())
+    }
+}
+
+/// How many chunks follow a file's manifest: 1 to [`MAX_CHUNKS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ChunkCount(u16);
+
+impl ChunkCount {
+    pub fn new(count: u16) -> Result<Self, CustodyError> {
+        if (1..=MAX_CHUNKS).contains(&count) { Ok(Self(count)) } else { Err(CustodyError::InvalidChunk) }
+    }
+
+    pub fn get(&self) -> u16 {
+        self.0
+    }
+
+    pub fn contains(&self, index: ChunkIndex) -> bool {
+        index.0 < self.0
+    }
+}
+
+/// The position of a chunk in its file, from 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ChunkIndex(u16);
+
+impl ChunkIndex {
+    pub fn new(index: u16) -> Result<Self, CustodyError> {
+        if index < MAX_CHUNKS { Ok(Self(index)) } else { Err(CustodyError::InvalidChunk) }
+    }
+
+    pub fn get(&self) -> u16 {
+        self.0
+    }
+}
+
+/// One opaque piece of a sealed file.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SealedChunk(Vec<u8>);
+
+impl SealedChunk {
+    pub fn new(bytes: Vec<u8>) -> Result<Self, CustodyError> {
+        match bytes.len() {
+            0 => Err(CustodyError::PayloadEmpty),
+            n if n > MAX_CHUNK_LEN => Err(CustodyError::PayloadTooLarge),
+            _ => Ok(Self(bytes)),
+        }
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+impl fmt::Debug for SealedChunk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SealedChunk({} bytes)", self.0.len())
+    }
+}
+
+/// Handed to whoever opens a burn-after-reading file, and only to them: the
+/// chunks are released against it, so nobody else with the link can fetch
+/// them once the file has been opened.
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+pub struct ClaimToken([u8; 32]);
+
+impl ClaimToken {
+    pub fn from_array(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, CustodyError> {
+        Ok(Self(bytes.try_into().map_err(|_| CustodyError::InvalidToken)?))
+    }
+
+    pub fn expose(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ClaimToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ClaimToken(redacted)")
+    }
+}
+
+/// What the vault stores instead of the claim token: SHA-256 of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClaimDigest([u8; 32]);
+
+impl ClaimDigest {
+    pub fn from_array(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
     }
 }
 
@@ -163,7 +269,9 @@ impl fmt::Debug for RecipientKeyBlob {
     }
 }
 
-/// A sealed secret handed over for safekeeping.
+/// A sealed secret handed over for safekeeping. A file is its sealed
+/// manifest as the payload plus `chunks` uploaded after it; until the last
+/// chunk is in, the deposit cannot be opened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Deposit {
     pub id: DropId,
@@ -171,14 +279,19 @@ pub struct Deposit {
     pub retention: Retention,
     pub lifetime: Lifetime,
     pub revocation: Option<RevocationDigest>,
+    pub chunks: Option<ChunkCount>,
 }
 
 /// The result of a successful read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Opened {
     pub payload: SealedPayload,
-    /// True when this read destroyed the deposit.
+    /// True when this read destroyed the deposit (or, for a file, claimed it).
     pub burned: bool,
+    /// The chunks to fetch next, for a file.
+    pub chunks: Option<ChunkCount>,
+    /// For a burn-after-reading file: the only key to its chunks.
+    pub claim: Option<ClaimToken>,
 }
 
 /// A recipient asking for one secret to be sealed to their public key.
@@ -222,6 +335,21 @@ mod tests {
         assert_eq!(RecipientKeyBlob::new(vec![0; 1215]), Err(CustodyError::InvalidRecipientKey));
         assert_eq!(RevocationToken::from_slice(&[0; 31]), Err(CustodyError::InvalidToken));
         assert!(RecipientKeyBlob::new(vec![0; 1216]).is_ok());
+        assert_eq!(ClaimToken::from_slice(&[0; 33]), Err(CustodyError::InvalidToken));
+    }
+
+    #[test]
+    fn chunk_bounds() {
+        assert_eq!(ChunkCount::new(0), Err(CustodyError::InvalidChunk));
+        assert_eq!(ChunkCount::new(MAX_CHUNKS).map(|c| c.get()), Ok(MAX_CHUNKS));
+        assert_eq!(ChunkCount::new(MAX_CHUNKS + 1), Err(CustodyError::InvalidChunk));
+        assert_eq!(ChunkIndex::new(MAX_CHUNKS - 1).map(|i| i.get()), Ok(MAX_CHUNKS - 1));
+        assert_eq!(ChunkIndex::new(MAX_CHUNKS), Err(CustodyError::InvalidChunk));
+        let three = ChunkCount::new(3).unwrap();
+        assert!(three.contains(ChunkIndex::new(2).unwrap()) && !three.contains(ChunkIndex::new(3).unwrap()));
+        assert_eq!(SealedChunk::new(vec![]), Err(CustodyError::PayloadEmpty));
+        assert!(SealedChunk::new(vec![1; MAX_CHUNK_LEN]).is_ok());
+        assert_eq!(SealedChunk::new(vec![1; MAX_CHUNK_LEN + 1]), Err(CustodyError::PayloadTooLarge));
     }
 
     mod adversary {
@@ -231,9 +359,11 @@ mod tests {
         fn debug_never_prints_capabilities_or_ciphertext() {
             let id = DropId::from_slice(&[0xAB; 16]).unwrap();
             let rendered = format!(
-                "{id:?} {:?} {:?}",
+                "{id:?} {:?} {:?} {:?} {:?}",
                 RevocationToken::from_slice(&[0xCD; 32]).unwrap(),
                 SealedPayload::new(vec![0xEF; 40]).unwrap(),
+                ClaimToken::from_array([0xCD; 32]),
+                SealedChunk::new(vec![0xEF; 40]).unwrap(),
             );
             assert!(!rendered.contains("abababab"));
             assert!(!rendered.to_lowercase().contains("cd") && !rendered.to_lowercase().contains("ef"));

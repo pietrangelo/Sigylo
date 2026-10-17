@@ -12,8 +12,13 @@ pub enum SealError {
     RandomnessUnavailable,
     /// The plaintext exceeds [`crate::MAX_PLAINTEXT_LEN`].
     PlaintextTooLarge,
-    /// The plaintext is empty: there is nothing to seal.
+    /// The plaintext or file is empty: there is nothing to seal.
     PlaintextEmpty,
+    /// The file exceeds [`crate::MAX_FILE_LEN`].
+    FileTooLarge,
+    /// The file name is empty, too long, or contains separators, control or
+    /// invisible characters.
+    InvalidFileName,
     /// A passphrase is empty or longer than [`crate::MAX_PASSPHRASE_LEN`].
     InvalidPassphrase,
     /// Bytes that should be a key, seed, fingerprint or public key have the wrong shape.
@@ -38,6 +43,8 @@ impl fmt::Display for SealError {
             Self::RandomnessUnavailable => "randomness unavailable",
             Self::PlaintextTooLarge => "secret too large",
             Self::PlaintextEmpty => "secret is empty",
+            Self::FileTooLarge => "file too large",
+            Self::InvalidFileName => "invalid file name",
             Self::InvalidPassphrase => "invalid passphrase",
             Self::InvalidKeyMaterial => "invalid key material",
             Self::KdfCostOutOfRange => "key derivation cost out of range",

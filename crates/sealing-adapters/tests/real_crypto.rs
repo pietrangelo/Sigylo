@@ -140,3 +140,81 @@ mod adversary {
         }
     }
 }
+
+mod files {
+    use sealing::{CHUNK_LEN, FileBytes, FileManifest, FileName, MAX_FILE_LEN, SealedChunk};
+
+    use super::*;
+
+    fn contents(len: usize) -> FileBytes {
+        FileBytes::new((0..len).map(|i| (i % 253) as u8).collect()).unwrap()
+    }
+
+    fn name() -> FileName {
+        FileName::new("bilancio 2026.xlsx".to_owned()).unwrap()
+    }
+
+    #[test]
+    fn largest_file_roundtrips_over_the_wire_with_a_passphrase() {
+        let (file, key) = sealer().seal_file_for_link(name(), &contents(MAX_FILE_LEN), Some(&pass("pw"))).unwrap();
+        let wire: Vec<Vec<u8>> = file.chunks.into_iter().map(SealedChunk::into_bytes).collect();
+        assert!(wire.iter().all(|c| c.len() == CHUNK_LEN + 16));
+        let manifest_envelope = Envelope::parse(&file.manifest.to_bytes()).unwrap();
+        let plaintext = sealer().open_link(&manifest_envelope, &key, Some(&pass("pw"))).unwrap();
+        let manifest = FileManifest::recognize(&plaintext).unwrap().unwrap();
+        let chunks: Vec<SealedChunk> = wire.into_iter().map(|c| SealedChunk::new(c).unwrap()).collect();
+        assert_eq!(sealer().open_file(&manifest, &chunks).unwrap(), contents(MAX_FILE_LEN));
+        assert_eq!(manifest.name().as_str(), "bilancio 2026.xlsx");
+    }
+
+    #[test]
+    fn recipient_mode_file_roundtrip() {
+        let recipient = sealer().new_recipient().unwrap();
+        let file = sealer()
+            .seal_file_for_recipient(
+                name(),
+                &contents(CHUNK_LEN + 1),
+                &recipient.public_key,
+                &recipient.fingerprint,
+                None,
+            )
+            .unwrap();
+        let plaintext = sealer().open_as_recipient(&file.manifest, &recipient.seed, None).unwrap();
+        let manifest = FileManifest::recognize(&plaintext).unwrap().unwrap();
+        assert_eq!(sealer().open_file(&manifest, &file.chunks).unwrap(), contents(CHUNK_LEN + 1));
+    }
+
+    mod adversary {
+        use super::*;
+
+        fn sealed(len: usize) -> (FileManifest, Vec<SealedChunk>) {
+            let (file, key) = sealer().seal_file_for_link(name(), &contents(len), None).unwrap();
+            let plaintext = sealer().open_link(&file.manifest, &key, None).unwrap();
+            (FileManifest::recognize(&plaintext).unwrap().unwrap(), file.chunks)
+        }
+
+        #[test]
+        fn swapped_dropped_and_foreign_chunks_fail_alike() {
+            let (manifest, chunks) = sealed(3 * CHUNK_LEN);
+            let (_, foreign) = sealed(3 * CHUNK_LEN);
+            let swapped = [chunks[1].clone(), chunks[0].clone(), chunks[2].clone()];
+            let dropped = [chunks[0].clone(), chunks[1].clone()];
+            let mixed = [chunks[0].clone(), foreign[1].clone(), chunks[2].clone()];
+            for attempt in [&swapped[..], &dropped[..], &mixed[..]] {
+                assert_eq!(sealer().open_file(&manifest, attempt), Err(SealError::NotAuthentic));
+            }
+        }
+
+        #[test]
+        fn every_bit_flip_in_a_last_chunk_is_detected() {
+            let (manifest, chunks) = sealed(300);
+            let bytes = chunks[0].as_bytes();
+            for byte in 0..bytes.len() {
+                let mut bad = bytes.to_vec();
+                bad[byte] ^= 1 << (byte % 8);
+                let bad = [SealedChunk::new(bad).unwrap()];
+                assert_eq!(sealer().open_file(&manifest, &bad), Err(SealError::NotAuthentic), "byte {byte}");
+            }
+        }
+    }
+}

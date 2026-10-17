@@ -9,4 +9,4 @@ mod fakes;
 mod tests;
 
 pub use ports::{Aead, CryptoSuite, HybridKem, KeyDerivation, PassphraseStretcher, Randomness};
-pub use sealer::{NewRecipient, Sealer};
+pub use sealer::{NewRecipient, SealedFile, Sealer};

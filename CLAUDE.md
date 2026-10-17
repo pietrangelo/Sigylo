@@ -1,11 +1,11 @@
 # Sigylo
 
 ## MISSIONE
-Condividere dati segreti (credenziali, chiavi, codici) nel modo più sicuro possibile e più semplice possibile. Il mittente sigilla il segreto nel browser, il server custodisce solo dati illeggibili, il destinatario apre il sigillo una volta (oppure fino alla scadenza scelta) e poi il segreto sparisce.
+Condividere dati segreti (credenziali, chiavi, codici, file fino a 10 MiB) nel modo più sicuro possibile e più semplice possibile. Il mittente sigilla il segreto nel browser, il server custodisce solo dati illeggibili, il destinatario apre il sigillo una volta (oppure fino alla scadenza scelta) e poi il segreto sparisce.
 
 - **Nome:** Sigylo, da *sigillo / sigillum*: il timbro che per secoli ha garantito che una lettera non fosse stata aperta prima dell'arrivo. Dominio: **sigylo.net** (registrato su Cloudflare il 2026-10-17, unica origine di produzione). Verifiche su marchi (TMview, WIPO, classi di Nizza 9 e 42) e handle ancora da fare.
 - **Lingue:** italiano, inglese, francese, spagnolo e tedesco (`web/src/lib/i18n.ts`). Vale la prima lingua del browser tra queste, altrimenti l'inglese.
-- **Principio guida:** semplicità prima di tutto. Un campo, due scelte (quando distruggerlo, quando scade), un pulsante. La sicurezza non deve chiedere nulla all'utente.
+- **Principio guida:** semplicità prima di tutto. Un campo (testo o file), due scelte (quando distruggerlo, quando scade), un pulsante. La sicurezza non deve chiedere nulla all'utente.
 
 ---
 
@@ -78,6 +78,8 @@ Tutto avviene sul dispositivo, in Rust compilato a Wasm. Le implementazioni sono
 
 **Busta (`crates/sealing/src/core/envelope.rs`):** `"SGY" | versione 1 | modo | flag | [salt + costi Argon2id] | [incapsulamento 1120 B] | nonce 24 B | ciphertext + tag`. Il parser è stretto e canonico. I test `format_pin` fissano i byte: se cambiano, si alza la versione, non si aggiornano le costanti.
 
+**File a blocchi (`crates/sealing/src/core/file.rs`):** un file è un *manifest* sigillato in una normale busta v1 (link o richiesta, con o senza passphrase), più i suoi *blocchi*. Il manifest è `0xFF "SGYF" | versione 1 | chiave del file 32 B | dimensione u64 | lunghezza nome | nome UTF-8`: `0xFF` non compare mai in UTF-8, quindi nessun testo viene scambiato per un file, e le buste v1 già emesse si aprono come prima. Ogni file ha una chiave casuale propria; i blocchi da 1 MiB sono XChaCha20-Poly1305 con chiave `HKDF(salt="sigylo/v1", file key, info="sigylo/v1/chunk")`, nonce `"SGYC" ‖ indice` e dati associati `"SGYC" ‖ versione ‖ indice ‖ numero di blocchi`: riordinare, togliere, duplicare, troncare blocchi o prenderli da un altro file dà `NotAuthentic`. L'ultimo blocco è riempito a una potenza di 2 da almeno 256 B. Massimo 10 MiB (10 blocchi). Il nome non può contenere separatori di percorso, caratteri di controllo o invisibili/bidirezionali (`fattura\u{202E}fdp.exe`); il browser lo scarica sempre come `application/octet-stream`, mai aperto nella pagina, così un HTML o SVG sigillato non gira con l'origine di Sigylo.
+
 **Errori indistinguibili:** chiave sbagliata, passphrase sbagliata, destinatario sbagliato e busta manomessa danno tutti `NotAuthentic`.
 
 **Memoria:** chiavi, seed, passphrase e testo in chiaro sono tipi `Zeroize` con `Debug` oscurato. La shell Wasm li consegna a JavaScript copiandoli direttamente in un `Uint8Array` (mai come `Vec<u8>` o campo di una struct esportata, che wasm-bindgen sposta o libera senza azzerare) e dopo ogni chiamata sovrascrive lo stack usato, dove gli spostamenti lasciano copie che `Zeroize` non raggiunge. `web/tests/engine-memory.test.ts` scansiona la memoria Wasm dopo ogni operazione e fallisce se ci trova un segreto. Limite noto del browser: ciò che passa in una stringa o `Uint8Array` JS può restare in copie del garbage collector.
@@ -88,17 +90,20 @@ Tutto avviene sul dispositivo, in Rust compilato a Wasm. Le implementazioni sono
 * **Gli id li sceglie il relay, mai il client:** 128 bit casuali (port `IdSource`, adapter `RandomIds`), restituiti nella ricevuta `{id, expires_at}`. Una richiesta che porta un proprio `id` viene rifiutata. Altrimenti chi legge per primo un segreto burn-after-reading potrebbe rimetterne una copia, o un falso sigillato con la chiave del link, sotto lo stesso id, e il destinatario lo aprirebbe senza accorgersi di nulla: il sigillo sarebbe rotto.
 * **Regole:** durata da 5 minuti a 7 giorni; `BurnAfterReading` restituisce la busta **al massimo una volta** anche con letture concorrenti; `UntilExpiry` è leggibile fino alla scadenza; inesistente, scaduto, già letto e revocato sono indistinguibili (`404 NotFound`); un id vivo non si sovrascrive; una richiesta riceve al massimo una risposta, salvata sotto lo stesso id.
 * **Limite noto della modalità richiesta:** chiunque abbia il link di richiesta può rispondere per primo, e il destinatario non sa chi ha sigillato (il mittente legittimo vede però "richiesta già usata"). L'autenticazione del mittente è rinviata (§7).
-* **API (`worker/src/api.rs`):** `POST /api/secrets`, `POST /api/secrets/{id}/open`, `POST /api/secrets/{id}/revoke`, `POST /api/requests`, `GET /api/requests/{id}`, `POST /api/requests/{id}/answer`. Aprire è sempre una POST: anteprime dei link e prefetch (GET) non possono bruciare un segreto. Campi binari in base64url senza padding. Il corpo si valida (anche la `Content-Length` dichiarata) prima di aprire una connessione al database.
+* **File:** il deposito (o la risposta) porta il manifest sigillato e `chunks`; i blocchi si caricano dopo, uno per richiesta, una volta sola ciascuno e solo finché nessuno ha aperto il deposito. Un file incompleto non si apre (`404`). Aprire un file `BurnAfterReading` non lo cancella ma lo *reclama*: il relay sceglie un token casuale, ne conserva solo lo SHA-256 e lo restituisce soltanto a chi ha aperto; da quel momento il deposito non si riapre, ogni blocco va solo a chi presenta il token, al massimo una volta, e viene cancellato mentre parte; il deposito se ne va con l'ultimo blocco, e un download abbandonato scade entro un'ora. Un file `UntilExpiry` resta scaricabile da chiunque abbia il link fino alla scadenza.
+* **API (`worker/src/api.rs`):** `POST /api/secrets`, `POST /api/secrets/{id}/open`, `POST /api/secrets/{id}/revoke`, `POST /api/secrets/{id}/chunks/{n}`, `POST /api/secrets/{id}/chunks/{n}/open`, `POST /api/requests`, `GET /api/requests/{id}`, `POST /api/requests/{id}/answer`. Aprire è sempre una POST: anteprime dei link e prefetch (GET) non possono bruciare un segreto. Campi binari in base64url senza padding, tranne i blocchi, che viaggiano come corpo binario grezzo (nessun base64 da 1 MiB nei 10 ms di CPU del Worker). Il corpo si valida (anche la `Content-Length` dichiarata) prima di aprire una connessione al database.
 * **Rate limit:** binding `WRITE_LIMITER` di Cloudflare sulle POST per indirizzo, in memoria di Cloudflare, mai salvato da noi.
 
 ## 4. PERSISTENZA (Supabase PostgreSQL via Hyperdrive)
 
-* Schema `custody` con due tabelle e **8 colonne in tutto** (verificato dai test): niente orari di creazione, niente IP, niente account. Colonne `bytea`, vincoli di lunghezza nel database.
+* Schema `custody` con tre tabelle (`deposits`, `requests`, `chunks`) e **13 colonne in tutto** (verificato dai test): niente orari di creazione, niente IP, niente account. Colonne `bytea`, vincoli di lunghezza nel database.
 * Ogni operazione è una funzione `SECURITY DEFINER` con `search_path` vuoto; burn-after-reading è un solo `DELETE … RETURNING` atomico; l'orologio che decide la scadenza è solo `now()` del database.
 * **Nessuna cache di Hyperdrive:** Hyperdrive memorizza per un minuto le `SELECT` che crede di sola lettura e non vede che `custody.open` cancella; una risposta in cache restituirebbe un segreto già bruciato, revocato o scaduto. La configurazione Hyperdrive si crea con `--caching-disabled` e, in più, ogni statement del vault seleziona anche `now()`, che Hyperdrive non mette mai in cache (test in `postgres_vault.rs`).
 * Il Worker si collega come `sigylo_relay`, che può **solo eseguire le funzioni**: nessun privilegio sulle tabelle, quindi una credenziale del relay rubata non può elencare o scaricare i segreti. Nessun altro ruolo, né `PUBLIC` né `anon`/`authenticated`/`service_role` di Supabase, ha privilegi nello schema `custody` (verificato sulle ACL dai test, con i ruoli Supabase ricreati). RLS attiva e forzata.
 * Disattivati per scelta: Supabase Auth, supabase-js nel browser, Vault/pgsodium (la crittografia non avviene mai nel database), PostgREST sullo schema `custody`.
-* Un cron ogni 15 minuti (`purge_expired`) cancella fisicamente ciò che è scaduto.
+* Un cron ogni 15 minuti (`purge_expired`) cancella fisicamente ciò che è scaduto; i blocchi seguono il loro deposito (`on delete cascade`).
+* **Tetto ai blocchi:** tutti i blocchi insieme non superano 256 MiB (`custody.put_chunk` fallisce con `53100`, il relay risponde `507 StorageFull`), così il piano gratuito di Supabase (500 MB) non si riempie. Con il limite di 30 POST al minuto per indirizzo, un file da 10 MiB costa 11 richieste per caricarlo e 11 per scaricarlo.
+* Le migrazioni sono additive: le funzioni della prima conservano la firma (il vecchio `custody.open(bytea)` ignora i file), così il relay in produzione continua a funzionare mentre si applica una migrazione nuova, prima del deploy.
 
 ## 5. CLIENT WEB E INTEGRITÀ DEL CODICE
 
@@ -130,6 +135,6 @@ Tutto avviene sul dispositivo, in Rust compilato a Wasm. Le implementazioni sono
 * **Autenticazione del mittente nella modalità richiesta:** firma ML-DSA-65 + Ed25519 o codice di conferma da confrontare fuori banda (vedi il limite noto in §3).
 * **Account e autenticazione:** OPAQUE o challenge firmate con Ed25519 + ML-DSA-65, MEK/chiave di autenticazione derivate con Argon2id + HKDF. L'MVP non ha account: il link è la capacità.
 * **Client verificabile:** build dell'app firmate e riproducibili, chiavi in Secure Enclave / TPM, oppure estensione browser firmata. Aprire i link `https://sigylo.net` direttamente nell'app (universal/app links) richiede gli identificativi degli account sviluppatore.
-* **File e allegati:** suddivisione in chunk cifrati su storage (Supabase Storage o R2).
+* **File oltre 10 MiB:** i blocchi su R2 o Supabase Storage invece che in PostgreSQL.
 * **Blind index:** non serve finché non esistono ricerche lato server.
 * **Naming:** verifiche su marchi e handle (il dominio sigylo.net c'è già).

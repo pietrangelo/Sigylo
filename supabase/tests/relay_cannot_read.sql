@@ -11,7 +11,11 @@ begin
         'update custody.deposits set expires_at = now() + interval ''1 year''',
         'insert into custody.requests values (''\x00''::bytea, ''\x00''::bytea, now())',
         'truncate custody.deposits',
-        'select custody.lifetime(300)'
+        'select count(*) from custody.chunks',
+        'delete from custody.chunks',
+        'update custody.deposits set claim_digest = null',
+        'select custody.lifetime(300)',
+        'select custody.complete(''\x00''::bytea, 0::smallint)'
     ] loop
         begin
             execute attempt;

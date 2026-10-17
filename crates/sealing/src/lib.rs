@@ -14,6 +14,10 @@
 //!   public key's fingerprint. No decryption key travels over any channel,
 //!   and recorded traffic stays safe unless both X25519 and ML-KEM fall.
 //!
+//! Files ride on either mode: a sealed manifest carries a fresh key that
+//! opens the file's chunks ([`Sealer::seal_file_for_link`],
+//! [`Sealer::seal_file_for_recipient`], [`Sealer::open_file`]).
+//!
 //! Either mode can add a passphrase, stretched with Argon2id.
 #![forbid(unsafe_code)]
 
@@ -21,7 +25,8 @@ pub mod application;
 pub mod core;
 
 pub use crate::core::{
-    Encapsulation, Envelope, Fingerprint, KdfCost, LinkKey, MAX_PASSPHRASE_LEN, MAX_PLAINTEXT_LEN, Passphrase,
-    Plaintext, RecipientPublicKey, RecipientSeed, SealError, SymmetricKey,
+    CHUNK_LEN, Encapsulation, Envelope, FileBytes, FileManifest, FileName, Fingerprint, KdfCost, LinkKey, MAX_CHUNKS,
+    MAX_FILE_LEN, MAX_NAME_LEN, MAX_PASSPHRASE_LEN, MAX_PLAINTEXT_LEN, Passphrase, Plaintext, RecipientPublicKey,
+    RecipientSeed, SealError, SealedChunk, SymmetricKey,
 };
-pub use application::{CryptoSuite, NewRecipient, Sealer};
+pub use application::{CryptoSuite, NewRecipient, SealedFile, Sealer};
