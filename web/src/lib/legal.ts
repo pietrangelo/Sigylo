@@ -7,8 +7,8 @@ import type { Language } from './i18n';
 
 /** Who runs sigylo.net. The owner fills these in; a test refuses to ship them empty. */
 export const operator = {
-  name: 'DA COMPILARE: nome e cognome del titolare',
-  email: 'DA COMPILARE: indirizzo email di contatto',
+  name: 'Pietrangelo Masala',
+  email: 'privacy@sigylo.net',
 } as const;
 
 /** Date of the last change to any of these texts (ISO 8601). */
