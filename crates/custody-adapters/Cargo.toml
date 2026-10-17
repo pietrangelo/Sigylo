@@ -1,6 +1,6 @@
 [package]
 name = "custody-adapters"
-description = "Adapters for the Custody ports: PostgreSQL vault (tokio-postgres, works over Cloudflare Hyperdrive) and SHA-256 token digest"
+description = "Adapters for the Custody ports: PostgreSQL vault (tokio-postgres, works over Cloudflare Hyperdrive), SHA-256 token digest and random ids"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,12 +11,12 @@ rust-version.workspace = true
 custody.workspace = true
 tokio-postgres = { version = "0.7.18", default-features = false }
 sha2 = "0.11.1"
+getrandom = "0.4.3"
 
 [dev-dependencies]
 tokio-postgres = { version = "0.7.18" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 futures-util = "0.3"
-getrandom = "0.4.3"
 
 [lints]
 workspace = true

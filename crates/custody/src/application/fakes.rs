@@ -8,7 +8,7 @@ use core::pin::pin;
 use core::task::{Context, Poll, Waker};
 use std::collections::HashMap;
 
-use super::ports::{TokenDigest, Vault};
+use super::ports::{IdSource, TokenDigest, Vault};
 use crate::core::{
     CustodyError, Deposit, DropId, Opened, PostedRequest, Request, Retention, RevocationDigest, RevocationToken,
     UnixTime,
@@ -35,6 +35,10 @@ pub struct FakeVault {
 impl FakeVault {
     pub fn advance(&self, seconds: i64) {
         self.now.set(self.now.get() + seconds);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.deposits.borrow().is_empty() && self.requests.borrow().is_empty()
     }
 
     pub fn stored_digest(&self, id: &DropId) -> Option<RevocationDigest> {
@@ -125,5 +129,49 @@ impl TokenDigest for ToyDigest {
         out.reverse();
         out[0] ^= 0x5A;
         RevocationDigest::from_array(out)
+    }
+}
+
+/// Hands out `[1; 16]`, `[2; 16]`, …: distinct and predictable, for tests.
+#[derive(Debug)]
+pub struct SequentialIds(Cell<u8>);
+
+impl SequentialIds {
+    pub fn starting_at(first: u8) -> Self {
+        Self(Cell::new(first))
+    }
+}
+
+impl Default for SequentialIds {
+    fn default() -> Self {
+        Self::starting_at(1)
+    }
+}
+
+impl IdSource for SequentialIds {
+    fn fresh(&self) -> Result<DropId, CustodyError> {
+        let n = self.0.get();
+        self.0.set(n.wrapping_add(1));
+        DropId::from_slice(&[n; DropId::LEN])
+    }
+}
+
+/// A broken random source that keeps returning the same id.
+#[derive(Debug)]
+pub struct StuckIds;
+
+impl IdSource for StuckIds {
+    fn fresh(&self) -> Result<DropId, CustodyError> {
+        DropId::from_slice(&[0xEE; DropId::LEN])
+    }
+}
+
+/// A random source that fails.
+#[derive(Debug)]
+pub struct BrokenIds;
+
+impl IdSource for BrokenIds {
+    fn fresh(&self) -> Result<DropId, CustodyError> {
+        Err(CustodyError::RandomnessUnavailable)
     }
 }
