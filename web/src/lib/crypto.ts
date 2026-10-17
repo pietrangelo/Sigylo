@@ -43,9 +43,14 @@ export function passphraseBytes(passphrase: string): Uint8Array | undefined {
   return passphrase === '' ? undefined : encoder.encode(passphrase.normalize('NFC'));
 }
 
-/** File names are NFC-normalized too: the name the recipient sees is the one that was sealed. */
+/**
+ * File names are NFC-normalized too: the name the recipient sees is the one
+ * that was sealed. Characters Windows refuses become underscores and emoji
+ * presentation selectors are dropped, so ordinary names seal; anything that
+ * could hide part of the name is left for the engine to refuse.
+ */
 export function fileName(name: string): string {
-  return name.normalize('NFC');
+  return name.normalize('NFC').replace(/[<>:"|?*]/g, '_').replace(/[\uFE0E\uFE0F]/g, '');
 }
 
 export function textBytes(text: string): Uint8Array {

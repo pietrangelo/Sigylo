@@ -1,7 +1,10 @@
 //! What the page may reach: where the webview may navigate, which pages the
 //! shell opens in the system browser, and the security configuration.
 
-use sigylo_app::{legal, navigation::is_app_url};
+use sigylo_app::{
+    legal,
+    navigation::{allows, is_app_download},
+};
 use url::Url;
 
 fn json(path: &str) -> serde_json::Value {
@@ -10,7 +13,7 @@ fn json(path: &str) -> serde_json::Value {
 }
 
 fn allowed(url: &str) -> bool {
-    is_app_url(&Url::parse(url).unwrap())
+    allows(&Url::parse(url).unwrap())
 }
 
 #[test]
@@ -19,6 +22,19 @@ fn the_webview_stays_on_the_bundled_app() {
     assert!(allowed("tauri://localhost/#/s/a/b"));
     assert!(allowed("http://tauri.localhost/index.html"));
     assert!(allowed("https://tauri.localhost/"));
+}
+
+fn saved(url: &str) -> bool {
+    is_app_download(&Url::parse(url).unwrap())
+}
+
+#[test]
+fn files_the_page_saves_go_to_the_downloads() {
+    assert!(saved("blob:tauri://localhost/0b6e8f4a-6a43-4c55-9a8e-2f1d3c9e5b10"));
+    assert!(saved("blob:http://tauri.localhost/0b6e8f4a-6a43-4c55-9a8e-2f1d3c9e5b10"));
+    assert!(saved("blob:https://tauri.localhost/0b6e8f4a-6a43-4c55-9a8e-2f1d3c9e5b10"));
+    // Saving follows the blob, so the navigation policy lets exactly these through.
+    assert!(allowed("blob:tauri://localhost/0b6e8f4a-6a43-4c55-9a8e-2f1d3c9e5b10"));
 }
 
 #[test]
@@ -55,10 +71,25 @@ mod adversary {
             "file:///etc/passwd",
             "javascript:alert(1)",
             "data:text/html,<script>alert(1)</script>",
-            "blob:tauri://localhost/x",
+            "blob:https://evil.example/x",
             "ipc://localhost/relay",
         ] {
             assert!(!allowed(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn only_the_page_s_own_blobs_are_saved() {
+        for url in [
+            "https://evil.example/payload.exe",
+            "tauri://localhost/index.html",
+            "blob:https://evil.example/0b6e8f4a",
+            "blob:tauri://localhost.evil.example/0b6e8f4a",
+            "blob:null/0b6e8f4a",
+            "data:application/octet-stream,AAAA",
+            "file:///etc/passwd",
+        ] {
+            assert!(!saved(url), "{url}");
         }
     }
 
