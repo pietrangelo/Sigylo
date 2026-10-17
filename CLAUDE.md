@@ -22,6 +22,7 @@ Condividere dati segreti (credenziali, chiavi, codici) nel modo più sicuro poss
   - il `lib.rs` di un dominio non ha `#![forbid(unsafe_code)]` o dichiara moduli diversi da `core` e `application`;
   - `core` raggiunge `application` (anche via `super::super`, o dentro una macro), o un anello raggiunge item della radice del crate;
   - un dominio usa `std::{fs, net, io, process, env, thread, time, os, path}`, rinomina o importa con glob `std`, usa `include!`/`include_str!`/`include_bytes!`/`env!`/`option_env!` o `#[path]` (anche dentro `cfg_attr`), o scrive sulla console (`print!`, `println!`, `eprint!`, `eprintln!`, `dbg!`);
+  - un crate escluso dal workspace (`exclude`, oggi solo `app/`) non è uno shell o un tool;
   - un file non si analizza (fail closed).
 
 ## 1. STRUTTURA DEL REPOSITORY E COMANDI
@@ -34,10 +35,12 @@ crates/custody-adapters/   PostgresVault (tokio-postgres, anche via Hyperdrive),
 crates/sigylo-wasm/        Shell browser: Sealing + RustCrypto esposti a JavaScript (wasm-bindgen)
 worker/                    Shell Cloudflare Worker (workers-rs): relay cieco HTTP → Custody → PostgreSQL
 web/                       Client Svelte 5 + TypeScript strict, solo dipendenze di sviluppo, nessuna a runtime
+app/                       Shell Tauri 2 (workspace a parte): client web e motore Wasm installati, relay solo verso sigylo.net
 supabase/migrations/       Schema SQL e funzioni atomiche della custodia
 supabase/tests/            Test dei privilegi SQL + test di contratto del vault su un PostgreSQL usa e getta
 tools/architecture-guard/  Verifica statica della rosetta
 scripts/e2e.sh             End-to-end: Worker reale (workerd) + PostgreSQL + Chromium
+scripts/app-smoke.sh       L'app vera in Xvfb, guidata via WebDriver (tauri-driver)
 ```
 
 Comandi (dalla radice):
@@ -51,6 +54,8 @@ cargo test --workspace                               # domini, adapter, guardian
 bash supabase/tests/run.sh                           # migrazioni + privilegi + contratto del vault su PostgreSQL reale
 (cd web && npm ci && npm run build && npm run check && npm test)
 bash scripts/e2e.sh                                  # tutto lo stack nel browser
+(cd web && npm run build:app) && (cd app && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test)
+bash scripts/app-smoke.sh                            # l'app Tauri nella webview vera
 ```
 
 Strumenti: Rust stabile con target `wasm32-unknown-unknown`, `wasm-bindgen-cli` alla versione esatta fissata in `crates/sigylo-wasm/Cargo.toml` (oggi 0.2.129), `worker-build` 0.8.7, Node 22, PostgreSQL 15+ (binari `initdb`/`pg_ctl` per i test).
@@ -104,7 +109,14 @@ Tutto avviene sul dispositivo, in Rust compilato a Wasm. Le implementazioni sono
 * Dopo l'apertura la chiave viene tolta dalla barra degli indirizzi (`history.replaceState`).
 * **UI:** spaziature e tipografia sulla scala aurea (φ) da 8 px; palette "ceralacca" (rosso sigillo su inchiostro e pergamena), tema chiaro e scuro.
 * **Termini e privacy** (`web/src/lib/legal.ts`, pagine `#/terms` e `#/privacy`, link nel footer in una nuova scheda così un link segreto aperto non perde il frammento): solo testo, mai `{@html}` (verificato dai test). La Apache License 2.0 copre il codice; i termini coprono solo il servizio su sigylo.net. Titolare e contatto stanno in `operator` e nel file `NOTICE`: un test fa fallire la CI, e quindi il deploy, finché contengono `DA COMPILARE`. Se cambia un testo si aggiorna `LEGAL_UPDATED`; se cambiano fornitori, dati conservati o durata massima, si aggiorna l'informativa.
-* **Limite noto:** chi controlla l'hosting può servire un `index.html` diverso. SRI protegge le sotto-risorse, non la pagina stessa: per gli utenti più esigenti servirà un client verificabile (Tauri o estensione firmata, vedi §7).
+* **Limite noto:** chi controlla l'hosting può servire un `index.html` diverso. SRI protegge le sotto-risorse, non la pagina stessa. Per chi lo vuole evitare c'è l'app (sotto); le build firmate e verificabili sono rinviate (§7).
+
+**App installabile (`app/`, Tauri 2):**
+* `vite build --mode app` (`npm run build:app`, in `web/dist-app`) produce la stessa pagina con il motore Wasm, incorporata nell'app: quando l'app gira nessun codice arriva da un server, e non c'è un updater.
+* La pagina non ha rete: la CSP dell'app (`vite-plugin-app.ts`, identica a quella di `tauri.conf.json`, verificato dai test) ha `connect-src 'self' ipc: http://ipc.localhost`. Le chiamate al relay passano dal comando Rust `relay` (`app/src/relay.rs`), che accetta solo le sei rotte dell'API con il loro metodo e va solo a `https://sigylo.net/api`: niente redirect, niente cookie, solo HTTPS, corpo ≤ 100 KiB, risposta ≤ 128 KiB. Così il Worker resta senza CORS.
+* La pagina ha due soli permessi (`capabilities/main.json`: `allow-relay`, `allow-open-legal`), nessun permesso di Tauri o dei plugin, niente `withGlobalTauri`, `freezePrototype` attivo; la webview non naviga fuori dal bundle (`navigation.rs`).
+* I link creati nell'app sono `https://sigylo.net/#/…` (si aprono in ogni browser); un link ricevuto si incolla nel riquadro dell'app (`linkFragment` accetta solo `https://sigylo.net/` con un frammento di segreto, revoca, richiesta o cassetta). Termini e informativa si aprono nel browser di sistema.
+* Rilascio: `.github/workflows/app-release.yml` (tag `app-v*` o a mano) crea installer Linux, macOS e Windows non firmati in una release in bozza. Firma e store richiedono gli account del titolare. Mobile: crate pronto (`mobile_entry_point`), progetti nativi da generare con `cargo tauri android init` / `ios init`.
 
 ## 6. DEPLOY
 
@@ -117,7 +129,7 @@ Tutto avviene sul dispositivo, in Rust compilato a Wasm. Le implementazioni sono
 
 * **Autenticazione del mittente nella modalità richiesta:** firma ML-DSA-65 + Ed25519 o codice di conferma da confrontare fuori banda (vedi il limite noto in §3).
 * **Account e autenticazione:** OPAQUE o challenge firmate con Ed25519 + ML-DSA-65, MEK/chiave di autenticazione derivate con Argon2id + HKDF. L'MVP non ha account: il link è la capacità.
-* **Client verificabile:** app Tauri con chiavi in Secure Enclave / TPM, oppure estensione browser firmata.
+* **Client verificabile:** build dell'app firmate e riproducibili, chiavi in Secure Enclave / TPM, oppure estensione browser firmata. Aprire i link `https://sigylo.net` direttamente nell'app (universal/app links) richiede gli identificativi degli account sviluppatore.
 * **File e allegati:** suddivisione in chunk cifrati su storage (Supabase Storage o R2).
 * **Blind index:** non serve finché non esistono ricerche lato server.
 * **Naming:** verifiche su marchi e handle (il dominio sigylo.net c'è già).

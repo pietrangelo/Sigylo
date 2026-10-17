@@ -12,6 +12,9 @@
 //! [package.metadata.rosette]
 //! role = "domain" # or "adapters", "shell", "tool"
 //! ```
+//!
+//! A crate excluded from the workspace (the Tauri app, which needs the
+//! system webview) is checked too, and may only be a shell or a tool.
 
 mod manifest;
 mod source;
@@ -52,6 +55,8 @@ pub enum Rule {
     ConsoleIo,
     /// `#[path]` attributes that could pull files from outside the ring.
     PathAttribute,
+    /// A domain or adapters crate excluded from the workspace, out of the guard's reach.
+    ExcludedCrate,
     /// A source file that does not parse.
     Unparsable,
 }
@@ -80,13 +85,28 @@ pub fn check_workspace(root: &Path) -> std::io::Result<Vec<Violation>> {
         .map(|m| m.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
 
+    let excluded: Vec<String> = workspace
+        .get("workspace")
+        .and_then(|w| w.get("exclude"))
+        .and_then(|m| m.as_array())
+        .map(|m| m.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
     let mut manifests = Vec::new();
     for member in &members {
         let dir = root.join(member);
         let manifest = read(&dir.join("Cargo.toml"))?;
         manifests.push((dir, manifest));
     }
-    let roles = manifest::roles(&manifests);
+    let mut outside = Vec::new();
+    for path in &excluded {
+        let dir = root.join(path);
+        if dir.join("Cargo.toml").is_file() {
+            let manifest = read(&dir.join("Cargo.toml"))?;
+            outside.push((dir, manifest));
+        }
+    }
+    let roles = manifest::roles(&[manifests.as_slice(), outside.as_slice()].concat());
     let workspace_dependencies = workspace
         .get("workspace")
         .and_then(|w| w.get("dependencies"))
@@ -101,6 +121,18 @@ pub fn check_workspace(root: &Path) -> std::io::Result<Vec<Violation>> {
         violations.extend(found);
         if role == Some(Role::Domain) {
             violations.extend(check_domain_sources(&dir.join("src"))?);
+        }
+    }
+    for (dir, text) in &outside {
+        let file = dir.join("Cargo.toml");
+        let (role, found) = check_manifest(&file, text, &roles, dir.join("build.rs").exists(), &workspace_dependencies);
+        violations.extend(found);
+        if matches!(role, Some(Role::Domain | Role::Adapters)) {
+            violations.push(Violation {
+                file,
+                rule: Rule::ExcludedCrate,
+                detail: "only shells and tools may live outside the workspace".into(),
+            });
         }
     }
     Ok(violations)
