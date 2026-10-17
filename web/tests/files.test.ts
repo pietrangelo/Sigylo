@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { fileName } from '../src/lib/crypto';
 import { downloadChunks, uploadChunks } from '../src/lib/files';
 import { Relay } from '../src/lib/relay';
 
@@ -60,5 +61,24 @@ describe('files', () => {
       expect(await downloadChunks(relay, id, 3, undefined, have)).toEqual({ ok: false, error: 'NotFound' });
       expect(have).toEqual([chunk(1), chunk(2)]);
     });
+  });
+});
+
+describe('fileName', () => {
+  it('normalizes to NFC', () => {
+    expect(fileName('été.txt')).toBe('été.txt');
+  });
+
+  it('turns what Windows refuses into underscores, so ordinary names seal', () => {
+    expect(fileName('Q&A: why?.txt')).toBe('Q&A_ why_.txt');
+    expect(fileName('a<b>|"c"*.md')).toBe('a_b___c__.md');
+  });
+
+  it('drops emoji presentation selectors, which draw nothing', () => {
+    expect(fileName('❤️ foto.png')).toBe('❤ foto.png');
+  });
+
+  it('leaves anything that hides to the engine, which refuses it', () => {
+    expect(fileName('invoice‮fdp.exe')).toBe('invoice‮fdp.exe');
   });
 });
