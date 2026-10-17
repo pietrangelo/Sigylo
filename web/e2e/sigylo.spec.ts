@@ -1,5 +1,6 @@
 import { expect, test, type Browser, type Page, type Request } from '@playwright/test';
 import { catalogs } from '../src/lib/i18n';
+import { legal } from '../src/lib/legal';
 
 const SECRET = 'password del DB: cavallo-corretto-batteria-graffetta 🔐';
 
@@ -192,6 +193,25 @@ test('the page speaks the browser language', async ({ browser }) => {
     await expect(page.locator('html')).toHaveAttribute('lang', lang);
     await expect(page.getByText(catalogs[lang].tagline)).toBeVisible();
     await expect(page.getByTestId('seal')).toHaveText(catalogs[lang].seal);
+    await context.close();
+  }
+});
+
+test('the footer opens the terms and the privacy notice in a new tab, in the browser language', async ({ browser }) => {
+  for (const [locale, lang] of [['it-IT', 'it'], ['de-DE', 'de']] as const) {
+    const context = await browser.newContext({ locale });
+    const page = await context.newPage();
+    const violations: string[] = [];
+    context.on('console', (m) => m.text().includes('Content Security Policy') && violations.push(m.text()));
+    await page.goto('/');
+    for (const [testId, kind] of [['terms-link', 'terms'], ['privacy-link', 'privacy']] as const) {
+      const [tab] = await Promise.all([context.waitForEvent('page'), page.getByTestId(testId).click()]);
+      await expect(tab.getByRole('heading', { level: 2, name: legal[lang][kind].title })).toBeVisible();
+      expect(new URL(tab.url()).hash).toBe(`#/${kind}`);
+      await tab.close();
+    }
+    await expect(page.getByTestId('seal')).toBeVisible();
+    expect(violations).toEqual([]);
     await context.close();
   }
 });

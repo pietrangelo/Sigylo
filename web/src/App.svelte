@@ -5,6 +5,7 @@
   import Opener from './components/Opener.svelte';
   import Answer from './components/Answer.svelte';
   import Revoke from './components/Revoke.svelte';
+  import Legal from './components/Legal.svelte';
 
   let route: Route = $state(parseFragment(location.hash));
 
@@ -39,12 +40,21 @@
       <Answer id={route.id} fingerprint={route.fingerprint} />
     {:else if route.kind === 'revoke'}
       <Revoke id={route.id} token={route.token} />
+    {:else if route.kind === 'terms' || route.kind === 'privacy'}
+      <Legal kind={route.kind} />
     {:else}
       <section class="card"><p class="error">{t.invalidLink}</p></section>
     {/if}
   {/key}
 
-  <footer class="muted small">{t.footer}</footer>
+  <footer class="muted small">
+    <p>{t.footer}</p>
+    <!-- A new tab, so a secret link open in this one keeps its fragment. -->
+    <nav>
+      <a href="#/terms" target="_blank" rel="noopener noreferrer" data-testid="terms-link">{t.termsLink}</a>
+      <a href="#/privacy" target="_blank" rel="noopener noreferrer" data-testid="privacy-link">{t.privacyLink}</a>
+    </nav>
+  </footer>
 </main>
 
 <style>
@@ -93,5 +103,18 @@
 
   footer {
     margin-top: var(--s6);
+  }
+
+  footer p {
+    margin: 0 0 var(--s3);
+  }
+
+  footer nav {
+    display: flex;
+    gap: var(--s4);
+  }
+
+  footer a {
+    color: var(--muted);
   }
 </style>

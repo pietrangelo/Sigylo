@@ -63,6 +63,10 @@ const it = {
   needPassphrase: 'Questo segreto è protetto da una passphrase.',
   retry: 'Riprova',
   footer: 'Cifrato sul tuo dispositivo con X25519 + ML-KEM-768 e XChaCha20-Poly1305. Il server conserva solo dati illeggibili.',
+  termsLink: 'Termini di servizio',
+  privacyLink: 'Privacy',
+  legalUpdated: 'Ultimo aggiornamento:',
+  back: 'Torna a Sigylo',
   home: 'Sigylo',
 } as const;
 
@@ -131,6 +135,10 @@ const en: Messages = {
   needPassphrase: 'This secret is protected by a passphrase.',
   retry: 'Try again',
   footer: 'Encrypted on your device with X25519 + ML-KEM-768 and XChaCha20-Poly1305. The server only keeps unreadable data.',
+  termsLink: 'Terms of Service',
+  privacyLink: 'Privacy',
+  legalUpdated: 'Last updated:',
+  back: 'Back to Sigylo',
   home: 'Sigylo',
 };
 
@@ -196,6 +204,10 @@ const fr: Messages = {
   needPassphrase: 'Ce secret est protégé par une phrase secrète.',
   retry: 'Réessayer',
   footer: 'Chiffré sur votre appareil avec X25519 + ML-KEM-768 et XChaCha20-Poly1305. Le serveur ne conserve que des données illisibles.',
+  termsLink: 'Conditions d\'utilisation',
+  privacyLink: 'Confidentialité',
+  legalUpdated: 'Dernière mise à jour :',
+  back: 'Retour à Sigylo',
   home: 'Sigylo',
 };
 
@@ -261,6 +273,10 @@ const es: Messages = {
   needPassphrase: 'Este secreto está protegido con una frase de contraseña.',
   retry: 'Reintentar',
   footer: 'Cifrado en tu dispositivo con X25519 + ML-KEM-768 y XChaCha20-Poly1305. El servidor solo guarda datos ilegibles.',
+  termsLink: 'Términos del servicio',
+  privacyLink: 'Privacidad',
+  legalUpdated: 'Última actualización:',
+  back: 'Volver a Sigylo',
   home: 'Sigylo',
 };
 
@@ -326,6 +342,10 @@ const de: Messages = {
   needPassphrase: 'Dieses Geheimnis ist durch eine Passphrase geschützt.',
   retry: 'Erneut versuchen',
   footer: 'Auf deinem Gerät verschlüsselt mit X25519 + ML-KEM-768 und XChaCha20-Poly1305. Der Server speichert nur unlesbare Daten.',
+  termsLink: 'Nutzungsbedingungen',
+  privacyLink: 'Datenschutz',
+  legalUpdated: 'Zuletzt aktualisiert:',
+  back: 'Zurück zu Sigylo',
   home: 'Sigylo',
 };
 

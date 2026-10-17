@@ -27,4 +27,4 @@ bash supabase/tests/run.sh
 bash scripts/e2e.sh
 ```
 
-Licenza: Apache-2.0.
+Licenza del codice: Apache-2.0 (vedi [LICENSE](LICENSE) e [NOTICE](NOTICE)). L'uso del servizio su sigylo.net è regolato dai termini di servizio e dall'informativa sulla privacy, raggiungibili dal piè di pagina del sito.

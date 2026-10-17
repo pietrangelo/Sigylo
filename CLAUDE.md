@@ -103,6 +103,7 @@ Tutto avviene sul dispositivo, in Rust compilato a Wasm. Le implementazioni sono
 * **SRI** (`web/vite-plugin-integrity.ts`): `integrity` sha384 su script e fogli di stile, e il `.wasm` si scarica con `fetch(url, { integrity })`.
 * Dopo l'apertura la chiave viene tolta dalla barra degli indirizzi (`history.replaceState`).
 * **UI:** spaziature e tipografia sulla scala aurea (φ) da 8 px; palette "ceralacca" (rosso sigillo su inchiostro e pergamena), tema chiaro e scuro.
+* **Termini e privacy** (`web/src/lib/legal.ts`, pagine `#/terms` e `#/privacy`, link nel footer in una nuova scheda così un link segreto aperto non perde il frammento): solo testo, mai `{@html}` (verificato dai test). La Apache License 2.0 copre il codice; i termini coprono solo il servizio su sigylo.net. Titolare e contatto stanno in `operator` e nel file `NOTICE`: un test fa fallire la CI, e quindi il deploy, finché contengono `DA COMPILARE`. Se cambia un testo si aggiorna `LEGAL_UPDATED`; se cambiano fornitori, dati conservati o durata massima, si aggiorna l'informativa.
 * **Limite noto:** chi controlla l'hosting può servire un `index.html` diverso. SRI protegge le sotto-risorse, non la pagina stessa: per gli utenti più esigenti servirà un client verificabile (Tauri o estensione firmata, vedi §7).
 
 ## 6. DEPLOY
