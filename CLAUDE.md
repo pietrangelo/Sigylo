@@ -4,7 +4,7 @@
 Condividere dati segreti (credenziali, chiavi, codici) nel modo più sicuro possibile e più semplice possibile. Il mittente sigilla il segreto nel browser, il server custodisce solo dati illeggibili, il destinatario apre il sigillo una volta (oppure fino alla scadenza scelta) e poi il segreto sparisce.
 
 - **Nome:** Sigylo, da *sigillo / sigillum*: il timbro che per secoli ha garantito che una lettera non fosse stata aperta prima dell'arrivo. Dominio: **sigylo.net** (registrato su Cloudflare il 2026-10-17, unica origine di produzione). Verifiche su marchi (TMview, WIPO, classi di Nizza 9 e 42) e handle ancora da fare.
-- **Lingue:** italiano e inglese fin dal primo commit (`web/src/lib/i18n.ts`), lingua scelta dal browser.
+- **Lingue:** italiano, inglese, francese, spagnolo e tedesco (`web/src/lib/i18n.ts`). Vale la prima lingua del browser tra queste, altrimenti l'inglese.
 - **Principio guida:** semplicità prima di tutto. Un campo, due scelte (quando distruggerlo, quando scade), un pulsante. La sicurezza non deve chiedere nulla all'utente.
 
 ---
