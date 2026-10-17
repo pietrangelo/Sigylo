@@ -180,7 +180,7 @@
   }
 
   h3 {
-    margin: 0;
+    margin-bottom: 0;
   }
 
   .seals {
