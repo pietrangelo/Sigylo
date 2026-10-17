@@ -102,7 +102,7 @@ const it: LegalTexts = {
       {
         heading: `In breve`,
         body: [
-          `Nessun account, nessun cookie, nessun tracciamento, nessuna analisi statistica. Non possiamo leggere ciò che sigilli: viene cifrato sul tuo dispositivo e la chiave non arriva mai ai nostri server.`,
+          `Account facoltativi e senza email, nessun cookie, nessun tracciamento, nessuna analisi statistica. Non possiamo leggere ciò che sigilli: viene cifrato sul tuo dispositivo e la chiave non arriva mai ai nostri server.`,
         ],
       },
       {
@@ -110,6 +110,13 @@ const it: LegalTexts = {
         body: [
           `Per ogni segreto: la busta cifrata, la scadenza, la regola di distruzione e l'impronta SHA-256 del codice di revoca. Per ogni richiesta: la chiave pubblica di chi la crea e, se arriva, la risposta cifrata.`,
           `Niente altro: né orario di creazione, né indirizzo IP, né identità. Anche se un segreto contiene dati personali, per noi resta illeggibile.`,
+        ],
+      },
+      {
+        heading: `Account facoltativi`,
+        body: [
+          `Se crei un account conserviamo: un hash con chiave del tuo nome utente (non il nome), il record di registrazione OPAQUE (la tua password non ci arriva mai, nemmeno come hash) e il tuo portachiavi, cifrato sul tuo dispositivo con una chiave che non vediamo mai, con un contatore delle sue modifiche. Il portachiavi contiene i codici per distruggere i segreti che hai sigillato da connesso, non i link per aprirli.`,
+          `Mentre sei connesso conserviamo l'impronta SHA-256 del codice di sessione e la sua scadenza, al massimo 12 ore; durante un accesso, per cinque minuti, lo stato del protocollo. L'account resta finché non lo elimini dalla pagina dell'account, che cancella tutto in una volta.`,
         ],
       },
       {
@@ -122,6 +129,7 @@ const it: LegalTexts = {
         heading: `Dati di rete`,
         body: [
           `Per consegnare la pagina e proteggere il servizio, Cloudflare tratta il tuo indirizzo IP e i dati tecnici della richiesta. Sigylo usa l'indirizzo IP solo per limitare le scritture (30 al minuto), in memoria presso Cloudflare, senza salvarlo; i log del Worker sono disattivati. Cloudflare può conservare dati di sicurezza secondo la propria informativa.`,
+          `Per gli account limitiamo anche i tentativi di accesso (10 al minuto per account), sempre in memoria presso Cloudflare, legati all'hash dell'account e non al tuo indirizzo.`,
         ],
       },
       {
@@ -141,6 +149,7 @@ const it: LegalTexts = {
         heading: `I tuoi diritti`,
         body: [
           `Hai diritto di accesso, rettifica, cancellazione, limitazione, opposizione e portabilità (articoli 15-22 del GDPR). Poiché non conserviamo identificativi, di norma non possiamo collegare alcun dato a te (articolo 11); puoi però distruggere un segreto in qualsiasi momento con il link di revoca o aprendolo. Per ogni richiesta scrivi a ${email}.`,
+          `Se hai un account, puoi cancellarlo con tutti i suoi dati in qualsiasi momento dalla pagina dell'account.`,
           `Puoi proporre reclamo al Garante per la protezione dei dati personali (garanteprivacy.it) o all'autorità di controllo del tuo Paese. Non prendiamo decisioni automatizzate che ti riguardano.`,
         ],
       },
@@ -219,7 +228,7 @@ const en: LegalTexts = {
       {
         heading: `In short`,
         body: [
-          `No accounts, no cookies, no tracking, no analytics. We cannot read what you seal: it is encrypted on your device and the key never reaches our servers.`,
+          `Optional accounts without e-mail, no cookies, no tracking, no analytics. We cannot read what you seal: it is encrypted on your device and the key never reaches our servers.`,
         ],
       },
       {
@@ -227,6 +236,13 @@ const en: LegalTexts = {
         body: [
           `For each secret: the encrypted envelope, its expiry, its destruction rule and the SHA-256 digest of the revocation code. For each request: the public key of whoever creates it and, once it arrives, the encrypted answer.`,
           `Nothing else: no creation time, no IP address, no identity. Even if a secret contains personal data, it stays unreadable to us.`,
+        ],
+      },
+      {
+        heading: `Optional accounts`,
+        body: [
+          `If you create an account we keep: a keyed hash of your username (not the name itself), the OPAQUE registration record (your password never reaches us, not even as a hash) and your keyring, encrypted on your device with a key we never see, with a counter of its changes. The keyring holds the codes to destroy the secrets you sealed while signed in, not the links that open them.`,
+          `While you are signed in we keep the SHA-256 digest of your session code and its expiry, 12 hours at most; during a sign-in, for five minutes, the state of the protocol. The account stays until you delete it from the account page, which erases everything at once.`,
         ],
       },
       {
@@ -239,6 +255,7 @@ const en: LegalTexts = {
         heading: `Network data`,
         body: [
           `To deliver the page and protect the service, Cloudflare processes your IP address and the technical data of each request. Sigylo uses the IP address only to limit writes (30 per minute), in memory at Cloudflare, without storing it; Worker logs are switched off. Cloudflare may keep security data under its own privacy policy.`,
+          `For accounts we also limit sign-in attempts (10 per minute per account), again in memory at Cloudflare, tied to the account's hash rather than to your address.`,
         ],
       },
       {
@@ -258,6 +275,7 @@ const en: LegalTexts = {
         heading: `Your rights`,
         body: [
           `You have the rights of access, rectification, erasure, restriction, objection and portability (articles 15-22 GDPR). Since we keep no identifiers, we usually cannot link any data to you (article 11); you can however destroy a secret at any time with the revocation link or by opening it. For any request, write to ${email}.`,
+          `If you have an account, you can delete it with all its data at any time from the account page.`,
           `You may lodge a complaint with the Italian Garante per la protezione dei dati personali (garanteprivacy.it) or with the supervisory authority of your country. We make no automated decisions about you.`,
         ],
       },
@@ -336,7 +354,7 @@ const fr: LegalTexts = {
       {
         heading: `En bref`,
         body: [
-          `Aucun compte, aucun cookie, aucun pistage, aucune mesure d'audience. Nous ne pouvons pas lire ce que vous scellez : c'est chiffré sur votre appareil et la clé n'atteint jamais nos serveurs.`,
+          `Des comptes facultatifs et sans e-mail, aucun cookie, aucun pistage, aucune mesure d'audience. Nous ne pouvons pas lire ce que vous scellez : c'est chiffré sur votre appareil et la clé n'atteint jamais nos serveurs.`,
         ],
       },
       {
@@ -344,6 +362,13 @@ const fr: LegalTexts = {
         body: [
           `Pour chaque secret : l'enveloppe chiffrée, son expiration, sa règle de destruction et l'empreinte SHA-256 du code de révocation. Pour chaque demande : la clé publique de son auteur et, si elle arrive, la réponse chiffrée.`,
           `Rien d'autre : ni heure de création, ni adresse IP, ni identité. Même si un secret contient des données personnelles, il reste illisible pour nous.`,
+        ],
+      },
+      {
+        heading: `Comptes facultatifs`,
+        body: [
+          `Si vous créez un compte, nous conservons : un hachage à clé de votre nom d'utilisateur (pas le nom lui-même), l'enregistrement OPAQUE (votre mot de passe ne nous parvient jamais, pas même sous forme de hachage) et votre trousseau, chiffré sur votre appareil avec une clé que nous ne voyons jamais, avec un compteur de ses modifications. Le trousseau contient les codes pour détruire les secrets que vous avez scellés une fois connecté, pas les liens qui les ouvrent.`,
+          `Tant que vous êtes connecté, nous conservons l'empreinte SHA-256 de votre code de session et son expiration, 12 heures au plus ; pendant une connexion, pendant cinq minutes, l'état du protocole. Le compte reste jusqu'à ce que vous le supprimiez depuis la page du compte, ce qui efface tout en une fois.`,
         ],
       },
       {
@@ -356,6 +381,7 @@ const fr: LegalTexts = {
         heading: `Données réseau`,
         body: [
           `Pour délivrer la page et protéger le service, Cloudflare traite votre adresse IP et les données techniques de chaque requête. Sigylo n'utilise l'adresse IP que pour limiter les écritures (30 par minute), en mémoire chez Cloudflare, sans la conserver ; les journaux du Worker sont désactivés. Cloudflare peut conserver des données de sécurité selon sa propre politique de confidentialité.`,
+          `Pour les comptes, nous limitons aussi les tentatives de connexion (10 par minute et par compte), toujours en mémoire chez Cloudflare, liées au hachage du compte et non à votre adresse.`,
         ],
       },
       {
@@ -375,6 +401,7 @@ const fr: LegalTexts = {
         heading: `Vos droits`,
         body: [
           `Vous disposez des droits d'accès, de rectification, d'effacement, de limitation, d'opposition et de portabilité (articles 15 à 22 du RGPD). Comme nous ne conservons aucun identifiant, nous ne pouvons généralement relier aucune donnée à vous (article 11) ; vous pouvez toutefois détruire un secret à tout moment avec le lien de révocation ou en l'ouvrant. Pour toute demande, écrivez à ${email}.`,
+          `Si vous avez un compte, vous pouvez le supprimer avec toutes ses données à tout moment depuis la page du compte.`,
           `Vous pouvez introduire une réclamation auprès du Garante per la protezione dei dati personali italien (garanteprivacy.it) ou de l'autorité de contrôle de votre pays, comme la CNIL. Nous ne prenons aucune décision automatisée vous concernant.`,
         ],
       },
@@ -453,7 +480,7 @@ const es: LegalTexts = {
       {
         heading: `En resumen`,
         body: [
-          `Sin cuentas, sin cookies, sin rastreo, sin analítica. No podemos leer lo que sellas: se cifra en tu dispositivo y la clave nunca llega a nuestros servidores.`,
+          `Cuentas opcionales y sin correo electrónico, sin cookies, sin rastreo, sin analítica. No podemos leer lo que sellas: se cifra en tu dispositivo y la clave nunca llega a nuestros servidores.`,
         ],
       },
       {
@@ -461,6 +488,13 @@ const es: LegalTexts = {
         body: [
           `Para cada secreto: el sobre cifrado, su vencimiento, su regla de destrucción y la huella SHA-256 del código de revocación. Para cada solicitud: la clave pública de quien la crea y, si llega, la respuesta cifrada.`,
           `Nada más: ni hora de creación, ni dirección IP, ni identidad. Aunque un secreto contenga datos personales, para nosotros sigue siendo ilegible.`,
+        ],
+      },
+      {
+        heading: `Cuentas opcionales`,
+        body: [
+          `Si creas una cuenta guardamos: un hash con clave de tu nombre de usuario (no el nombre), el registro OPAQUE (tu contraseña nunca nos llega, ni siquiera como hash) y tu llavero, cifrado en tu dispositivo con una clave que nunca vemos, con un contador de sus cambios. El llavero contiene los códigos para destruir los secretos que sellaste con la sesión iniciada, no los enlaces que los abren.`,
+          `Mientras tienes la sesión iniciada guardamos la huella SHA-256 de tu código de sesión y su vencimiento, 12 horas como máximo; durante un inicio de sesión, durante cinco minutos, el estado del protocolo. La cuenta se mantiene hasta que la eliminas desde la página de la cuenta, que lo borra todo de una vez.`,
         ],
       },
       {
@@ -473,6 +507,7 @@ const es: LegalTexts = {
         heading: `Datos de red`,
         body: [
           `Para entregar la página y proteger el servicio, Cloudflare trata tu dirección IP y los datos técnicos de cada petición. Sigylo usa la dirección IP solo para limitar las escrituras (30 por minuto), en memoria en Cloudflare, sin guardarla; los registros del Worker están desactivados. Cloudflare puede conservar datos de seguridad según su propia política de privacidad.`,
+          `Para las cuentas limitamos también los intentos de inicio de sesión (10 por minuto y cuenta), igualmente en memoria en Cloudflare, ligados al hash de la cuenta y no a tu dirección.`,
         ],
       },
       {
@@ -492,6 +527,7 @@ const es: LegalTexts = {
         heading: `Tus derechos`,
         body: [
           `Tienes derecho de acceso, rectificación, supresión, limitación, oposición y portabilidad (artículos 15 a 22 del RGPD). Como no guardamos identificadores, normalmente no podemos vincular ningún dato contigo (artículo 11); aun así, puedes destruir un secreto en cualquier momento con el enlace de revocación o abriéndolo. Para cualquier solicitud, escribe a ${email}.`,
+          `Si tienes una cuenta, puedes eliminarla con todos sus datos en cualquier momento desde la página de la cuenta.`,
           `Puedes presentar una reclamación ante el Garante per la protezione dei dati personali italiano (garanteprivacy.it) o ante la autoridad de control de tu país, como la AEPD. No tomamos decisiones automatizadas sobre ti.`,
         ],
       },
@@ -570,7 +606,7 @@ const de: LegalTexts = {
       {
         heading: `Kurz gesagt`,
         body: [
-          `Keine Konten, keine Cookies, kein Tracking, keine Analyse. Wir können nicht lesen, was du versiegelst: Es wird auf deinem Gerät verschlüsselt, und der Schlüssel erreicht unsere Server nie.`,
+          `Optionale Konten ohne E-Mail, keine Cookies, kein Tracking, keine Analyse. Wir können nicht lesen, was du versiegelst: Es wird auf deinem Gerät verschlüsselt, und der Schlüssel erreicht unsere Server nie.`,
         ],
       },
       {
@@ -578,6 +614,13 @@ const de: LegalTexts = {
         body: [
           `Für jedes Geheimnis: den verschlüsselten Umschlag, den Ablauf, die Vernichtungsregel und den SHA-256-Fingerabdruck des Widerrufscodes. Für jede Anfrage: den öffentlichen Schlüssel der Person, die sie erstellt, und, falls sie eintrifft, die verschlüsselte Antwort.`,
           `Sonst nichts: keine Erstellungszeit, keine IP-Adresse, keine Identität. Selbst wenn ein Geheimnis personenbezogene Daten enthält, bleibt es für uns unlesbar.`,
+        ],
+      },
+      {
+        heading: `Optionale Konten`,
+        body: [
+          `Wenn du ein Konto erstellst, speichern wir: einen schlüsselbasierten Hash deines Benutzernamens (nicht den Namen selbst), den OPAQUE-Registrierungsdatensatz (dein Passwort erreicht uns nie, nicht einmal als Hash) und deinen Schlüsselbund, verschlüsselt auf deinem Gerät mit einem Schlüssel, den wir nie sehen, samt einem Zähler seiner Änderungen. Der Schlüsselbund enthält die Codes zum Vernichten der Geheimnisse, die du angemeldet versiegelt hast, nicht die Links, die sie öffnen.`,
+          `Solange du angemeldet bist, speichern wir den SHA-256-Fingerabdruck deines Sitzungscodes und seinen Ablauf, höchstens 12 Stunden; während einer Anmeldung fünf Minuten lang den Zustand des Protokolls. Das Konto bleibt, bis du es auf der Kontoseite löschst; das löscht alles auf einmal.`,
         ],
       },
       {
@@ -590,6 +633,7 @@ const de: LegalTexts = {
         heading: `Netzwerkdaten`,
         body: [
           `Um die Seite auszuliefern und den Dienst zu schützen, verarbeitet Cloudflare deine IP-Adresse und die technischen Daten jeder Anfrage. Sigylo nutzt die IP-Adresse nur, um Schreibvorgänge zu begrenzen (30 pro Minute), im Speicher bei Cloudflare, ohne sie zu speichern; die Worker-Protokolle sind abgeschaltet. Cloudflare kann Sicherheitsdaten nach seiner eigenen Datenschutzerklärung aufbewahren.`,
+          `Bei Konten begrenzen wir außerdem Anmeldeversuche (10 pro Minute und Konto), ebenfalls im Speicher bei Cloudflare, gebunden an den Hash des Kontos statt an deine Adresse.`,
         ],
       },
       {
@@ -609,6 +653,7 @@ const de: LegalTexts = {
         heading: `Deine Rechte`,
         body: [
           `Du hast das Recht auf Auskunft, Berichtigung, Löschung, Einschränkung, Widerspruch und Datenübertragbarkeit (Artikel 15 bis 22 DSGVO). Da wir keine Kennungen speichern, können wir in der Regel keine Daten dir zuordnen (Artikel 11); du kannst ein Geheimnis aber jederzeit mit dem Widerrufslink oder durch Öffnen vernichten. Für jede Anfrage schreibe an ${email}.`,
+          `Wenn du ein Konto hast, kannst du es mit allen Daten jederzeit auf der Kontoseite löschen.`,
           `Du kannst dich bei der italienischen Garante per la protezione dei dati personali (garanteprivacy.it) oder bei der Aufsichtsbehörde deines Landes beschweren. Wir treffen keine automatisierten Entscheidungen über dich.`,
         ],
       },

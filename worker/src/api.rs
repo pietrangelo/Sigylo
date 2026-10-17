@@ -4,7 +4,14 @@
 //! All binary fields are base64url without padding. Ids are 16 bytes and
 //! always chosen by the relay: a deposit or request body that carries one is
 //! refused, so nobody can put something under an id that already had a life.
+//!
+//! Account routes (`/api/account/...`) carry OPAQUE messages, never a
+//! password; a session travels as `Authorization: Bearer <token>`.
 
+use access::{
+    AccessError, CredentialFinalization, CredentialRequest, Keyring, KeyringSnapshot, KeyringVersion, LoginChallenge,
+    LoginHandle, RegistrationRecord, RegistrationRequest, RegistrationResponse, Session, SessionToken, Username,
+};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use custody::{
     Answer, CustodyError, DropId, Lifetime, Receipt, RecipientKeyBlob, Retention, RevocationToken, SealedPayload,
@@ -23,6 +30,14 @@ pub enum Route {
     PostRequest,
     FetchRequest(DropId),
     AnswerRequest(DropId),
+    RegisterStart,
+    RegisterFinish,
+    LoginStart,
+    LoginFinish,
+    Logout,
+    ReadKeyring,
+    StoreKeyring,
+    CloseAccount,
 }
 
 /// Why a request was refused before reaching the domain.
@@ -34,11 +49,18 @@ pub enum ApiError {
     InvalidJson,
     InvalidEncoding,
     Custody(CustodyError),
+    Access(AccessError),
 }
 
 impl From<CustodyError> for ApiError {
     fn from(e: CustodyError) -> Self {
         Self::Custody(e)
+    }
+}
+
+impl From<AccessError> for ApiError {
+    fn from(e: AccessError) -> Self {
+        Self::Access(e)
     }
 }
 
@@ -51,6 +73,17 @@ impl ApiError {
             Self::Custody(CustodyError::AlreadyExists) => 409,
             Self::Custody(CustodyError::VaultUnavailable | CustodyError::RandomnessUnavailable) => 503,
             Self::InvalidJson | Self::InvalidEncoding | Self::Custody(_) => 400,
+            Self::Access(e) => match e {
+                AccessError::NotAuthentic | AccessError::Unauthorized => 401,
+                AccessError::AlreadyRegistered | AccessError::Conflict => 409,
+                AccessError::KeyringTooLarge => 413,
+                AccessError::Throttled => 429,
+                AccessError::StoreUnavailable | AccessError::NotConfigured | AccessError::RandomnessUnavailable => 503,
+                AccessError::InvalidUsername
+                | AccessError::InvalidPassword
+                | AccessError::MalformedMessage
+                | AccessError::KeyringEmpty => 400,
+            },
         }
     }
 
@@ -58,6 +91,7 @@ impl ApiError {
     pub fn code(&self) -> String {
         match self {
             Self::Custody(e) => format!("{e:?}"),
+            Self::Access(e) => format!("{e:?}"),
             other => format!("{other:?}"),
         }
     }
@@ -90,6 +124,14 @@ pub fn route(method: &str, path: &str) -> Result<Route, ApiError> {
         ["requests"] => ("POST", Route::PostRequest),
         ["requests", id] => ("GET", Route::FetchRequest(id_segment(id)?)),
         ["requests", id, "answer"] => ("POST", Route::AnswerRequest(id_segment(id)?)),
+        ["account", "register", "start"] => ("POST", Route::RegisterStart),
+        ["account", "register", "finish"] => ("POST", Route::RegisterFinish),
+        ["account", "login", "start"] => ("POST", Route::LoginStart),
+        ["account", "login", "finish"] => ("POST", Route::LoginFinish),
+        ["account", "logout"] => ("POST", Route::Logout),
+        ["account", "keyring"] if method == "GET" => ("GET", Route::ReadKeyring),
+        ["account", "keyring"] => ("POST", Route::StoreKeyring),
+        ["account", "close"] => ("POST", Route::CloseAccount),
         _ => return Err(ApiError::NotFound),
     };
     if method == expected { Ok(route) } else { Err(ApiError::MethodNotAllowed) }
@@ -207,6 +249,105 @@ pub fn parse_answer(body: &[u8]) -> Result<Answer, ApiError> {
     })
 }
 
+fn username(text: &str) -> Result<Username, ApiError> {
+    Ok(Username::new(text)?)
+}
+
+fn message<T>(field: &str, parse: impl FnOnce(&[u8]) -> Result<T, AccessError>) -> Result<T, ApiError> {
+    Ok(parse(&decode(field)?)?)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpaqueStartDto {
+    username: String,
+    request: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RegisterFinishDto {
+    username: String,
+    record: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoginFinishDto {
+    handle: String,
+    finalization: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoreKeyringDto {
+    keyring: String,
+    version: u64,
+}
+
+/// A session presented as `Authorization: Bearer <base64url token>`.
+pub fn parse_bearer(header: Option<&str>) -> Result<SessionToken, ApiError> {
+    let token = header.and_then(|h| h.strip_prefix("Bearer ")).ok_or(AccessError::Unauthorized)?;
+    let bytes = URL_SAFE_NO_PAD.decode(token).map_err(|_| AccessError::Unauthorized)?;
+    SessionToken::from_slice(&bytes).map_err(|_| ApiError::Access(AccessError::Unauthorized))
+}
+
+/// A validated account command. Nothing in it is a password.
+#[derive(Debug)]
+pub enum AccountCommand {
+    RegisterStart(Username, RegistrationRequest),
+    RegisterFinish(Username, RegistrationRecord),
+    LoginStart(Username, CredentialRequest),
+    LoginFinish(LoginHandle, CredentialFinalization),
+    Logout(SessionToken),
+    ReadKeyring(SessionToken),
+    StoreKeyring(SessionToken, Keyring, KeyringVersion),
+    Close(SessionToken),
+}
+
+fn parse_account(route: &Route, body: &[u8], bearer: Option<&str>) -> Result<AccountCommand, ApiError> {
+    Ok(match route {
+        Route::RegisterStart => {
+            let dto: OpaqueStartDto = parse(body)?;
+            AccountCommand::RegisterStart(
+                username(&dto.username)?,
+                message(&dto.request, RegistrationRequest::from_slice)?,
+            )
+        }
+        Route::RegisterFinish => {
+            let dto: RegisterFinishDto = parse(body)?;
+            AccountCommand::RegisterFinish(
+                username(&dto.username)?,
+                message(&dto.record, RegistrationRecord::from_slice)?,
+            )
+        }
+        Route::LoginStart => {
+            let dto: OpaqueStartDto = parse(body)?;
+            AccountCommand::LoginStart(username(&dto.username)?, message(&dto.request, CredentialRequest::from_slice)?)
+        }
+        Route::LoginFinish => {
+            let dto: LoginFinishDto = parse(body)?;
+            AccountCommand::LoginFinish(
+                message(&dto.handle, LoginHandle::from_slice)?,
+                message(&dto.finalization, CredentialFinalization::from_slice)?,
+            )
+        }
+        Route::Logout => AccountCommand::Logout(parse_bearer(bearer)?),
+        Route::ReadKeyring => AccountCommand::ReadKeyring(parse_bearer(bearer)?),
+        Route::StoreKeyring => {
+            let token = parse_bearer(bearer)?;
+            let dto: StoreKeyringDto = parse(body)?;
+            AccountCommand::StoreKeyring(
+                token,
+                message(&dto.keyring, |b| Keyring::new(b.to_vec()))?,
+                KeyringVersion(dto.version),
+            )
+        }
+        Route::CloseAccount => AccountCommand::Close(parse_bearer(bearer)?),
+        _ => return Err(ApiError::NotFound),
+    })
+}
+
 /// Everything a route needs, validated before the vault is touched: a
 /// malformed body never costs a database connection.
 #[derive(Debug)]
@@ -217,9 +358,11 @@ pub enum Command {
     PostRequest(RequestCommand),
     FetchRequest(DropId),
     AnswerRequest(DropId, Answer),
+    Account(AccountCommand),
 }
 
-pub fn command(route: Route, body: &[u8]) -> Result<Command, ApiError> {
+/// `bearer` is the `Authorization` header, read only by account routes.
+pub fn command(route: Route, body: &[u8], bearer: Option<&str>) -> Result<Command, ApiError> {
     Ok(match route {
         Route::Deposit => Command::Deposit(parse_deposit(body)?),
         Route::Open(id) => Command::Open(id),
@@ -227,6 +370,7 @@ pub fn command(route: Route, body: &[u8]) -> Result<Command, ApiError> {
         Route::PostRequest => Command::PostRequest(parse_request(body)?),
         Route::FetchRequest(id) => Command::FetchRequest(id),
         Route::AnswerRequest(id) => Command::AnswerRequest(id, parse_answer(body)?),
+        account => Command::Account(parse_account(&account, body, bearer)?),
     })
 }
 
@@ -274,6 +418,63 @@ pub fn posted_request_body(posted: custody::PostedRequest) -> String {
         expires_at: posted.expires_at.0,
     })
     .expect("serializable")
+}
+
+#[derive(Debug, Serialize)]
+struct RegistrationResponseDto {
+    response: String,
+}
+
+pub fn registration_response_body(response: &RegistrationResponse) -> String {
+    serde_json::to_string(&RegistrationResponseDto { response: encode(response.as_bytes()) }).expect("serializable")
+}
+
+#[derive(Debug, Serialize)]
+struct LoginChallengeDto {
+    handle: String,
+    response: String,
+}
+
+pub fn login_challenge_body(challenge: &LoginChallenge) -> String {
+    serde_json::to_string(&LoginChallengeDto {
+        handle: encode(challenge.handle.expose()),
+        response: encode(challenge.response.as_bytes()),
+    })
+    .expect("serializable")
+}
+
+#[derive(Debug, Serialize)]
+struct SessionDto {
+    session: String,
+    expires_at: i64,
+}
+
+pub fn session_body(session: &Session) -> String {
+    serde_json::to_string(&SessionDto { session: encode(session.token.expose()), expires_at: session.expires_at.0 })
+        .expect("serializable")
+}
+
+#[derive(Debug, Serialize)]
+struct KeyringDto {
+    keyring: Option<String>,
+    version: u64,
+}
+
+pub fn keyring_body(snapshot: &KeyringSnapshot) -> String {
+    serde_json::to_string(&KeyringDto {
+        keyring: snapshot.keyring.as_ref().map(|k| encode(k.as_bytes())),
+        version: snapshot.version.0,
+    })
+    .expect("serializable")
+}
+
+#[derive(Debug, Serialize)]
+struct VersionDto {
+    version: u64,
+}
+
+pub fn version_body(version: KeyringVersion) -> String {
+    serde_json::to_string(&VersionDto { version: version.0 }).expect("serializable")
 }
 
 #[cfg(test)]
@@ -329,14 +530,92 @@ mod tests {
         let id = id_segment(ID).unwrap();
         let token = format!(r#"{{"token":"{}"}}"#, encode(&[1; 32]));
         let answer = r#"{"payload":"U0dZAQ","retention":"until_expiry","lifetime_seconds":300}"#;
-        assert!(matches!(command(Route::Deposit, deposit_json("").as_bytes()), Ok(Command::Deposit(_))));
-        assert!(matches!(command(Route::Open(id), b""), Ok(Command::Open(i)) if i == id));
-        assert!(matches!(command(Route::Revoke(id), token.as_bytes()), Ok(Command::Revoke(i, _)) if i == id));
-        assert!(matches!(command(Route::PostRequest, request_json("").as_bytes()), Ok(Command::PostRequest(_))));
-        assert!(matches!(command(Route::FetchRequest(id), b""), Ok(Command::FetchRequest(i)) if i == id));
+        assert!(matches!(command(Route::Deposit, deposit_json("").as_bytes(), None), Ok(Command::Deposit(_))));
+        assert!(matches!(command(Route::Open(id), b"", None), Ok(Command::Open(i)) if i == id));
+        assert!(matches!(command(Route::Revoke(id), token.as_bytes(), None), Ok(Command::Revoke(i, _)) if i == id));
+        assert!(matches!(command(Route::PostRequest, request_json("").as_bytes(), None), Ok(Command::PostRequest(_))));
+        assert!(matches!(command(Route::FetchRequest(id), b"", None), Ok(Command::FetchRequest(i)) if i == id));
         assert!(
-            matches!(command(Route::AnswerRequest(id), answer.as_bytes()), Ok(Command::AnswerRequest(i, _)) if i == id)
+            matches!(command(Route::AnswerRequest(id), answer.as_bytes(), None), Ok(Command::AnswerRequest(i, _)) if i == id)
         );
+    }
+
+    #[test]
+    fn account_routes_map_to_use_cases() {
+        assert_eq!(route("POST", "/api/account/register/start"), Ok(Route::RegisterStart));
+        assert_eq!(route("POST", "/api/account/register/finish"), Ok(Route::RegisterFinish));
+        assert_eq!(route("POST", "/api/account/login/start"), Ok(Route::LoginStart));
+        assert_eq!(route("POST", "/api/account/login/finish"), Ok(Route::LoginFinish));
+        assert_eq!(route("POST", "/api/account/logout"), Ok(Route::Logout));
+        assert_eq!(route("GET", "/api/account/keyring"), Ok(Route::ReadKeyring));
+        assert_eq!(route("POST", "/api/account/keyring"), Ok(Route::StoreKeyring));
+        assert_eq!(route("POST", "/api/account/close"), Ok(Route::CloseAccount));
+    }
+
+    fn bearer() -> String {
+        format!("Bearer {}", encode(&[5; 32]))
+    }
+
+    #[test]
+    fn account_bodies_become_validated_commands() {
+        let start = format!(r#"{{"username":"Ada","request":"{}"}}"#, encode(&[1; RegistrationRequest::LEN]));
+        assert!(matches!(
+            command(Route::RegisterStart, start.as_bytes(), None),
+            Ok(Command::Account(AccountCommand::RegisterStart(name, _))) if name == Username::new("ada").unwrap()
+        ));
+        let finish = format!(r#"{{"username":"ada","record":"{}"}}"#, encode(&[1; RegistrationRecord::LEN]));
+        assert!(matches!(
+            command(Route::RegisterFinish, finish.as_bytes(), None),
+            Ok(Command::Account(AccountCommand::RegisterFinish(..)))
+        ));
+        let login = format!(r#"{{"username":"ada","request":"{}"}}"#, encode(&[1; CredentialRequest::LEN]));
+        assert!(matches!(
+            command(Route::LoginStart, login.as_bytes(), None),
+            Ok(Command::Account(AccountCommand::LoginStart(..)))
+        ));
+        let finish = format!(
+            r#"{{"handle":"{}","finalization":"{}"}}"#,
+            encode(&[2; LoginHandle::LEN]),
+            encode(&[3; CredentialFinalization::LEN])
+        );
+        assert!(matches!(
+            command(Route::LoginFinish, finish.as_bytes(), None),
+            Ok(Command::Account(AccountCommand::LoginFinish(..)))
+        ));
+        let store = format!(r#"{{"keyring":"{}","version":4}}"#, encode(b"SGY\x01 sealed keyring"));
+        assert!(matches!(
+            command(Route::StoreKeyring, store.as_bytes(), Some(&bearer())),
+            Ok(Command::Account(AccountCommand::StoreKeyring(_, _, KeyringVersion(4))))
+        ));
+        for route in [Route::Logout, Route::ReadKeyring, Route::CloseAccount] {
+            assert!(command(route, b"", Some(&bearer())).is_ok());
+        }
+    }
+
+    #[test]
+    fn account_answers_carry_only_protocol_bytes() {
+        let challenge = LoginChallenge {
+            handle: LoginHandle::from_array([0; 16]),
+            response: access::CredentialResponse::from_slice(&[0; access::CredentialResponse::LEN]).unwrap(),
+        };
+        let body = login_challenge_body(&challenge);
+        assert!(body.starts_with(r#"{"handle":"AAAAAAAAAAAAAAAAAAAAAA","response":""#));
+        let session = Session { token: SessionToken::from_array([0; 32]), expires_at: access::UnixTime(7) };
+        assert_eq!(session_body(&session), format!(r#"{{"session":"{}","expires_at":7}}"#, encode(&[0; 32])));
+        let empty = KeyringSnapshot { keyring: None, version: KeyringVersion::NONE };
+        assert_eq!(keyring_body(&empty), r#"{"keyring":null,"version":0}"#);
+    }
+
+    #[test]
+    fn account_error_statuses() {
+        assert_eq!(ApiError::Access(AccessError::NotAuthentic).status(), 401);
+        assert_eq!(ApiError::Access(AccessError::Unauthorized).status(), 401);
+        assert_eq!(ApiError::Access(AccessError::AlreadyRegistered).status(), 409);
+        assert_eq!(ApiError::Access(AccessError::Conflict).status(), 409);
+        assert_eq!(ApiError::Access(AccessError::Throttled).status(), 429);
+        assert_eq!(ApiError::Access(AccessError::NotConfigured).status(), 503);
+        assert_eq!(ApiError::Access(AccessError::KeyringTooLarge).status(), 413);
+        assert_eq!(ApiError::Access(AccessError::Conflict).body(), r#"{"error":"Conflict"}"#);
     }
 
     #[test]
@@ -418,7 +697,7 @@ mod tests {
                 (Route::PostRequest, b"[]"),
                 (Route::AnswerRequest(id), b"null"),
             ] {
-                assert!(command(route.clone(), body).is_err(), "{route:?}");
+                assert!(command(route.clone(), body, None).is_err(), "{route:?}");
             }
         }
 
@@ -430,6 +709,59 @@ mod tests {
             // Missing or odd headers fall through to the check on the bytes actually read.
             assert_eq!(check_declared_length(None), Ok(()));
             assert_eq!(check_declared_length(Some("lots")), Ok(()));
+        }
+
+        #[test]
+        fn account_routes_refuse_other_methods() {
+            for path in ["/api/account/login/start", "/api/account/register/finish", "/api/account/close"] {
+                assert_eq!(route("GET", path), Err(ApiError::MethodNotAllowed), "{path}");
+            }
+            assert_eq!(route("PUT", "/api/account/keyring"), Err(ApiError::MethodNotAllowed));
+            assert_eq!(route("POST", "/api/account"), Err(ApiError::NotFound));
+        }
+
+        #[test]
+        fn a_body_can_never_carry_a_password() {
+            // OPAQUE needs none, so the relay refuses any field it does not know.
+            let sneaky = format!(
+                r#"{{"username":"ada","request":"{}","password":"hunter2hunter2"}}"#,
+                encode(&[1; RegistrationRequest::LEN])
+            );
+            assert_eq!(command(Route::RegisterStart, sneaky.as_bytes(), None).unwrap_err(), ApiError::InvalidJson);
+        }
+
+        #[test]
+        fn wrong_sized_protocol_messages_are_refused_before_the_store() {
+            let short = format!(r#"{{"username":"ada","request":"{}"}}"#, encode(&[1; 95]));
+            assert_eq!(
+                command(Route::LoginStart, short.as_bytes(), None).unwrap_err(),
+                ApiError::Access(AccessError::MalformedMessage)
+            );
+            let bad_name = format!(r#"{{"username":"a b","request":"{}"}}"#, encode(&[1; 96]));
+            assert_eq!(
+                command(Route::LoginStart, bad_name.as_bytes(), None).unwrap_err(),
+                ApiError::Access(AccessError::InvalidUsername)
+            );
+            let empty = r#"{"keyring":"","version":0}"#.to_string();
+            assert_eq!(
+                command(Route::StoreKeyring, empty.as_bytes(), Some(&bearer())).unwrap_err(),
+                ApiError::Access(AccessError::KeyringEmpty)
+            );
+        }
+
+        #[test]
+        fn sessions_need_a_well_formed_bearer_token() {
+            for header in
+                [None, Some(""), Some("Bearer"), Some("Basic Zm9vOmJhcg"), Some("bearer AAAA"), Some("Bearer AAEC")]
+            {
+                assert_eq!(
+                    command(Route::ReadKeyring, b"", header).unwrap_err(),
+                    ApiError::Access(AccessError::Unauthorized),
+                    "{header:?}"
+                );
+            }
+            let padded = format!("{}=", bearer());
+            assert_eq!(parse_bearer(Some(&padded)).unwrap_err(), ApiError::Access(AccessError::Unauthorized));
         }
 
         #[test]

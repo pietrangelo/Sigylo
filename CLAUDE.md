@@ -31,10 +31,12 @@ crates/sealing/            Dominio puro "Sealing": buste, schedule delle chiavi,
 crates/sealing-adapters/   RustCrypto: X25519 + ML-KEM-768, XChaCha20-Poly1305, Argon2id, HKDF-SHA3-256, CSPRNG
 crates/custody/            Dominio puro "Custody": custodia cieca, burn-after-reading, scadenza, revoca, richieste
 crates/custody-adapters/   PostgresVault (tokio-postgres, anche via Hyperdrive), digest SHA-256 dei token
-crates/sigylo-wasm/        Shell browser: Sealing + RustCrypto esposti a JavaScript (wasm-bindgen)
-worker/                    Shell Cloudflare Worker (workers-rs): relay cieco HTTP → Custody → PostgreSQL
+crates/access/             Dominio puro "Access": account facoltativi, login OPAQUE, sessioni, portachiavi sigillato
+crates/access-adapters/    opaque-ke (OPAQUE RFC 9807), Argon2id, HKDF, token; PostgresAccounts con la feature `postgres`
+crates/sigylo-wasm/        Shell browser: Sealing + Access + RustCrypto esposti a JavaScript (wasm-bindgen)
+worker/                    Shell Cloudflare Worker (workers-rs): relay cieco HTTP → Custody / Access → PostgreSQL
 web/                       Client Svelte 5 + TypeScript strict, solo dipendenze di sviluppo, nessuna a runtime
-supabase/migrations/       Schema SQL e funzioni atomiche della custodia
+supabase/migrations/       Schema SQL e funzioni atomiche della custodia e degli account
 supabase/tests/            Test dei privilegi SQL + test di contratto del vault su un PostgreSQL usa e getta
 tools/architecture-guard/  Verifica statica della rosetta
 scripts/e2e.sh             End-to-end: Worker reale (workerd) + PostgreSQL + Chromium
@@ -86,6 +88,18 @@ Tutto avviene sul dispositivo, in Rust compilato a Wasm. Le implementazioni sono
 * **API (`worker/src/api.rs`):** `POST /api/secrets`, `POST /api/secrets/{id}/open`, `POST /api/secrets/{id}/revoke`, `POST /api/requests`, `GET /api/requests/{id}`, `POST /api/requests/{id}/answer`. Aprire è sempre una POST: anteprime dei link e prefetch (GET) non possono bruciare un segreto. Campi binari in base64url senza padding. Il corpo si valida (anche la `Content-Length` dichiarata) prima di aprire una connessione al database.
 * **Rate limit:** binding `WRITE_LIMITER` di Cloudflare sulle POST per indirizzo, in memoria di Cloudflare, mai salvato da noi.
 
+## 3-bis. ACCOUNT FACOLTATIVI (contesto Access, login OPAQUE)
+
+* **A cosa servono:** chi accede trova in "I tuoi sigilli" i segreti sigillati mentre era connesso e può distruggerli da qualsiasi dispositivo. Senza account tutto funziona come prima. Nessuna e-mail: solo nome utente e password.
+* **OPAQUE (RFC 9807, `opaque-ke` 4.0):** la password non lascia mai il dispositivo, nemmeno sotto forma di hash, e il server conserva solo un record da cui non si può provarla offline. Suite: OPRF Ristretto255, scambio di chiavi 3DH (Ristretto255, SHA-512), KSF Argon2id v1.3 64 MiB, 3 passate, 1 corsia (`HARDENING_*` in `suite.rs`). Password tra 8 e 1024 byte; il nome si porta in minuscolo (NFC nel client), 3–64 caratteri.
+* **Chiavi del relay:** tutte derivate da un solo segreto Worker `OPAQUE_SERVER_SEED` (32 byte base64url) con HKDF-SHA512: `ServerSetup` deterministico (fissato da `tests/opaque_pin.rs`: se cambia il seme o la derivazione, ogni account esistente smette di funzionare) e la chiave HMAC dell'`AccountId = HMAC-SHA256(k, "sigylo/v1/account\0" ‖ nome)`. Il database non vede mai il nome. Il workflow di deploy crea il segreto se manca; **non va mai ruotato** senza una migrazione degli account.
+* **Indistinguibilità:** nome inesistente e password sbagliata danno lo stesso `401` (record finto di `opaque-ke`); unico limite noto, la registrazione rivela se un nome è già preso (`409`).
+* **Sessioni:** token di 32 byte, il server ne conserva solo lo SHA-256, durata 12 ore (`SESSION_SECONDS`); il client lo tiene solo nella memoria della scheda (un ricaricamento esce). Lo stato tra le due fasi del login sta nel database per 5 minuti ed è monouso (`LOGIN_WINDOW_SECONDS`).
+* **Portachiavi:** `HKDF-SHA512(export_key, "sigylo/v1/keyring")` dà una chiave di 256 bit che sigilla (busta di modalità link, `Sealer::seal_with_link_key`) un JSON con id e token di revoca dei sigilli, mai i link di lettura; massimo 72 KiB e 300 sigilli. Scritture con versione ottimistica: su `409 Conflict` il client rilegge e riapplica la modifica.
+* **Throttle:** binding `LOGIN_LIMITER` (10 tentativi al minuto per account) sull'inizio del login; se manca il binding lascia passare.
+* **API:** `POST /api/account/register/start|finish`, `POST /api/account/login/start|finish`, `POST /api/account/logout`, `GET|POST /api/account/keyring`, `POST /api/account/close`; le ultime quattro con `Authorization: Bearer <token>`.
+* **Limiti noti:** OPRF e 3DH non sono post-quantistici (le trascrizioni viaggiano comunque in TLS; `opaque-ke` 4.1 avrà un KEM ibrido); niente cambio né recupero della password: chi la dimentica perde il portachiavi, non i segreti.
+
 ## 4. PERSISTENZA (Supabase PostgreSQL via Hyperdrive)
 
 * Schema `custody` con due tabelle e **8 colonne in tutto** (verificato dai test): niente orari di creazione, niente IP, niente account. Colonne `bytea`, vincoli di lunghezza nel database.
@@ -93,7 +107,8 @@ Tutto avviene sul dispositivo, in Rust compilato a Wasm. Le implementazioni sono
 * **Nessuna cache di Hyperdrive:** Hyperdrive memorizza per un minuto le `SELECT` che crede di sola lettura e non vede che `custody.open` cancella; una risposta in cache restituirebbe un segreto già bruciato, revocato o scaduto. La configurazione Hyperdrive si crea con `--caching-disabled` e, in più, ogni statement del vault seleziona anche `now()`, che Hyperdrive non mette mai in cache (test in `postgres_vault.rs`).
 * Il Worker si collega come `sigylo_relay`, che può **solo eseguire le funzioni**: nessun privilegio sulle tabelle, quindi una credenziale del relay rubata non può elencare o scaricare i segreti. Nessun altro ruolo, né `PUBLIC` né `anon`/`authenticated`/`service_role` di Supabase, ha privilegi nello schema `custody` (verificato sulle ACL dai test, con i ruoli Supabase ricreati). RLS attiva e forzata.
 * Disattivati per scelta: Supabase Auth, supabase-js nel browser, Vault/pgsodium (la crittografia non avviene mai nel database), PostgREST sullo schema `custody`.
-* Un cron ogni 15 minuti (`purge_expired`) cancella fisicamente ciò che è scaduto.
+* Schema `access` con tre tabelle (`accounts`, `logins`, `sessions`) e **11 colonne in tutto**, stesse regole: funzioni `SECURITY DEFINER`, solo EXECUTE per `sigylo_relay`, RLS forzata, nessun nome utente in chiaro, nessun orario di creazione.
+* Un cron ogni 15 minuti (`purge_expired`) cancella fisicamente ciò che è scaduto, in entrambi gli schemi.
 
 ## 5. CLIENT WEB E INTEGRITÀ DEL CODICE
 
@@ -111,12 +126,13 @@ Tutto avviene sul dispositivo, in Rust compilato a Wasm. Le implementazioni sono
 1. Supabase, in un progetto dedicato solo a Sigylo: applicare `supabase/migrations/*.sql`, poi `alter role sigylo_relay login password '<password forte>';`.
 2. Cloudflare: `npx wrangler hyperdrive create sigylo-db --caching-disabled --connection-string="postgres://sigylo_relay:<password>@<host>:5432/postgres"` e mettere l'id in `worker/wrangler.toml`. `--caching-disabled` è obbligatorio (vedi §4); su una configurazione già creata: `npx wrangler hyperdrive update <id> --caching-disabled`.
 3. Pubblicazione su `https://sigylo.net` (custom domain del Worker, `workers.dev` spento; il primo deploy crea record DNS e certificato nella zona). Di norma la fa `.github/workflows/deploy.yml`: parte solo su `main`, solo dopo che la CI è passata su quello stesso commit, mai da una pull request. Segreti del repository: `CLOUDFLARE_API_TOKEN` (modello "Edit Cloudflare Workers", limitato a questo account e alla zona sigylo.net) e `CLOUDFLARE_ACCOUNT_ID`. A mano: `(cd web && npm ci && npm run build)` poi `(cd worker && npx wrangler deploy)`.
-4. Nella zona sigylo.net disattivare tutte le funzioni Cloudflare che modificano l'HTML (Rocket Loader, Email Obfuscation, Web Analytics automatico): romperebbero CSP e SRI. Dopo ogni deploy il workflow verifica che la pagina servita sia identica byte per byte a `web/dist/index.html` e porti la CSP di `_headers`, e fallisce se la zona la riscrive.
+4. Segreto Worker `OPAQUE_SERVER_SEED` (§3-bis): il workflow, dopo il deploy, lo crea con 32 byte casuali se non esiste e non lo tocca mai più. A mano: `openssl rand 32 | basenc --base64url | tr -d '=\n' | npx wrangler secret put OPAQUE_SERVER_SEED`. Senza il segreto gli account rispondono `503` e il resto funziona.
+5. Nella zona sigylo.net disattivare tutte le funzioni Cloudflare che modificano l'HTML (Rocket Loader, Email Obfuscation, Web Analytics automatico): romperebbero CSP e SRI. Dopo ogni deploy il workflow verifica che la pagina servita sia identica byte per byte a `web/dist/index.html` e porti la CSP di `_headers`, e fallisce se la zona la riscrive.
 
 ## 7. RINVIATO (non nell'MVP)
 
 * **Autenticazione del mittente nella modalità richiesta:** firma ML-DSA-65 + Ed25519 o codice di conferma da confrontare fuori banda (vedi il limite noto in §3).
-* **Account e autenticazione:** OPAQUE o challenge firmate con Ed25519 + ML-DSA-65, MEK/chiave di autenticazione derivate con Argon2id + HKDF. L'MVP non ha account: il link è la capacità.
+* **Account, seconda fase:** cambio e recupero della password, OPAQUE con KEM ibrido post-quantistico (quando `opaque-ke` 4.1 sarà stabile), sessioni che sopravvivono al ricaricamento. Il link resta comunque la capacità: l'account custodisce solo i token di revoca (§3-bis).
 * **Client verificabile:** app Tauri con chiavi in Secure Enclave / TPM, oppure estensione browser firmata.
 * **File e allegati:** suddivisione in chunk cifrati su storage (Supabase Storage o R2).
 * **Blind index:** non serve finché non esistono ricerche lato server.

@@ -1,13 +1,16 @@
 //! Browser shell. Wires the Sealing use cases to the RustCrypto suite and
-//! exposes them to JavaScript. No logic of its own beyond translating types.
+//! the Access member use cases to OPAQUE, and exposes them to JavaScript.
+//! No logic of its own beyond translating types.
 //!
 //! Errors reach JavaScript as `Error` objects whose message is the stable
-//! code of the [`SealError`] variant (e.g. `"NotAuthentic"`), which the UI
-//! localizes.
+//! code of the [`SealError`] or [`AccessError`] variant (e.g.
+//! `"NotAuthentic"`), which the UI localizes.
 //!
 //! Nothing secret stays in Wasm memory once a call returns:
 //!
-//! * keys, seeds, passphrases and plaintexts are zeroizing types, wiped on drop;
+//! * keys, seeds, passphrases, passwords and plaintexts are zeroizing types,
+//!   wiped on drop; a registration or login in progress keeps its password
+//!   and OPAQUE state only until it is finished or freed;
 //! * they reach JavaScript through [`hand_over`], copied straight into a JS
 //!   array, never as a `Vec<u8>` or a field of an exported struct, which
 //!   wasm-bindgen would move or free without wiping;
@@ -18,6 +21,10 @@
 //! garbage collector may keep copies we cannot wipe.
 #![forbid(unsafe_code)]
 
+use access::{
+    AccessError, CredentialResponse, Member, Password, PendingLogin, PendingRegistration, RegistrationResponse,
+};
+use access_adapters::{HkdfKeyringKdf, OpaqueDevice};
 use js_sys::Uint8Array;
 use sealing::{
     Envelope, Fingerprint, LinkKey, Passphrase, Plaintext, RecipientPublicKey, RecipientSeed, SealError, Sealer,
@@ -188,5 +195,121 @@ pub fn open_as_recipient(
         let passphrase = passphrase(passphrase_utf8).map_err(js_error)?;
         let plaintext = sealer().open_as_recipient(&envelope, &seed, passphrase.as_ref()).map_err(js_error)?;
         Ok(hand_over(plaintext.expose()))
+    })
+}
+
+#[wasm_bindgen(js_name = sealWithKey)]
+pub fn seal_with_key(plaintext: Vec<u8>, key: Vec<u8>) -> Result<Vec<u8>, JsError> {
+    scrubbed(|| {
+        let plaintext = Plaintext::new(plaintext).map_err(js_error)?;
+        let key = Zeroizing::new(key);
+        let key = LinkKey::from_slice(&key).map_err(js_error)?;
+        Ok(sealer().seal_with_link_key(&plaintext, &key).map_err(js_error)?.to_bytes())
+    })
+}
+
+// --- Accounts (OPAQUE). The password never leaves this module.
+
+type Device = Member<OpaqueDevice, HkdfKeyringKdf>;
+
+fn device() -> Device {
+    Member::new(OpaqueDevice, HkdfKeyringKdf)
+}
+
+fn access_error(error: AccessError) -> JsError {
+    JsError::new(&format!("{error:?}"))
+}
+
+/// A registration waiting for the relay's answer.
+#[wasm_bindgen]
+#[derive(Debug)]
+pub struct Registration {
+    request: Vec<u8>,
+    pending: Option<PendingRegistration<<OpaqueDevice as access::OpaqueClient>::Registration>>,
+}
+
+/// What a finished registration or login hands back: the message for the
+/// relay, and the keyring key that stays on this device.
+#[wasm_bindgen]
+#[derive(Debug)]
+pub struct Admission {
+    message: Vec<u8>,
+    keyring_key: Uint8Array,
+}
+
+#[wasm_bindgen]
+impl Admission {
+    /// The registration record, or KE3: goes to the relay.
+    #[wasm_bindgen(getter)]
+    pub fn message(&self) -> Vec<u8> {
+        self.message.clone()
+    }
+
+    #[wasm_bindgen(getter, js_name = keyringKey)]
+    pub fn keyring_key(&self) -> Uint8Array {
+        self.keyring_key.clone()
+    }
+}
+
+#[wasm_bindgen]
+impl Registration {
+    /// The blinded password: goes to the relay.
+    #[wasm_bindgen(getter)]
+    pub fn request(&self) -> Vec<u8> {
+        self.request.clone()
+    }
+
+    pub fn finish(&mut self, response: &[u8]) -> Result<Admission, JsError> {
+        let pending = self.pending.take().ok_or_else(|| access_error(AccessError::NotAuthentic))?;
+        scrubbed(|| {
+            let response = RegistrationResponse::from_slice(response).map_err(access_error)?;
+            let (record, key) = device().finish_registration(pending, &response).map_err(access_error)?;
+            Ok(Admission { message: record.as_bytes().to_vec(), keyring_key: hand_over(key.expose()) })
+        })
+    }
+}
+
+#[wasm_bindgen(js_name = beginRegistration)]
+pub fn begin_registration(password_utf8: Vec<u8>) -> Result<Registration, JsError> {
+    scrubbed(|| {
+        let password = Password::new(password_utf8).map_err(access_error)?;
+        let (request, pending) = device().begin_registration(password).map_err(access_error)?;
+        Ok(Registration { request: request.as_bytes().to_vec(), pending: Some(pending) })
+    })
+}
+
+/// A login waiting for the relay's answer.
+#[wasm_bindgen]
+#[derive(Debug)]
+pub struct Login {
+    request: Vec<u8>,
+    pending: Option<PendingLogin<<OpaqueDevice as access::OpaqueClient>::Login>>,
+}
+
+#[wasm_bindgen]
+impl Login {
+    /// KE1: goes to the relay.
+    #[wasm_bindgen(getter)]
+    pub fn request(&self) -> Vec<u8> {
+        self.request.clone()
+    }
+
+    /// Fails with `NotAuthentic` on a wrong password or an unknown user.
+    pub fn finish(&mut self, response: &[u8]) -> Result<Admission, JsError> {
+        let pending = self.pending.take().ok_or_else(|| access_error(AccessError::NotAuthentic))?;
+        scrubbed(|| {
+            let response = CredentialResponse::from_slice(response).map_err(access_error)?;
+            let (finalization, key) = device().finish_login(pending, &response).map_err(access_error)?;
+            Ok(Admission { message: finalization.as_bytes().to_vec(), keyring_key: hand_over(key.expose()) })
+        })
+    }
+}
+
+#[wasm_bindgen(js_name = beginLogin)]
+pub fn begin_login(password_utf8: Vec<u8>) -> Result<Login, JsError> {
+    scrubbed(|| {
+        let password = Password::new(password_utf8).map_err(access_error)?;
+        let (request, pending) = device().begin_login(password).map_err(access_error)?;
+        Ok(Login { request: request.as_bytes().to_vec(), pending: Some(pending) })
     })
 }

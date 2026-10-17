@@ -8,6 +8,7 @@
 //   #/r/<id>/<fpr>       answer a request: seal to the recipient's public key
 //   #/k/<id>/<seed>      the recipient's private link to read the answer
 //   #/terms, #/privacy   the terms of service and the privacy notice
+//   #/account            sign in, and the seals of a signed-in sender
 
 import { decodeExact, encode } from './base64url';
 
@@ -22,6 +23,7 @@ export type Route =
   | { kind: 'inbox'; id: Uint8Array; seed: Uint8Array }
   | { kind: 'terms' }
   | { kind: 'privacy' }
+  | { kind: 'account' }
   | { kind: 'invalid' };
 
 export function parseFragment(fragment: string): Route {
@@ -29,6 +31,7 @@ export function parseFragment(fragment: string): Route {
   if (path === '' || path === '/') return { kind: 'compose' };
   if (path === '/terms') return { kind: 'terms' };
   if (path === '/privacy') return { kind: 'privacy' };
+  if (path === '/account') return { kind: 'account' };
   const parts = path.split('/');
   if (parts[0] !== '') return { kind: 'invalid' };
   const [, kind, idText, secretText, flag, ...rest] = parts;

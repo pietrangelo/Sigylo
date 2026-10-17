@@ -5,12 +5,19 @@
 //! It never sees a key or a plaintext and logs neither ids nor payloads.
 //! The static web client is served by Workers Static Assets on the same
 //! origin, so the browser never talks to a third party.
+//!
+//! Accounts use OPAQUE through the Access use cases: the relay's OPAQUE keys
+//! come from the Worker secret `OPAQUE_SERVER_SEED` (32 bytes, base64url),
+//! and logins are throttled per account by the `LOGIN_LIMITER` binding.
 #![forbid(unsafe_code)]
 
 pub mod api;
 
 #[cfg(target_arch = "wasm32")]
 mod runtime {
+    use access::{AccessError, AccountId, Gatekeeper, Throttle};
+    use access_adapters::{OpaqueKeys, PostgresAccounts, RandomTokens, Sha256SessionDigest};
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     use custody::Custodian;
     use custody_adapters::{PostgresVault, RandomIds, Sha256TokenDigest};
     use tokio_postgres::{Client, NoTls};
@@ -19,8 +26,9 @@ mod runtime {
         Context, Env, Method, Request, Response, Result, ScheduleContext, ScheduledEvent, SecureTransport, Socket,
         event,
     };
+    use zeroize::Zeroizing;
 
-    use crate::api::{self, ApiError, Command};
+    use crate::api::{self, AccountCommand, ApiError, Command};
 
     fn unavailable<E>(_: E) -> worker::Error {
         worker::Error::RustError("database unavailable".into())
@@ -71,7 +79,66 @@ mod runtime {
         limiter.limit(key).await.map(|o| !o.success).unwrap_or(false)
     }
 
+    /// Login attempts per account, wherever they come from (kept in memory by
+    /// Cloudflare, keyed by a prefix of the account's keyed hash).
+    struct LoginLimiter<'a>(&'a Env);
+
+    impl Throttle for LoginLimiter<'_> {
+        async fn admit(&self, account: &AccountId) -> bool {
+            let Ok(limiter) = self.0.rate_limiter("LOGIN_LIMITER") else { return true };
+            let key: String = account.as_bytes()[..16].iter().map(|b| format!("{b:02x}")).collect();
+            limiter.limit(key).await.map(|o| o.success).unwrap_or(true)
+        }
+    }
+
+    fn opaque_keys(env: &Env) -> std::result::Result<OpaqueKeys, AccessError> {
+        let secret = env.secret("OPAQUE_SERVER_SEED").map_err(|_| AccessError::NotConfigured)?.to_string();
+        let seed = Zeroizing::new(URL_SAFE_NO_PAD.decode(secret.trim()).map_err(|_| AccessError::NotConfigured)?);
+        OpaqueKeys::from_seed(&seed)
+    }
+
+    async fn account(command: AccountCommand, env: &Env) -> std::result::Result<(u16, String), ApiError> {
+        let keys = opaque_keys(env)?;
+        let client = connect(env).await.map_err(|_| AccessError::StoreUnavailable)?;
+        let gatekeeper =
+            Gatekeeper::new(keys, PostgresAccounts::new(&client), RandomTokens, Sha256SessionDigest, LoginLimiter(env));
+        Ok(match command {
+            AccountCommand::RegisterStart(username, request) => {
+                (200, api::registration_response_body(&gatekeeper.registration_response(&username, &request)?))
+            }
+            AccountCommand::RegisterFinish(username, record) => {
+                gatekeeper.register(&username, &record).await?;
+                (201, "{}".into())
+            }
+            AccountCommand::LoginStart(username, request) => {
+                (200, api::login_challenge_body(&gatekeeper.begin_login(&username, &request).await?))
+            }
+            AccountCommand::LoginFinish(handle, finalization) => {
+                (200, api::session_body(&gatekeeper.finish_login(&handle, &finalization).await?))
+            }
+            AccountCommand::Logout(token) => {
+                gatekeeper.sign_out(&token).await?;
+                (200, "{}".into())
+            }
+            AccountCommand::ReadKeyring(token) => (200, api::keyring_body(&gatekeeper.keyring(&token).await?)),
+            AccountCommand::StoreKeyring(token, keyring, expected) => {
+                (200, api::version_body(gatekeeper.store_keyring(&token, &keyring, expected).await?))
+            }
+            AccountCommand::Close(token) => {
+                gatekeeper.close_account(&token).await?;
+                (200, "{}".into())
+            }
+        })
+    }
+
     async fn execute(command: Command, env: &Env) -> std::result::Result<(u16, String), ApiError> {
+        match command {
+            Command::Account(command) => account(command, env).await,
+            custody => safekeeping(custody, env).await,
+        }
+    }
+
+    async fn safekeeping(command: Command, env: &Env) -> std::result::Result<(u16, String), ApiError> {
         let client = connect(env).await.map_err(|_| custody::CustodyError::VaultUnavailable)?;
         let custodian = Custodian::new(PostgresVault::new(&client), Sha256TokenDigest, RandomIds);
         Ok(match command {
@@ -90,6 +157,7 @@ mod runtime {
             }
             Command::FetchRequest(id) => (200, api::posted_request_body(custodian.fetch_request(&id).await?)),
             Command::AnswerRequest(id, answer) => (201, api::expires_body(custodian.answer_request(id, answer).await?)),
+            Command::Account(_) => return Err(ApiError::NotFound),
         })
     }
 
@@ -114,7 +182,8 @@ mod runtime {
         if body.len() > api::MAX_BODY_LEN {
             return fail(ApiError::BodyTooLarge);
         }
-        let command = match api::command(route, &body) {
+        let bearer = req.headers().get("Authorization")?;
+        let command = match api::command(route, &body, bearer.as_deref()) {
             Ok(command) => command,
             Err(error) => return fail(error),
         };
@@ -129,6 +198,11 @@ mod runtime {
         if let Ok(client) = connect(&env).await {
             let custodian = Custodian::new(PostgresVault::new(&client), Sha256TokenDigest, RandomIds);
             let _ = custodian.purge_expired().await;
+            if let Ok(keys) = opaque_keys(&env) {
+                let store = PostgresAccounts::new(&client);
+                let gatekeeper = Gatekeeper::new(keys, store, RandomTokens, Sha256SessionDigest, LoginLimiter(&env));
+                let _ = gatekeeper.purge_expired().await;
+            }
         }
     }
 }
