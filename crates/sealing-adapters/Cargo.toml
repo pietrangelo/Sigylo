@@ -1,6 +1,6 @@
 [package]
 name = "sealing-adapters"
-description = "RustCrypto implementations of the Sealing ports: X25519 + ML-KEM-768, XChaCha20-Poly1305, Argon2id, HKDF-SHA3-256"
+description = "RustCrypto implementations of the Sealing ports: X25519 + ML-KEM-768, Ed25519 + ML-DSA-65, XChaCha20-Poly1305, Argon2id, HKDF-SHA3-256"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,6 +12,8 @@ sealing.workspace = true
 zeroize.workspace = true
 ml-kem = { version = "0.3.2", features = ["hazmat"] }
 x25519-dalek = { version = "3.0.0", features = ["static_secrets", "zeroize"] }
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["zeroize"] }
+ml-dsa = { version = "0.1.1", default-features = false, features = ["alloc", "zeroize"] }
 chacha20poly1305 = "0.11.0"
 hkdf = "0.13.0"
 sha3 = "0.11.0"

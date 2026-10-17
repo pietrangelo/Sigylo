@@ -179,3 +179,15 @@ label {
   border-left: 3px solid var(--ok);
   padding-left: var(--s4);
 }
+
+/* A sender code, meant to be read aloud: monospace, spaced, unambiguous. */
+.sender > p {
+  margin: 0;
+}
+
+.code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: var(--t-title);
+  letter-spacing: 0.08em;
+  overflow-wrap: anywhere;
+}

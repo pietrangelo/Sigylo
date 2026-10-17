@@ -117,6 +117,12 @@ const it: LegalTexts = {
         body: [
           `Se crei un account conserviamo: un hash con chiave del tuo nome utente (non il nome), il record di registrazione OPAQUE (la tua password non ci arriva mai, nemmeno come hash) e il tuo portachiavi, cifrato sul tuo dispositivo con una chiave che non vediamo mai, con un contatore delle sue modifiche. Il portachiavi contiene i codici per distruggere i segreti che hai sigillato da connesso, non i link per aprirli.`,
           `Mentre sei connesso conserviamo l'impronta SHA-256 del codice di sessione e la sua scadenza, al massimo 12 ore; durante un accesso, per cinque minuti, lo stato del protocollo. L'account resta finché non lo elimini dalla pagina dell'account, che cancella tutto in una volta.`,
+          ],
+        },
+        {
+        heading: `Sul tuo dispositivo`,
+        body: [
+          `Quando rispondi a una richiesta, il browser crea la tua chiave di firma di mittente e la tiene nella memoria locale (localStorage) di sigylo.net, così il tuo codice mittente resta sempre lo stesso. Non ci viene mai inviata e non ti identifica presso di noi: in ogni risposta firmata viaggia solo la chiave pubblica, cifrata insieme al segreto, che soltanto il destinatario può leggere. Puoi cancellarla quando vuoi eliminando i dati del sito dal browser.`,
         ],
       },
       {
@@ -243,6 +249,12 @@ const en: LegalTexts = {
         body: [
           `If you create an account we keep: a keyed hash of your username (not the name itself), the OPAQUE registration record (your password never reaches us, not even as a hash) and your keyring, encrypted on your device with a key we never see, with a counter of its changes. The keyring holds the codes to destroy the secrets you sealed while signed in, not the links that open them.`,
           `While you are signed in we keep the SHA-256 digest of your session code and its expiry, 12 hours at most; during a sign-in, for five minutes, the state of the protocol. The account stays until you delete it from the account page, which erases everything at once.`,
+          ],
+        },
+        {
+        heading: `On your device`,
+        body: [
+          `When you answer a request, your browser creates your sender signing key and keeps it in the local storage (localStorage) of sigylo.net, so your sender code stays the same. It is never sent to us and does not identify you to us: each signed answer carries only the public key, encrypted together with the secret, which only the recipient can read. You can delete it at any time by clearing the site data in your browser.`,
         ],
       },
       {
@@ -369,6 +381,12 @@ const fr: LegalTexts = {
         body: [
           `Si vous créez un compte, nous conservons : un hachage à clé de votre nom d'utilisateur (pas le nom lui-même), l'enregistrement OPAQUE (votre mot de passe ne nous parvient jamais, pas même sous forme de hachage) et votre trousseau, chiffré sur votre appareil avec une clé que nous ne voyons jamais, avec un compteur de ses modifications. Le trousseau contient les codes pour détruire les secrets que vous avez scellés une fois connecté, pas les liens qui les ouvrent.`,
           `Tant que vous êtes connecté, nous conservons l'empreinte SHA-256 de votre code de session et son expiration, 12 heures au plus ; pendant une connexion, pendant cinq minutes, l'état du protocole. Le compte reste jusqu'à ce que vous le supprimiez depuis la page du compte, ce qui efface tout en une fois.`,
+          ],
+        },
+        {
+        heading: `Sur votre appareil`,
+        body: [
+          `Lorsque vous répondez à une demande, votre navigateur crée votre clé de signature d'expéditeur et la garde dans le stockage local (localStorage) de sigylo.net, afin que votre code d'expéditeur reste le même. Elle ne nous est jamais envoyée et ne vous identifie pas auprès de nous : chaque réponse signée ne transporte que la clé publique, chiffrée avec le secret, que seul le destinataire peut lire. Vous pouvez la supprimer à tout moment en effaçant les données du site dans votre navigateur.`,
         ],
       },
       {
@@ -495,6 +513,12 @@ const es: LegalTexts = {
         body: [
           `Si creas una cuenta guardamos: un hash con clave de tu nombre de usuario (no el nombre), el registro OPAQUE (tu contraseña nunca nos llega, ni siquiera como hash) y tu llavero, cifrado en tu dispositivo con una clave que nunca vemos, con un contador de sus cambios. El llavero contiene los códigos para destruir los secretos que sellaste con la sesión iniciada, no los enlaces que los abren.`,
           `Mientras tienes la sesión iniciada guardamos la huella SHA-256 de tu código de sesión y su vencimiento, 12 horas como máximo; durante un inicio de sesión, durante cinco minutos, el estado del protocolo. La cuenta se mantiene hasta que la eliminas desde la página de la cuenta, que lo borra todo de una vez.`,
+          ],
+        },
+        {
+        heading: `En tu dispositivo`,
+        body: [
+          `Cuando respondes a una solicitud, tu navegador crea tu clave de firma de remitente y la guarda en el almacenamiento local (localStorage) de sigylo.net, para que tu código de remitente sea siempre el mismo. Nunca se nos envía y no te identifica ante nosotros: cada respuesta firmada lleva solo la clave pública, cifrada junto con el secreto, que solo el destinatario puede leer. Puedes borrarla cuando quieras eliminando los datos del sitio en tu navegador.`,
         ],
       },
       {
@@ -621,6 +645,12 @@ const de: LegalTexts = {
         body: [
           `Wenn du ein Konto erstellst, speichern wir: einen schlüsselbasierten Hash deines Benutzernamens (nicht den Namen selbst), den OPAQUE-Registrierungsdatensatz (dein Passwort erreicht uns nie, nicht einmal als Hash) und deinen Schlüsselbund, verschlüsselt auf deinem Gerät mit einem Schlüssel, den wir nie sehen, samt einem Zähler seiner Änderungen. Der Schlüsselbund enthält die Codes zum Vernichten der Geheimnisse, die du angemeldet versiegelt hast, nicht die Links, die sie öffnen.`,
           `Solange du angemeldet bist, speichern wir den SHA-256-Fingerabdruck deines Sitzungscodes und seinen Ablauf, höchstens 12 Stunden; während einer Anmeldung fünf Minuten lang den Zustand des Protokolls. Das Konto bleibt, bis du es auf der Kontoseite löschst; das löscht alles auf einmal.`,
+          ],
+        },
+        {
+        heading: `Auf deinem Gerät`,
+        body: [
+          `Wenn du eine Anfrage beantwortest, erzeugt dein Browser deinen Absender-Signaturschlüssel und bewahrt ihn im lokalen Speicher (localStorage) von sigylo.net auf, damit dein Absendercode gleich bleibt. Er wird nie an uns gesendet und identifiziert dich uns gegenüber nicht: Jede signierte Antwort enthält nur den öffentlichen Schlüssel, zusammen mit dem Geheimnis verschlüsselt, den nur die empfangende Person lesen kann. Du kannst ihn jederzeit löschen, indem du die Websitedaten in deinem Browser entfernst.`,
         ],
       },
       {

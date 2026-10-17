@@ -4,6 +4,7 @@ import { inboxLink, linkFragment, parseFragment, requestLink, revokeLink, secret
 
 const id = Uint8Array.from({ length: 16 }, (_, i) => i);
 const key = Uint8Array.from({ length: 32 }, (_, i) => 255 - i);
+const pin = Uint8Array.from({ length: 32 }, (_, i) => i * 7);
 const origin = 'https://sigylo.example';
 
 function fragmentOf(link: string): string {
@@ -15,8 +16,13 @@ describe('links', () => {
     expect(parseFragment(fragmentOf(secretLink(origin, id, key, false)))).toEqual({ kind: 'secret', id, key, passphrase: false });
     expect(parseFragment(fragmentOf(secretLink(origin, id, key, true)))).toEqual({ kind: 'secret', id, key, passphrase: true });
     expect(parseFragment(fragmentOf(revokeLink(origin, id, key)))).toEqual({ kind: 'revoke', id, token: key });
-    expect(parseFragment(fragmentOf(requestLink(origin, id, key)))).toEqual({ kind: 'answer', id, fingerprint: key });
-    expect(parseFragment(fragmentOf(inboxLink(origin, id, key)))).toEqual({ kind: 'inbox', id, seed: key });
+    expect(parseFragment(fragmentOf(requestLink(origin, id, key)))).toEqual({ kind: 'answer', id, fingerprint: key, expectedSender: null });
+    expect(parseFragment(fragmentOf(inboxLink(origin, id, key)))).toEqual({ kind: 'inbox', id, seed: key, expectedSender: null });
+  });
+
+  it('request and inbox links can carry the expected sender pin', () => {
+    expect(parseFragment(fragmentOf(requestLink(origin, id, key, pin)))).toEqual({ kind: 'answer', id, fingerprint: key, expectedSender: pin });
+    expect(parseFragment(fragmentOf(inboxLink(origin, id, key, pin)))).toEqual({ kind: 'inbox', id, seed: key, expectedSender: pin });
   });
 
   it('keeps every secret after the #, out of reach of servers', () => {
@@ -29,6 +35,7 @@ describe('links', () => {
   it('the terms of service and the privacy notice have their own pages', () => {
     expect(parseFragment('#/terms')).toEqual({ kind: 'terms' });
     expect(parseFragment('#/privacy')).toEqual({ kind: 'privacy' });
+    expect(parseFragment('#/me')).toEqual({ kind: 'me' });
   });
 
   it('the account has its own page', () => {
@@ -62,6 +69,12 @@ describe('links', () => {
         '#/account/',
         '#/account/x',
         '#/Account',
+        '#/me/x',
+        `#/s/${i}/${k}/${encode(pin)}`,
+        `#/x/${i}/${k}/${encode(pin)}`,
+        `#/r/${i}/${k}/${encode(pin.slice(1))}`,
+        `#/k/${i}/${k}/${encode(pin)}/more`,
+        `#/k/${i}/${k}/p`,
       ]) {
         expect(parseFragment(bad).kind, bad).toBe('invalid');
       }

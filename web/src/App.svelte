@@ -8,6 +8,7 @@
   import Legal from './components/Legal.svelte';
   import Account from './components/Account.svelte';
   import { signedIn } from './lib/session.svelte';
+  import Me from './components/Me.svelte';
   import PasteLink from './components/PasteLink.svelte';
   import { isApp, openLegal } from './lib/platform';
 
@@ -41,9 +42,11 @@
     {:else if route.kind === 'secret'}
       <Opener mode="link" id={route.id} secret={route.key} expectsPassphrase={route.passphrase} />
     {:else if route.kind === 'inbox'}
-      <Opener mode="inbox" id={route.id} secret={route.seed} expectsPassphrase={false} />
+      <Opener mode="inbox" id={route.id} secret={route.seed} expectsPassphrase={false} expectedSender={route.expectedSender} />
     {:else if route.kind === 'answer'}
-      <Answer id={route.id} fingerprint={route.fingerprint} />
+      <Answer id={route.id} fingerprint={route.fingerprint} expectedSender={route.expectedSender} />
+    {:else if route.kind === 'me'}
+      <Me />
     {:else if route.kind === 'revoke'}
       <Revoke id={route.id} token={route.token} />
     {:else if route.kind === 'account'}
@@ -62,9 +65,12 @@
       {#if isApp}
         <button class="link" onclick={() => openLegal('terms')}>{t.termsLink}</button>
         <button class="link" onclick={() => openLegal('privacy')}>{t.privacyLink}</button>
+        <!-- The sender identity lives in the app's own storage, so its code is shown here. -->
+        <a href="#/me" data-testid="me-link">{t.myCodeLink}</a>
       {:else}
         <a href="#/terms" target="_blank" rel="noopener noreferrer" data-testid="terms-link">{t.termsLink}</a>
         <a href="#/privacy" target="_blank" rel="noopener noreferrer" data-testid="privacy-link">{t.privacyLink}</a>
+        <a href="#/me" target="_blank" rel="noopener noreferrer" data-testid="me-link">{t.myCodeLink}</a>
       {/if}
     </nav>
   </footer>
