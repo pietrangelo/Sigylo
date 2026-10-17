@@ -108,7 +108,7 @@ const it: LegalTexts = {
       {
         heading: `Cosa conserviamo`,
         body: [
-          `Per ogni segreto: la busta cifrata, la scadenza, la regola di distruzione e l'impronta SHA-256 del codice di revoca. Per ogni richiesta: la chiave pubblica di chi la crea e, se arriva, la risposta cifrata. Per un file, in più: i suoi pezzi cifrati, quanti sono e, dopo l'apertura, l'impronta SHA-256 del codice che li consegna solo a chi l'ha aperto.`,
+          `Per ogni segreto: la busta cifrata, la scadenza, la regola di distruzione e l'impronta SHA-256 del codice di revoca. Per ogni richiesta: la chiave pubblica di chi la crea e, se arriva, la risposta cifrata. Per un file, in più: i suoi pezzi cifrati (su Cloudflare R2, nell'Unione europea, sotto nomi casuali), quanti sono e, dopo l'apertura, l'impronta SHA-256 del codice che li consegna solo a chi l'ha aperto.`,
           `Niente altro: né orario di creazione, né indirizzo IP, né identità. Anche se un segreto contiene dati personali, per noi resta illeggibile.`,
         ],
       },
@@ -133,7 +133,7 @@ const it: LegalTexts = {
       {
         heading: `Fornitori e trasferimenti`,
         body: [
-          `Cloudflare, Inc.: hosting, rete e limitazione della frequenza, su una rete globale; i trasferimenti verso gli Stati Uniti si basano sull'EU-U.S. Data Privacy Framework e sulle clausole contrattuali tipo.`,
+          `Cloudflare, Inc.: hosting, rete e limitazione della frequenza, su una rete globale, e archiviazione dei pezzi cifrati dei file su Cloudflare R2 nella giurisdizione dell'Unione europea; i trasferimenti verso gli Stati Uniti si basano sull'EU-U.S. Data Privacy Framework e sulle clausole contrattuali tipo.`,
           `Supabase, Inc.: database PostgreSQL ospitato nella regione eu-central-1 (Francoforte, Germania). Entrambi agiscono come responsabili del trattamento in base ai rispettivi accordi sul trattamento dei dati.`,
         ],
       },
@@ -225,7 +225,7 @@ const en: LegalTexts = {
       {
         heading: `What we keep`,
         body: [
-          `For each secret: the encrypted envelope, its expiry, its destruction rule and the SHA-256 digest of the revocation code. For each request: the public key of whoever creates it and, once it arrives, the encrypted answer. For a file, in addition: its encrypted pieces, how many there are and, once opened, the SHA-256 digest of the code that releases them only to whoever opened it.`,
+          `For each secret: the encrypted envelope, its expiry, its destruction rule and the SHA-256 digest of the revocation code. For each request: the public key of whoever creates it and, once it arrives, the encrypted answer. For a file, in addition: its encrypted pieces (on Cloudflare R2, in the European Union, under random names), how many there are and, once opened, the SHA-256 digest of the code that releases them only to whoever opened it.`,
           `Nothing else: no creation time, no IP address, no identity. Even if a secret contains personal data, it stays unreadable to us.`,
         ],
       },
@@ -250,7 +250,7 @@ const en: LegalTexts = {
       {
         heading: `Providers and transfers`,
         body: [
-          `Cloudflare, Inc.: hosting, network and rate limiting, on a global network; transfers to the United States rely on the EU-U.S. Data Privacy Framework and the standard contractual clauses.`,
+          `Cloudflare, Inc.: hosting, network and rate limiting, on a global network, and storage of the encrypted pieces of files on Cloudflare R2 in the European Union jurisdiction; transfers to the United States rely on the EU-U.S. Data Privacy Framework and the standard contractual clauses.`,
           `Supabase, Inc.: PostgreSQL database hosted in the eu-central-1 region (Frankfurt, Germany). Both act as processors under their data processing agreements.`,
         ],
       },
@@ -342,7 +342,7 @@ const fr: LegalTexts = {
       {
         heading: `Ce que nous conservons`,
         body: [
-          `Pour chaque secret : l'enveloppe chiffrée, son expiration, sa règle de destruction et l'empreinte SHA-256 du code de révocation. Pour chaque demande : la clé publique de son auteur et, si elle arrive, la réponse chiffrée. Pour un fichier, en plus : ses morceaux chiffrés, leur nombre et, après l'ouverture, l'empreinte SHA-256 du code qui ne les remet qu'à la personne qui l'a ouvert.`,
+          `Pour chaque secret : l'enveloppe chiffrée, son expiration, sa règle de destruction et l'empreinte SHA-256 du code de révocation. Pour chaque demande : la clé publique de son auteur et, si elle arrive, la réponse chiffrée. Pour un fichier, en plus : ses morceaux chiffrés (sur Cloudflare R2, dans l'Union européenne, sous des noms aléatoires), leur nombre et, après l'ouverture, l'empreinte SHA-256 du code qui ne les remet qu'à la personne qui l'a ouvert.`,
           `Rien d'autre : ni heure de création, ni adresse IP, ni identité. Même si un secret contient des données personnelles, il reste illisible pour nous.`,
         ],
       },
@@ -367,7 +367,7 @@ const fr: LegalTexts = {
       {
         heading: `Prestataires et transferts`,
         body: [
-          `Cloudflare, Inc. : hébergement, réseau et limitation de fréquence, sur un réseau mondial ; les transferts vers les États-Unis reposent sur l'EU-U.S. Data Privacy Framework et les clauses contractuelles types.`,
+          `Cloudflare, Inc. : hébergement, réseau et limitation de fréquence, sur un réseau mondial, et stockage des morceaux chiffrés des fichiers sur Cloudflare R2 dans la juridiction de l'Union européenne ; les transferts vers les États-Unis reposent sur l'EU-U.S. Data Privacy Framework et les clauses contractuelles types.`,
           `Supabase, Inc. : base de données PostgreSQL hébergée dans la région eu-central-1 (Francfort, Allemagne). Tous deux agissent en tant que sous-traitants selon leurs accords de traitement des données.`,
         ],
       },
@@ -459,7 +459,7 @@ const es: LegalTexts = {
       {
         heading: `Qué guardamos`,
         body: [
-          `Para cada secreto: el sobre cifrado, su vencimiento, su regla de destrucción y la huella SHA-256 del código de revocación. Para cada solicitud: la clave pública de quien la crea y, si llega, la respuesta cifrada. Para un archivo, además: sus fragmentos cifrados, cuántos son y, tras abrirlo, la huella SHA-256 del código que solo se los entrega a quien lo abrió.`,
+          `Para cada secreto: el sobre cifrado, su vencimiento, su regla de destrucción y la huella SHA-256 del código de revocación. Para cada solicitud: la clave pública de quien la crea y, si llega, la respuesta cifrada. Para un archivo, además: sus fragmentos cifrados (en Cloudflare R2, en la Unión Europea, con nombres aleatorios), cuántos son y, tras abrirlo, la huella SHA-256 del código que solo se los entrega a quien lo abrió.`,
           `Nada más: ni hora de creación, ni dirección IP, ni identidad. Aunque un secreto contenga datos personales, para nosotros sigue siendo ilegible.`,
         ],
       },
@@ -484,7 +484,7 @@ const es: LegalTexts = {
       {
         heading: `Proveedores y transferencias`,
         body: [
-          `Cloudflare, Inc.: alojamiento, red y limitación de frecuencia, en una red global; las transferencias a Estados Unidos se basan en el EU-U.S. Data Privacy Framework y en las cláusulas contractuales tipo.`,
+          `Cloudflare, Inc.: alojamiento, red y limitación de frecuencia, en una red global, y almacenamiento de los fragmentos cifrados de los archivos en Cloudflare R2 en la jurisdicción de la Unión Europea; las transferencias a Estados Unidos se basan en el EU-U.S. Data Privacy Framework y en las cláusulas contractuales tipo.`,
           `Supabase, Inc.: base de datos PostgreSQL alojada en la región eu-central-1 (Fráncfort, Alemania). Ambos actúan como encargados del tratamiento según sus acuerdos de tratamiento de datos.`,
         ],
       },
@@ -576,7 +576,7 @@ const de: LegalTexts = {
       {
         heading: `Was wir speichern`,
         body: [
-          `Für jedes Geheimnis: den verschlüsselten Umschlag, den Ablauf, die Vernichtungsregel und den SHA-256-Fingerabdruck des Widerrufscodes. Für jede Anfrage: den öffentlichen Schlüssel der Person, die sie erstellt, und, falls sie eintrifft, die verschlüsselte Antwort. Bei einer Datei zusätzlich: ihre verschlüsselten Teile, deren Anzahl und, nach dem Öffnen, den SHA-256-Fingerabdruck des Codes, der sie nur an die Person ausgibt, die sie geöffnet hat.`,
+          `Für jedes Geheimnis: den verschlüsselten Umschlag, den Ablauf, die Vernichtungsregel und den SHA-256-Fingerabdruck des Widerrufscodes. Für jede Anfrage: den öffentlichen Schlüssel der Person, die sie erstellt, und, falls sie eintrifft, die verschlüsselte Antwort. Bei einer Datei zusätzlich: ihre verschlüsselten Teile (auf Cloudflare R2, in der Europäischen Union, unter zufälligen Namen), deren Anzahl und, nach dem Öffnen, den SHA-256-Fingerabdruck des Codes, der sie nur an die Person ausgibt, die sie geöffnet hat.`,
           `Sonst nichts: keine Erstellungszeit, keine IP-Adresse, keine Identität. Selbst wenn ein Geheimnis personenbezogene Daten enthält, bleibt es für uns unlesbar.`,
         ],
       },
@@ -601,7 +601,7 @@ const de: LegalTexts = {
       {
         heading: `Anbieter und Übermittlungen`,
         body: [
-          `Cloudflare, Inc.: Hosting, Netzwerk und Ratenbegrenzung in einem globalen Netz; Übermittlungen in die Vereinigten Staaten stützen sich auf das EU-U.S. Data Privacy Framework und die Standardvertragsklauseln.`,
+          `Cloudflare, Inc.: Hosting, Netzwerk und Ratenbegrenzung in einem globalen Netz sowie Speicherung der verschlüsselten Teile von Dateien auf Cloudflare R2 im Rechtsraum der Europäischen Union; Übermittlungen in die Vereinigten Staaten stützen sich auf das EU-U.S. Data Privacy Framework und die Standardvertragsklauseln.`,
           `Supabase, Inc.: PostgreSQL-Datenbank in der Region eu-central-1 (Frankfurt, Deutschland). Beide handeln als Auftragsverarbeiter auf Grundlage ihrer Auftragsverarbeitungsverträge.`,
         ],
       },

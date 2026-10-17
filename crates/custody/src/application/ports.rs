@@ -1,8 +1,8 @@
 //! Ports of the Custody context.
 
 use crate::core::{
-    ChunkIndex, ClaimDigest, ClaimToken, CustodyError, Deposit, DropId, Opened, PostedRequest, Request,
-    RevocationDigest, RevocationToken, SealedChunk, UnixTime,
+    ChunkIndex, ChunkRef, ClaimDigest, ClaimToken, CustodyError, Deposit, DropId, ObjectName, Opened, PostedRequest,
+    Request, RevocationDigest, RevocationToken, SealedChunk, UnixTime,
 };
 
 /// Durable, blind storage of deposits and requests.
@@ -24,7 +24,10 @@ use crate::core::{
 /// * opening a burn-after-reading file claims it instead of deleting it: from
 ///   then on it cannot be opened again, its chunks go only to the holder of
 ///   the claim, each at most once, and the claim lapses after
-///   [`crate::CLAIM_WINDOW_SECONDS`] at most. The deposit goes with its last chunk.
+///   [`crate::CLAIM_WINDOW_SECONDS`] at most. The deposit goes with its last chunk;
+/// * the vault never holds a chunk's bytes, only the name of its object in
+///   the [`ChunkStore`]; whenever a chunk goes (burned, revoked, expired), its
+///   name joins the garbage until [`Vault::forget_garbage`].
 // Workers run on one thread, so the futures need not be `Send`.
 #[allow(async_fn_in_trait)]
 pub trait Vault {
@@ -36,19 +39,33 @@ pub trait Vault {
     /// The returned [`Opened::claim`] is always `None`: the custodian holds the token.
     async fn open(&self, id: &DropId, claim: &ClaimDigest) -> Result<Option<Opened>, CustodyError>;
 
-    /// Stores one chunk of a file deposit that is live and not yet opened.
-    /// False when there is no such deposit or the index is past its count;
-    /// [`CustodyError::AlreadyExists`] when that chunk is already in.
-    async fn put_chunk(&self, id: &DropId, index: ChunkIndex, chunk: &SealedChunk) -> Result<bool, CustodyError>;
+    /// Records that chunk `index` of a file deposit that is live and not yet
+    /// opened is the stored object `object`, of `len` bytes. False when there
+    /// is no such deposit or the index is past its count;
+    /// [`CustodyError::AlreadyExists`] when that chunk is already in;
+    /// [`CustodyError::StorageFull`] when the chunks would outgrow their quota.
+    async fn put_chunk(
+        &self,
+        id: &DropId,
+        index: ChunkIndex,
+        object: &ObjectName,
+        len: u32,
+    ) -> Result<bool, CustodyError>;
 
-    /// Hands out one chunk of a complete file: of a burn-after-reading file
-    /// only against its claim, and then at most once.
+    /// Finds one chunk of a complete file: of a burn-after-reading file only
+    /// against its claim, and then at most once (`burned`).
     async fn open_chunk(
         &self,
         id: &DropId,
         index: ChunkIndex,
         claim: Option<&ClaimDigest>,
-    ) -> Result<Option<SealedChunk>, CustodyError>;
+    ) -> Result<Option<ChunkRef>, CustodyError>;
+
+    /// Up to `limit` objects whose chunk is gone and that may still be in the store.
+    async fn garbage(&self, limit: u16) -> Result<Vec<ObjectName>, CustodyError>;
+
+    /// Drops objects from the garbage once the store deleted them.
+    async fn forget_garbage(&self, objects: &[ObjectName]) -> Result<(), CustodyError>;
 
     /// Deletes a live deposit whose stored digest matches. True if deleted.
     async fn revoke(&self, id: &DropId, digest: &RevocationDigest) -> Result<bool, CustodyError>;
@@ -65,6 +82,20 @@ pub trait Vault {
     async fn purge_expired(&self) -> Result<u64, CustodyError>;
 }
 
+/// Where the sealed chunks of files live, apart from the vault (Cloudflare R2).
+///
+/// Blind like the vault: objects are opaque bytes under names the custodian
+/// draws itself, never a client, so nobody can overwrite or guess one.
+#[allow(async_fn_in_trait)]
+pub trait ChunkStore {
+    async fn put(&self, object: &ObjectName, chunk: &SealedChunk) -> Result<(), CustodyError>;
+
+    async fn get(&self, object: &ObjectName) -> Result<Option<SealedChunk>, CustodyError>;
+
+    /// Deletes the objects; deleting one that is not there is no error.
+    async fn delete(&self, objects: &[ObjectName]) -> Result<(), CustodyError>;
+}
+
 /// Fresh, unguessable ids for deposits and requests.
 ///
 /// The custodian picks every id itself and never takes one from a client:
@@ -73,11 +104,14 @@ pub trait Vault {
 /// and the real recipient would open it without noticing anything.
 ///
 /// It also draws the claim tokens that bind a burn-after-reading file to
-/// whoever opened it.
+/// whoever opened it, and the names of stored chunks.
 pub trait IdSource {
     fn fresh(&self) -> Result<DropId, CustodyError>;
 
     fn fresh_claim(&self) -> Result<ClaimToken, CustodyError>;
+
+    /// The name of a chunk's object in the [`ChunkStore`].
+    fn fresh_object(&self) -> Result<ObjectName, CustodyError>;
 }
 
 /// One-way digest of revocation and claim tokens (SHA-256).

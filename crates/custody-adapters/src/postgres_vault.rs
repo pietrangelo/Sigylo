@@ -1,6 +1,6 @@
 use custody::{
-    ChunkCount, ChunkIndex, ClaimDigest, CustodyError, Deposit, DropId, Opened, PostedRequest, RecipientKeyBlob,
-    Request, Retention, RevocationDigest, SealedChunk, SealedPayload, UnixTime, Vault,
+    ChunkCount, ChunkIndex, ChunkRef, ClaimDigest, CustodyError, Deposit, DropId, ObjectName, Opened, PostedRequest,
+    RecipientKeyBlob, Request, Retention, RevocationDigest, SealedPayload, UnixTime, Vault,
 };
 use tokio_postgres::{Client, Error, error::SqlState};
 
@@ -28,8 +28,10 @@ impl<'a> PostgresVault<'a> {
 mod sql {
     pub const DEPOSIT: &str = "select custody.deposit($1, $2, $3, $4, $5, $6), now()";
     pub const OPEN: &str = "select payload, burned, chunk_count, now() from custody.open($1, $2)";
-    pub const PUT_CHUNK: &str = "select custody.put_chunk($1, $2, $3), now()";
-    pub const OPEN_CHUNK: &str = "select custody.open_chunk($1, $2, $3), now()";
+    pub const PUT_CHUNK: &str = "select custody.put_chunk($1, $2, $3, $4), now()";
+    pub const OPEN_CHUNK: &str = "select object, burned, now() from custody.open_chunk($1, $2, $3)";
+    pub const GARBAGE: &str = "select g, now() from custody.garbage($1) g";
+    pub const FORGET_GARBAGE: &str = "select custody.forget_garbage($1), now()";
     pub const REVOKE: &str = "select custody.revoke($1, $2), now()";
     pub const POST_REQUEST: &str = "select custody.post_request($1, $2, $3), now()";
     pub const FETCH_REQUEST: &str = "select recipient_key, expires_at, now() from custody.fetch_request($1)";
@@ -37,8 +39,19 @@ mod sql {
     pub const PURGE_EXPIRED: &str = "select custody.purge_expired(), now()";
 
     #[cfg(test)]
-    pub const ALL: [&str; 9] =
-        [DEPOSIT, OPEN, PUT_CHUNK, OPEN_CHUNK, REVOKE, POST_REQUEST, FETCH_REQUEST, ANSWER_REQUEST, PURGE_EXPIRED];
+    pub const ALL: [&str; 11] = [
+        DEPOSIT,
+        OPEN,
+        PUT_CHUNK,
+        OPEN_CHUNK,
+        GARBAGE,
+        FORGET_GARBAGE,
+        REVOKE,
+        POST_REQUEST,
+        FETCH_REQUEST,
+        ANSWER_REQUEST,
+        PURGE_EXPIRED,
+    ];
 }
 
 fn vault_error(error: Error) -> CustodyError {
@@ -64,6 +77,12 @@ fn lifetime(deposit: &Deposit) -> i32 {
 /// The `smallint` chunk count: 0 for a text secret. Capped at 10.
 fn chunk_count(deposit: &Deposit) -> i16 {
     deposit.chunks.map_or(0, |c| c.get() as i16)
+}
+
+/// An object name read back from the database, whose CHECK constraint
+/// guarantees 16 bytes.
+fn object(bytes: &[u8]) -> Result<ObjectName, CustodyError> {
+    ObjectName::from_slice(bytes).map_err(|_| CustodyError::VaultUnavailable)
 }
 
 fn chunk_index(index: ChunkIndex) -> i16 {
@@ -108,10 +127,21 @@ impl Vault for PostgresVault<'_> {
         .transpose()
     }
 
-    async fn put_chunk(&self, id: &DropId, index: ChunkIndex, chunk: &SealedChunk) -> Result<bool, CustodyError> {
+    async fn put_chunk(
+        &self,
+        id: &DropId,
+        index: ChunkIndex,
+        object: &ObjectName,
+        len: u32,
+    ) -> Result<bool, CustodyError> {
+        // A chunk is at most 1 MiB + 16 bytes, far inside i32.
+        let size = len as i32;
         let row = self
             .client
-            .query_one(sql::PUT_CHUNK, &[&id.as_bytes().as_slice(), &chunk_index(index), &chunk.as_bytes()])
+            .query_one(
+                sql::PUT_CHUNK,
+                &[&id.as_bytes().as_slice(), &chunk_index(index), &object.as_bytes().as_slice(), &size],
+            )
             .await
             .map_err(vault_error)?;
         Ok(row.get(0))
@@ -122,17 +152,25 @@ impl Vault for PostgresVault<'_> {
         id: &DropId,
         index: ChunkIndex,
         claim: Option<&ClaimDigest>,
-    ) -> Result<Option<SealedChunk>, CustodyError> {
+    ) -> Result<Option<ChunkRef>, CustodyError> {
         let claim = claim.map(|c| c.as_bytes().as_slice());
         let row = self
             .client
-            .query_one(sql::OPEN_CHUNK, &[&id.as_bytes().as_slice(), &chunk_index(index), &claim])
+            .query_opt(sql::OPEN_CHUNK, &[&id.as_bytes().as_slice(), &chunk_index(index), &claim])
             .await
             .map_err(vault_error)?;
-        // The table's CHECK constraint matches the domain's bounds.
-        row.get::<_, Option<Vec<u8>>>(0)
-            .map(|bytes| SealedChunk::new(bytes).map_err(|_| CustodyError::VaultUnavailable))
-            .transpose()
+        row.map(|row| Ok(ChunkRef { object: object(row.get(0))?, burned: row.get(1) })).transpose()
+    }
+
+    async fn garbage(&self, limit: u16) -> Result<Vec<ObjectName>, CustodyError> {
+        let rows = self.client.query(sql::GARBAGE, &[&i32::from(limit)]).await.map_err(vault_error)?;
+        rows.iter().map(|row| object(row.get(0))).collect()
+    }
+
+    async fn forget_garbage(&self, objects: &[ObjectName]) -> Result<(), CustodyError> {
+        let names: Vec<&[u8]> = objects.iter().map(|o| o.as_bytes().as_slice()).collect();
+        self.client.query_one(sql::FORGET_GARBAGE, &[&names]).await.map_err(vault_error)?;
+        Ok(())
     }
 
     async fn revoke(&self, id: &DropId, digest: &RevocationDigest) -> Result<bool, CustodyError> {

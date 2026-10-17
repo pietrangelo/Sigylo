@@ -8,10 +8,10 @@ use core::pin::pin;
 use core::task::{Context, Poll, Waker};
 use std::collections::HashMap;
 
-use super::ports::{IdSource, TokenDigest, Vault};
+use super::ports::{ChunkStore, IdSource, TokenDigest, Vault};
 use crate::core::{
-    CLAIM_WINDOW_SECONDS, ChunkIndex, ClaimDigest, ClaimToken, CustodyError, Deposit, DropId, Opened, PostedRequest,
-    Request, Retention, RevocationDigest, RevocationToken, SealedChunk, UnixTime,
+    CLAIM_WINDOW_SECONDS, ChunkIndex, ChunkRef, ClaimDigest, ClaimToken, CustodyError, Deposit, DropId, ObjectName,
+    Opened, PostedRequest, Request, Retention, RevocationDigest, RevocationToken, SealedChunk, UnixTime,
 };
 
 /// Drive a future that never actually waits (all fakes complete immediately).
@@ -30,8 +30,13 @@ pub struct FakeVault {
     pub now: Cell<i64>,
     deposits: RefCell<HashMap<DropId, (Deposit, i64)>>,
     claims: RefCell<HashMap<DropId, ClaimDigest>>,
-    chunks: RefCell<HashMap<(DropId, ChunkIndex), SealedChunk>>,
+    chunks: RefCell<HashMap<(DropId, ChunkIndex), ObjectName>>,
+    garbage: RefCell<Vec<ObjectName>>,
     requests: RefCell<HashMap<DropId, (Request, i64)>>,
+    /// The chunk store that goes with this vault.
+    pub store: FakeStore,
+    /// Makes every new chunk outgrow the quota.
+    pub full: Cell<bool>,
 }
 
 impl FakeVault {
@@ -59,6 +64,22 @@ impl FakeVault {
         self.chunks.borrow().len()
     }
 
+    pub fn garbage(&self) -> usize {
+        self.garbage.borrow().len()
+    }
+
+    /// Drops chunk records, their objects joining the garbage (the SQL trigger).
+    fn drop_chunks(&self, keep: impl Fn(&(DropId, ChunkIndex)) -> bool) {
+        let mut garbage = self.garbage.borrow_mut();
+        self.chunks.borrow_mut().retain(|key, object| {
+            let kept = keep(key);
+            if !kept {
+                garbage.push(*object);
+            }
+            kept
+        });
+    }
+
     fn live<T>(&self, map: &RefCell<HashMap<DropId, (T, i64)>>, id: &DropId) -> bool {
         map.borrow().get(id).is_some_and(|(_, exp)| *exp > self.now.get())
     }
@@ -74,7 +95,7 @@ impl FakeVault {
     /// Removes a deposit with everything hanging off it (the SQL cascade).
     fn remove_deposit(&self, id: &DropId) -> Option<Deposit> {
         self.claims.borrow_mut().remove(id);
-        self.chunks.borrow_mut().retain(|(owner, _), _| owner != id);
+        self.drop_chunks(|(owner, _)| owner != id);
         self.deposits.borrow_mut().remove(id).map(|(d, _)| d)
     }
 
@@ -119,7 +140,13 @@ impl Vault for &FakeVault {
         Ok(Some(Opened { payload: deposit.payload, burned: burn, chunks: deposit.chunks, claim: None }))
     }
 
-    async fn put_chunk(&self, id: &DropId, index: ChunkIndex, chunk: &SealedChunk) -> Result<bool, CustodyError> {
+    async fn put_chunk(
+        &self,
+        id: &DropId,
+        index: ChunkIndex,
+        object: &ObjectName,
+        _len: u32,
+    ) -> Result<bool, CustodyError> {
         if !self.live(&self.deposits, id) || self.stored_claim(id).is_some() {
             return Ok(false);
         }
@@ -129,7 +156,10 @@ impl Vault for &FakeVault {
         if self.chunks.borrow().contains_key(&(*id, index)) {
             return Err(CustodyError::AlreadyExists);
         }
-        self.chunks.borrow_mut().insert((*id, index), chunk.clone());
+        if self.full.get() {
+            return Err(CustodyError::StorageFull);
+        }
+        self.chunks.borrow_mut().insert((*id, index), *object);
         Ok(true)
     }
 
@@ -138,23 +168,34 @@ impl Vault for &FakeVault {
         id: &DropId,
         index: ChunkIndex,
         claim: Option<&ClaimDigest>,
-    ) -> Result<Option<SealedChunk>, CustodyError> {
+    ) -> Result<Option<ChunkRef>, CustodyError> {
         if !self.live(&self.deposits, id) {
             return Ok(None);
         }
         let deposit = self.deposits.borrow()[id].0.clone();
         if deposit.retention == Retention::UntilExpiry {
             let complete = self.complete(&deposit);
-            return Ok(self.chunks.borrow().get(&(*id, index)).filter(|_| complete).cloned());
+            let object = self.chunks.borrow().get(&(*id, index)).copied().filter(|_| complete);
+            return Ok(object.map(|object| ChunkRef { object, burned: false }));
         }
         if claim.is_none() || self.stored_claim(id).as_ref() != claim {
             return Ok(None);
         }
-        let chunk = self.chunks.borrow_mut().remove(&(*id, index));
+        let object = self.chunks.borrow().get(&(*id, index)).copied();
+        self.drop_chunks(|key| *key != (*id, index));
         if self.chunks_of(id) == 0 {
             self.remove_deposit(id);
         }
-        Ok(chunk)
+        Ok(object.map(|object| ChunkRef { object, burned: true }))
+    }
+
+    async fn garbage(&self, limit: u16) -> Result<Vec<ObjectName>, CustodyError> {
+        Ok(self.garbage.borrow().iter().take(usize::from(limit)).copied().collect())
+    }
+
+    async fn forget_garbage(&self, objects: &[ObjectName]) -> Result<(), CustodyError> {
+        self.garbage.borrow_mut().retain(|object| !objects.contains(object));
+        Ok(())
     }
 
     async fn revoke(&self, id: &DropId, digest: &RevocationDigest) -> Result<bool, CustodyError> {
@@ -205,6 +246,53 @@ impl Vault for &FakeVault {
     }
 }
 
+/// An in-memory chunk store that can be told to fail.
+#[derive(Debug, Default)]
+pub struct FakeStore {
+    objects: RefCell<HashMap<ObjectName, SealedChunk>>,
+    pub fail: Cell<bool>,
+}
+
+impl FakeStore {
+    pub fn objects(&self) -> usize {
+        self.objects.borrow().len()
+    }
+
+    pub fn names(&self) -> Vec<ObjectName> {
+        self.objects.borrow().keys().copied().collect()
+    }
+
+    pub fn contents(&self) -> Vec<SealedChunk> {
+        self.objects.borrow().values().cloned().collect()
+    }
+
+    fn check(&self) -> Result<(), CustodyError> {
+        if self.fail.get() { Err(CustodyError::VaultUnavailable) } else { Ok(()) }
+    }
+}
+
+impl ChunkStore for &FakeStore {
+    async fn put(&self, object: &ObjectName, chunk: &SealedChunk) -> Result<(), CustodyError> {
+        self.check()?;
+        self.objects.borrow_mut().insert(*object, chunk.clone());
+        Ok(())
+    }
+
+    async fn get(&self, object: &ObjectName) -> Result<Option<SealedChunk>, CustodyError> {
+        self.check()?;
+        Ok(self.objects.borrow().get(object).cloned())
+    }
+
+    async fn delete(&self, objects: &[ObjectName]) -> Result<(), CustodyError> {
+        self.check()?;
+        let mut stored = self.objects.borrow_mut();
+        for object in objects {
+            stored.remove(object);
+        }
+        Ok(())
+    }
+}
+
 /// Reverses and tags the token: obviously not a hash, but one-way enough to
 /// show that the vault never sees the token itself.
 #[derive(Debug)]
@@ -226,14 +314,15 @@ impl TokenDigest for ToyDigest {
     }
 }
 
-/// Hands out ids `[1; 16]`, `[2; 16]`, … and claims `[1; 32]`, `[2; 32]`, …:
-/// distinct and predictable, for tests.
+/// Hands out ids `[1; 16]`, `[2; 16]`, …, claims `[1; 32]`, `[2; 32]`, … and
+/// object names `[0xB0, 1, 1, …]`, `[0xB0, 2, 2, …]`, …: distinct and
+/// predictable, for tests.
 #[derive(Debug)]
-pub struct SequentialIds(Cell<u8>, Cell<u8>);
+pub struct SequentialIds(Cell<u8>, Cell<u8>, Cell<u8>);
 
 impl SequentialIds {
     pub fn starting_at(first: u8) -> Self {
-        Self(Cell::new(first), Cell::new(1))
+        Self(Cell::new(first), Cell::new(1), Cell::new(1))
     }
 }
 
@@ -255,6 +344,14 @@ impl IdSource for SequentialIds {
         self.1.set(n.wrapping_add(1));
         Ok(ClaimToken::from_array([n; 32]))
     }
+
+    fn fresh_object(&self) -> Result<ObjectName, CustodyError> {
+        let n = self.2.get();
+        self.2.set(n.wrapping_add(1));
+        let mut name = [n; ObjectName::LEN];
+        name[0] = 0xB0;
+        Ok(ObjectName::from_array(name))
+    }
 }
 
 /// A broken random source that keeps returning the same id.
@@ -269,6 +366,10 @@ impl IdSource for StuckIds {
     fn fresh_claim(&self) -> Result<ClaimToken, CustodyError> {
         Ok(ClaimToken::from_array([0xCC; 32]))
     }
+
+    fn fresh_object(&self) -> Result<ObjectName, CustodyError> {
+        Ok(ObjectName::from_array([0xDD; ObjectName::LEN]))
+    }
 }
 
 /// A random source that fails.
@@ -281,6 +382,10 @@ impl IdSource for BrokenIds {
     }
 
     fn fresh_claim(&self) -> Result<ClaimToken, CustodyError> {
+        Err(CustodyError::RandomnessUnavailable)
+    }
+
+    fn fresh_object(&self) -> Result<ObjectName, CustodyError> {
         Err(CustodyError::RandomnessUnavailable)
     }
 }

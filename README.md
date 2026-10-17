@@ -10,7 +10,7 @@ Specifica, architettura e regole di sviluppo: [CLAUDE.md](CLAUDE.md).
 
 - **Link:** una chiave casuale di 256 bit, solo nel frammento `#` del link, che i browser non mandano mai ai server. Facoltativa una passphrase (Argon2id) da inviare per un altro canale.
 - **Richiesta, post-quantistica:** chi deve ricevere crea una coppia di chiavi ibrida X25519 + ML-KEM-768 sul proprio dispositivo; chi invia sigilla con quella chiave. Nessuna chiave di lettura viaggia mai.
-- **File fino a 10 MiB:** un manifest sigillato come qualsiasi segreto porta la chiave del file; il file viaggia in blocchi da 1 MiB autenticati con posizione e numero totale, e un file a lettura unica va solo a chi l'ha aperto, blocco per blocco.
+- **File fino a 10 MiB:** un manifest sigillato come qualsiasi segreto porta la chiave del file; il file viaggia in blocchi da 1 MiB autenticati con posizione e numero totale, e un file a lettura unica va solo a chi l'ha aperto, blocco per blocco. I blocchi stanno su Cloudflare R2 (UE) sotto nomi casuali, mai nel database.
 - **Relay cieco:** un Cloudflare Worker in Rust custodisce buste opache in PostgreSQL (Supabase, via Hyperdrive). Burn-after-reading atomico, scadenza da 5 minuti a 7 giorni, revoca da parte del mittente.
 
 ```text

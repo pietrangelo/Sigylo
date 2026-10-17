@@ -39,8 +39,10 @@ sed 's/simple = { limit = 30, period = 60 }/simple = { limit = 1000, period = 60
     "$root/worker/wrangler.toml" >"$root/worker/wrangler.e2e.toml"
 grep -q 'limit = 1000' "$root/worker/wrangler.e2e.toml"
 # Own process group, so cleanup stops npx, wrangler and workerd together.
+# R2 is simulated locally in "$tmp/state"; the suite runs the cron (purge and
+# garbage collection) through wrangler's local explorer API.
 (cd "$root/worker" && exec setsid npx --yes wrangler@4.151.1 dev -c wrangler.e2e.toml --var DB_TLS:disable \
-    --ip 127.0.0.1 --port 8787 >"$tmp/wrangler.log" 2>&1) &
+    --persist-to "$tmp/state" --ip 127.0.0.1 --port 8787 >"$tmp/wrangler.log" 2>&1) &
 wrangler_pid=$!
 ready=""
 for _ in $(seq 1 300); do
@@ -54,4 +56,8 @@ if [[ -z "$ready" ]]; then
     exit 1
 fi
 
-(cd "$root/web" && npx playwright test)
+if ! (cd "$root/web" && SIGYLO_E2E_DATABASE_URL="$admin" SIGYLO_E2E_STATE="$tmp/state" npx playwright test "$@"); then
+    echo "--- wrangler dev log (last 60 lines) ---" >&2
+    tail -60 "$tmp/wrangler.log" >&2
+    exit 1
+fi

@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process';
+import { readdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { expect, test, type Browser, type Page, type Request } from '@playwright/test';
 import { catalogs } from '../src/lib/i18n';
@@ -97,6 +99,43 @@ test('a file kept until expiry can be saved more than once', async ({ page, brow
     const saved = await openAndSave(await freshPage(browser), link);
     expect(saved.contents.equals(fileContents())).toBe(true);
   }
+});
+
+/** One value from the e2e database (scripts/e2e.sh passes its URL). */
+function sql(query: string): string {
+  return execFileSync('psql', [process.env.SIGYLO_E2E_DATABASE_URL!, '-tAXc', query], { encoding: 'utf8' }).trim();
+}
+
+/** How many objects the local R2 bucket holds (scripts/e2e.sh passes its state directory). */
+function r2Objects(): number {
+  try {
+    return readdirSync(`${process.env.SIGYLO_E2E_STATE}/v3/r2/sigylo-chunks/blobs`).length;
+  } catch {
+    return 0;
+  }
+}
+
+test('a file’s chunks live in R2, never in the database, and leave R2 once revoked', async ({ page, request }) => {
+  test.skip(!process.env.SIGYLO_E2E_DATABASE_URL, 'needs scripts/e2e.sh');
+  const before = r2Objects();
+  const { revoke } = await sealFile(page, { retention: 'expiry' });
+  expect(r2Objects()).toBe(before + 3);
+  // 2.5 MiB of chunks went by, but the database holds only names and sizes.
+  expect(Number(sql("select pg_total_relation_size('custody.chunks')"))).toBeLessThan(256 * 1024);
+  expect(Number(sql('select coalesce(max(size), 0) from custody.chunks'))).toBe(1024 * 1024 + 16);
+
+  const sender = await page.context().newPage();
+  await sender.goto(revoke);
+  await sender.getByTestId('revoke').click();
+  await expect(sender.getByTestId('revoked')).toBeVisible();
+  expect(Number(sql('select count(*) from custody.garbage'))).toBeGreaterThanOrEqual(3);
+  // The cron (every 15 minutes in production) deletes what the database let go of.
+  const cron = await request.post('/cdn-cgi/local/explorer/api/local/scheduled?worker=sigylo&cron=*/15+*+*+*+*', {
+    data: { cron: '*/15 * * * *' },
+  });
+  expect(cron.ok(), await cron.text()).toBe(true);
+  await expect.poll(r2Objects).toBe(before);
+  expect(sql('select count(*) from custody.garbage')).toBe('0');
 });
 
 test('request mode: a file sealed to the recipient’s post-quantum key', async ({ page, browser }) => {

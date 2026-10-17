@@ -1,7 +1,8 @@
 //! # Sigylo relay (Cloudflare Worker)
 //!
 //! A blind relay: it receives envelopes that were sealed in the browser and
-//! keeps them in PostgreSQL through Hyperdrive, via the Custody use cases.
+//! keeps them in PostgreSQL through Hyperdrive, and the chunks of files in
+//! Cloudflare R2, via the Custody use cases.
 //! It never sees a key or a plaintext and logs neither ids nor payloads.
 //! The static web client is served by Workers Static Assets on the same
 //! origin, so the browser never talks to a third party.
@@ -12,7 +13,7 @@ pub mod api;
 #[cfg(target_arch = "wasm32")]
 mod runtime {
     use custody::Custodian;
-    use custody_adapters::{PostgresVault, RandomIds, Sha256TokenDigest};
+    use custody_adapters::{PostgresVault, R2ChunkStore, RandomIds, Sha256TokenDigest};
     use tokio_postgres::{Client, NoTls};
     use worker::postgres_tls::PassthroughTls;
     use worker::{
@@ -48,6 +49,11 @@ mod runtime {
             let _ = connection.await;
         });
         Ok(client)
+    }
+
+    /// The R2 bucket that holds the sealed chunks of files.
+    fn chunk_store(env: &Env) -> Result<R2ChunkStore> {
+        Ok(R2ChunkStore::new(env.bucket("CHUNKS")?))
     }
 
     fn respond(status: u16, body: String) -> Result<Response> {
@@ -94,7 +100,8 @@ mod runtime {
 
     async fn execute(command: Command, env: &Env) -> std::result::Result<Reply, ApiError> {
         let client = connect(env).await.map_err(|_| custody::CustodyError::VaultUnavailable)?;
-        let custodian = Custodian::new(PostgresVault::new(&client), Sha256TokenDigest, RandomIds);
+        let store = chunk_store(env).map_err(|_| custody::CustodyError::VaultUnavailable)?;
+        let custodian = Custodian::new(PostgresVault::new(&client), store, Sha256TokenDigest, RandomIds);
         Ok(match command {
             Command::Deposit(cmd) => {
                 let revocation = cmd.revocation.as_ref();
@@ -163,9 +170,11 @@ mod runtime {
 
     #[event(scheduled)]
     async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
-        if let Ok(client) = connect(&env).await {
-            let custodian = Custodian::new(PostgresVault::new(&client), Sha256TokenDigest, RandomIds);
+        // Expired rows go first, so their chunks' objects join this round's garbage.
+        if let (Ok(client), Ok(store)) = (connect(&env).await, chunk_store(&env)) {
+            let custodian = Custodian::new(PostgresVault::new(&client), store, Sha256TokenDigest, RandomIds);
             let _ = custodian.purge_expired().await;
+            let _ = custodian.collect_garbage().await;
         }
     }
 }
