@@ -2,6 +2,8 @@
 
 Il sigillo digitale per i tuoi segreti. Scrivi una password, scegli se deve distruggersi alla prima lettura o a una scadenza, invia il link. Il segreto viene cifrato nel tuo browser; il server conserva solo dati illeggibili e li distrugge come hai deciso.
 
+Indirizzo di produzione: **https://sigylo.net**.
+
 Specifica, architettura e regole di sviluppo: [CLAUDE.md](CLAUDE.md).
 
 ## Come funziona
