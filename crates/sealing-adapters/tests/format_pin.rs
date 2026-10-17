@@ -3,7 +3,7 @@
 //! envelope version instead of updating the constants.
 
 use sealing::{
-    KdfCost, Passphrase, Plaintext, RecipientSeed, SealError, Sealer, SenderSeed,
+    KdfCost, Passphrase, Plaintext, RecipientSeed, SealError, Sealer, SenderCode, SenderSeed,
     application::{CryptoSuite, HybridKem, HybridSigner, Randomness},
 };
 use sealing_adapters::{Argon2idStretcher, Ed25519MlDsa65, HkdfSha3, X25519MlKem768, XChaCha20Poly1305Aead};
@@ -60,15 +60,16 @@ fn envelopes_from_fixed_randomness() {
     let seed = RecipientSeed::from_array([7; 32]);
     let public_key = X25519MlKem768.public_key(&seed);
     let fingerprint = X25519MlKem768.fingerprint(&public_key);
-    let recipient_envelope = sealer.seal_for_recipient(&plaintext, &public_key, &fingerprint, None, None).unwrap();
+    let recipient_envelope =
+        sealer.seal_for_recipient(&plaintext, &public_key, &fingerprint, None, None, None).unwrap();
     assert_eq!(digest(&recipient_envelope.to_bytes()), RECIPIENT_ENVELOPE_DIGEST);
-    assert_eq!(sealer.open_as_recipient(&recipient_envelope, &seed, None).unwrap().plaintext, plaintext);
+    assert_eq!(sealer.open_as_recipient(&recipient_envelope, &seed, None, None).unwrap().plaintext, plaintext);
 
     let sender = SenderSeed::from_array([9; 32]);
     let signed_envelope =
-        sealer.seal_for_recipient(&plaintext, &public_key, &fingerprint, None, Some(&sender)).unwrap();
+        sealer.seal_for_recipient(&plaintext, &public_key, &fingerprint, None, Some(&sender), None).unwrap();
     assert_eq!(digest(&signed_envelope.to_bytes()), SIGNED_ENVELOPE_DIGEST);
-    let received = sealer.open_as_recipient(&signed_envelope, &seed, None).unwrap();
+    let received = sealer.open_as_recipient(&signed_envelope, &seed, None, None).unwrap();
     assert_eq!((received.plaintext, received.sender), (plaintext, Some(sealer.sender_fingerprint(&sender))));
 }
 
@@ -83,6 +84,14 @@ fn sender_identity_from_a_fixed_seed() {
     assert_eq!(digest(Ed25519MlDsa65.sign(&seed, b"sigylo").as_bytes()), SIGNATURE_DIGEST);
 }
 
+#[test]
+fn expected_sender_pin_from_fixed_inputs() {
+    let sealer = Sealer::new(sealing_adapters::rustcrypto_suite());
+    let recipient = X25519MlKem768.fingerprint(&X25519MlKem768.public_key(&RecipientSeed::from_array([7; 32])));
+    let code = SenderCode::parse(SENDER_CODE).unwrap();
+    assert_eq!(hex(sealer.sender_pin(&recipient, &code).as_bytes()), SENDER_PIN);
+}
+
 const PK_DIGEST: &str = "bf9ea6f3f6ed310b603a5bca1a6ea2f7f0385ac8207587a958c62b63e03a6dfb";
 const FINGERPRINT: &str = "caec05825c6b454bcf0cba33e036ec6230f1275124ae5d774e9a4793edcd1662";
 const LINK_ENVELOPE_DIGEST: &str = "18de37cf90d4bfce1bbaff40efc03a873f56f551ff5153478be8b312cb8e24ba";
@@ -92,3 +101,4 @@ const SENDER_PK_DIGEST: &str = "81e06145dac00291e19007c474a116468b6298bd0631eef7
 const SENDER_FINGERPRINT: &str = "845bcc71dd61d3f90a50f4df5639124b41d1134f10276edf248032ef49e8f1aa";
 const SENDER_CODE: &str = "GHDW-RWEX-C79Z-J2JG-YKFN";
 const SIGNATURE_DIGEST: &str = "502f4257965cda0c58e0adbc77a3b5087163c824d13273c3c3167e43e61a6e71";
+const SENDER_PIN: &str = "1baee2e9dc98312939a3e4a338442875c65351519a7b69243df338e8f8754c84";

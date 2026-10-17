@@ -21,7 +21,7 @@ pub use secrets::{
     SymmetricKey,
 };
 pub use sender::{
-    ED25519_PUBLIC_LEN, ED25519_SIGNATURE_LEN, MLDSA65_PUBLIC_LEN, MLDSA65_SIGNATURE_LEN, SenderFingerprint,
-    SenderPublicKey, SenderSignature,
+    ED25519_PUBLIC_LEN, ED25519_SIGNATURE_LEN, MLDSA65_PUBLIC_LEN, MLDSA65_SIGNATURE_LEN, SenderCode,
+    SenderFingerprint, SenderPin, SenderPublicKey, SenderSignature,
 };
 pub use signed::{MAX_SIGNED_PLAINTEXT_LEN, SIGNATURE_BLOCK_LEN, SignedPlaintext, signed_message};

@@ -1,7 +1,7 @@
 //! The Sealing use cases running on the real RustCrypto suite.
 
 use sealing::{
-    Encapsulation, Envelope, KdfCost, LinkKey, Passphrase, Plaintext, RecipientSeed, SealError, Sealer,
+    Encapsulation, Envelope, KdfCost, LinkKey, Passphrase, Plaintext, RecipientSeed, SealError, Sealer, SenderCode,
     SenderPublicKey, SenderSeed, SenderSignature,
     application::{HybridKem, HybridSigner},
 };
@@ -38,11 +38,12 @@ fn recipient_mode_roundtrip_with_passphrase() {
             &recipient.fingerprint,
             Some(&pass("seconda chiave")),
             None,
+            None,
         )
         .unwrap();
     let wire = envelope.to_bytes();
     let opened = sealer()
-        .open_as_recipient(&Envelope::parse(&wire).unwrap(), &recipient.seed, Some(&pass("seconda chiave")))
+        .open_as_recipient(&Envelope::parse(&wire).unwrap(), &recipient.seed, Some(&pass("seconda chiave")), None)
         .unwrap();
     assert_eq!(opened.plaintext, secret());
     assert_eq!(opened.sender, None);
@@ -53,15 +54,32 @@ fn signed_answer_roundtrip_over_the_wire() {
     let recipient = sealer().new_recipient().unwrap();
     let alice = sealer().new_sender().unwrap();
     let envelope = sealer()
-        .seal_for_recipient(&secret(), &recipient.public_key, &recipient.fingerprint, None, Some(&alice.seed))
+        .seal_for_recipient(&secret(), &recipient.public_key, &recipient.fingerprint, None, Some(&alice.seed), None)
         .unwrap();
     let wire = envelope.to_bytes();
     // A short secret still lands in a single fixed bucket once signed.
     assert_eq!(wire.len(), 6 + Encapsulation::LEN + 24 + 8192 + 16);
-    let received = sealer().open_as_recipient(&Envelope::parse(&wire).unwrap(), &recipient.seed, None).unwrap();
+    let received = sealer().open_as_recipient(&Envelope::parse(&wire).unwrap(), &recipient.seed, None, None).unwrap();
     assert_eq!(received.plaintext, secret());
     assert_eq!(received.sender, Some(alice.fingerprint));
     assert_eq!(sealer().sender_fingerprint(&alice.seed), alice.fingerprint);
+}
+
+#[test]
+fn only_the_expected_sender_gets_through() {
+    let recipient = sealer().new_recipient().unwrap();
+    let alice = sealer().new_sender().unwrap();
+    let mallory = sealer().new_sender().unwrap();
+    let pin = sealer().sender_pin(&recipient.fingerprint, &SenderCode::parse(&alice.fingerprint.code()).unwrap());
+    let seal = |seed: &SenderSeed| {
+        sealer()
+            .seal_for_recipient(&secret(), &recipient.public_key, &recipient.fingerprint, None, Some(seed), None)
+            .unwrap()
+    };
+    let from_alice = sealer().open_as_recipient(&seal(&alice.seed), &recipient.seed, None, Some(&pin)).unwrap();
+    assert_eq!(from_alice.sender, Some(alice.fingerprint));
+    let from_mallory = sealer().open_as_recipient(&seal(&mallory.seed), &recipient.seed, None, Some(&pin));
+    assert_eq!(from_mallory, Err(SealError::UnexpectedSender));
 }
 
 #[test]
@@ -109,7 +127,7 @@ mod adversary {
     fn every_single_bit_flip_is_detected() {
         let recipient = sealer().new_recipient().unwrap();
         let envelope = sealer()
-            .seal_for_recipient(&secret(), &recipient.public_key, &recipient.fingerprint, Some(&pass("pw")), None)
+            .seal_for_recipient(&secret(), &recipient.public_key, &recipient.fingerprint, Some(&pass("pw")), None, None)
             .unwrap()
             .to_bytes();
         for byte in 0..envelope.len() {
@@ -117,7 +135,7 @@ mod adversary {
             let mut bad = envelope.clone();
             bad[byte] ^= 1 << (byte % 8);
             let outcome = Envelope::parse(&bad)
-                .and_then(|env| sealer().open_as_recipient(&env, &recipient.seed, Some(&pass("pw"))));
+                .and_then(|env| sealer().open_as_recipient(&env, &recipient.seed, Some(&pass("pw")), None));
             assert!(outcome.is_err(), "flip in byte {byte} went undetected");
         }
     }
@@ -137,7 +155,7 @@ mod adversary {
     fn substituted_public_key_is_refused() {
         let alice = sealer().new_recipient().unwrap();
         let mallory = sealer().new_recipient().unwrap();
-        let result = sealer().seal_for_recipient(&secret(), &mallory.public_key, &alice.fingerprint, None, None);
+        let result = sealer().seal_for_recipient(&secret(), &mallory.public_key, &alice.fingerprint, None, None, None);
         assert_eq!(result.unwrap_err(), SealError::FingerprintMismatch);
     }
 
@@ -146,10 +164,10 @@ mod adversary {
         let alice = sealer().new_recipient().unwrap();
         let mallory = sealer().new_recipient().unwrap();
         let envelope = sealer()
-            .seal_for_recipient(&secret(), &alice.public_key, &alice.fingerprint, Some(&pass("pw")), None)
+            .seal_for_recipient(&secret(), &alice.public_key, &alice.fingerprint, Some(&pass("pw")), None, None)
             .unwrap();
-        let wrong_seed = sealer().open_as_recipient(&envelope, &mallory.seed, Some(&pass("pw")));
-        let wrong_pass = sealer().open_as_recipient(&envelope, &alice.seed, Some(&pass("pW")));
+        let wrong_seed = sealer().open_as_recipient(&envelope, &mallory.seed, Some(&pass("pw")), None);
+        let wrong_pass = sealer().open_as_recipient(&envelope, &alice.seed, Some(&pass("pW")), None);
         assert_eq!(wrong_seed, Err(SealError::NotAuthentic));
         assert_eq!(wrong_pass, wrong_seed);
     }
@@ -161,7 +179,7 @@ mod adversary {
         bytes[..32].fill(0);
         let poisoned = sealing::RecipientPublicKey::from_slice(&bytes).unwrap();
         let fingerprint = X25519MlKem768.fingerprint(&poisoned);
-        let result = sealer().seal_for_recipient(&secret(), &poisoned, &fingerprint, None, None);
+        let result = sealer().seal_for_recipient(&secret(), &poisoned, &fingerprint, None, None, None);
         assert_eq!(result.unwrap_err(), SealError::InvalidKeyMaterial);
     }
 
@@ -192,13 +210,14 @@ mod adversary {
         let recipient = sealer().new_recipient().unwrap();
         let alice = sealer().new_sender().unwrap();
         let envelope = sealer()
-            .seal_for_recipient(&secret(), &recipient.public_key, &recipient.fingerprint, None, Some(&alice.seed))
+            .seal_for_recipient(&secret(), &recipient.public_key, &recipient.fingerprint, None, Some(&alice.seed), None)
             .unwrap()
             .to_bytes();
         for byte in (0..envelope.len()).step_by(11) {
             let mut bad = envelope.clone();
             bad[byte] ^= 1 << (byte % 8);
-            let outcome = Envelope::parse(&bad).and_then(|env| sealer().open_as_recipient(&env, &recipient.seed, None));
+            let outcome =
+                Envelope::parse(&bad).and_then(|env| sealer().open_as_recipient(&env, &recipient.seed, None, None));
             assert!(outcome.is_err(), "flip in byte {byte} went undetected");
         }
     }

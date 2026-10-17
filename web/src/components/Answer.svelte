@@ -6,7 +6,11 @@
   import { Relay, type Retention } from '../lib/relay';
   import SealOptions from './SealOptions.svelte';
 
-  let { id, fingerprint }: { id: Uint8Array; fingerprint: Uint8Array } = $props();
+  let {
+    id,
+    fingerprint,
+    expectedSender,
+  }: { id: Uint8Array; fingerprint: Uint8Array; expectedSender: Uint8Array | null } = $props();
 
   const relay = new Relay();
   let secret = $state('');
@@ -19,9 +23,14 @@
   // Every answer is signed with this browser's sender identity.
   const senderSeed = loadOrCreateSeed(browserStore(), () => randomBytes(SEED_LEN));
   let senderCode = $state('');
+  // False when the request names another expected sender: answering would only fail.
+  let expected = $state(true);
 
   $effect(() => {
-    loadEngine().then(() => (senderCode = engine.senderCode(senderSeed.slice())));
+    loadEngine().then(() => {
+      senderCode = engine.senderCode(senderSeed.slice());
+      expected = expectedSender === null || engine.isExpectedSender(fingerprint, expectedSender, senderSeed.slice());
+    });
   });
 
   async function send(event: SubmitEvent) {
@@ -36,7 +45,7 @@
         return;
       }
       // Throws FingerprintMismatch if the relay served a substituted key.
-      const envelope = engine.sealForRecipient(textBytes(secret), request.value.publicKey, fingerprint, passphraseBytes(passphrase), senderSeed.slice());
+      const envelope = engine.sealForRecipient(textBytes(secret), request.value.publicKey, fingerprint, passphraseBytes(passphrase), senderSeed.slice(), expectedSender ?? undefined);
       const result = await relay.answer(id, envelope, retention, lifetime);
       if (!result.ok) {
         error = result.error === 'NotFound' ? t.requestGone : relayMessage(result.error);
@@ -64,6 +73,8 @@
   {/if}
   {#if done}
     <p class="success" data-testid="answered">{t.answered}</p>
+  {:else if !expected}
+    <p class="error" role="alert" data-testid="not-expected">{t.notExpectedSender}</p>
   {:else}
     <p class="muted">{t.answerIntro}</p>
     <form class="stack" onsubmit={send}>
