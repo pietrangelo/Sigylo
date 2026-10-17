@@ -229,7 +229,9 @@ mod runtime {
         if rate_limited(&env, &req).await {
             return respond(429, r#"{"error":"RateLimited"}"#.into());
         }
-        let body = if req.method() == Method::Post {
+        // A body is read only where the route takes one, and only once its
+        // declared length fits.
+        let body = if route.takes_body() {
             if let Err(error) = api::check_declared_length(&route, req.headers().get("Content-Length")?.as_deref()) {
                 return fail(error);
             }
