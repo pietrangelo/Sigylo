@@ -38,6 +38,20 @@ describe('platform', () => {
       expect(await response.json()).toEqual({ error: 'NotFound' });
     });
 
+    it('hands a file chunk to the shell in base64url', async () => {
+      const calls: Call[] = [];
+      const chunk = new Uint8Array([0, 1, 2, 250, 251, 255]);
+      const response = await ipcFetch(recording({ status: 201, body: '{}' }, calls))('/api/secrets/abc/chunks/3', { method: 'POST', body: chunk });
+      expect(calls).toEqual([{ cmd: 'relay', args: { method: 'POST', path: '/secrets/abc/chunks/3', body: 'AAEC-vv_' } }]);
+      expect(response.status).toBe(201);
+    });
+
+    it('gives a chunk from the shell back as bytes', async () => {
+      const response = await ipcFetch(recording({ status: 200, body: 'AAEC-vv_', binary: true }))('/api/secrets/abc/chunks/0/open', { method: 'POST', body: '{}' });
+      expect(response.headers.get('Content-Type')).toBe('application/octet-stream');
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([0, 1, 2, 250, 251, 255]));
+    });
+
     it('a shell that cannot reach the relay is a network failure', async () => {
       const failing: Invoke = async () => {
         throw new Error('Network');
@@ -58,6 +72,17 @@ describe('platform', () => {
       it('a malformed shell reply is not mistaken for an answer', async () => {
         for (const reply of [null, {}, { status: '200', body: '{}' }, { status: 200 }, { status: 99, body: '' }, { status: 600, body: '' }]) {
           await expect(ipcFetch(recording(reply))('/api/secrets', { method: 'POST', body: '{}' })).rejects.toThrow();
+        }
+      });
+
+      it('a chunk reply that is not canonical base64url is not mistaken for a chunk', async () => {
+        for (const reply of [
+          { status: 200, body: 'AAEC+vv/', binary: true },
+          { status: 200, body: 'AQJ', binary: true },
+          { status: 200, body: 'AQI=', binary: true },
+          { status: 200, body: 'AQI', binary: 'yes' },
+        ]) {
+          await expect(ipcFetch(recording(reply))('/api/secrets/abc/chunks/0/open', { method: 'POST', body: '{}' })).rejects.toThrow();
         }
       });
 

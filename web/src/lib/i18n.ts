@@ -85,6 +85,18 @@ const it = {
   legalUpdated: 'Ultimo aggiornamento:',
   back: 'Torna a Sigylo',
   home: 'Sigylo',
+  kindText: 'Testo',
+  kindFile: 'File',
+  fileLabel: 'Il file',
+  fileHint: 'Fino a 10 MB. Anche il nome del file viaggia sigillato.',
+  uploading: 'Sto caricando il file sigillato…',
+  downloading: 'Sto scaricando e aprendo il file…',
+  saveFile: 'Salva il file',
+  burnedFile: 'Questo file è stato distrutto sul server. Salvalo prima di chiudere la pagina.',
+  errFileTooLarge: 'Il file è troppo grande (massimo 10 MB).',
+  errFileName: 'Il nome del file contiene caratteri non ammessi: rinominalo e riprova.',
+  errFileIncomplete: 'Il file non è arrivato per intero. Se si distruggeva alla lettura, è andato perso.',
+  errStorageFull: 'Lo spazio per i file è esaurito, per ora. Riprova più tardi.',
 } as const;
 
 export type MessageKey = keyof typeof it;
@@ -174,6 +186,18 @@ const en: Messages = {
   legalUpdated: 'Last updated:',
   back: 'Back to Sigylo',
   home: 'Sigylo',
+  kindText: 'Text',
+  kindFile: 'File',
+  fileLabel: 'The file',
+  fileHint: 'Up to 10 MB. The file name travels sealed too.',
+  uploading: 'Uploading the sealed file…',
+  downloading: 'Downloading and opening the file…',
+  saveFile: 'Save the file',
+  burnedFile: 'This file has been destroyed on the server. Save it before closing the page.',
+  errFileTooLarge: 'The file is too large (10 MB at most).',
+  errFileName: 'The file name contains characters that are not allowed: rename it and try again.',
+  errFileIncomplete: 'The file did not arrive in full. If it was set to burn after reading, it is lost.',
+  errStorageFull: 'There is no room for files right now. Try again later.',
 };
 
 const fr: Messages = {
@@ -260,6 +284,18 @@ const fr: Messages = {
   legalUpdated: 'Dernière mise à jour :',
   back: 'Retour à Sigylo',
   home: 'Sigylo',
+  kindText: 'Texte',
+  kindFile: 'Fichier',
+  fileLabel: 'Le fichier',
+  fileHint: 'Jusqu’à 10 Mo. Le nom du fichier voyage scellé lui aussi.',
+  uploading: 'Envoi du fichier scellé…',
+  downloading: 'Téléchargement et ouverture du fichier…',
+  saveFile: 'Enregistrer le fichier',
+  burnedFile: 'Ce fichier a été détruit sur le serveur. Enregistrez-le avant de fermer la page.',
+  errFileTooLarge: 'Le fichier est trop volumineux (10 Mo maximum).',
+  errFileName: 'Le nom du fichier contient des caractères non autorisés : renommez-le et réessayez.',
+  errFileIncomplete: 'Le fichier n’est pas arrivé en entier. S’il devait être détruit à la lecture, il est perdu.',
+  errStorageFull: 'Il n’y a plus de place pour les fichiers pour le moment. Réessayez plus tard.',
 };
 
 const es: Messages = {
@@ -346,6 +382,18 @@ const es: Messages = {
   legalUpdated: 'Última actualización:',
   back: 'Volver a Sigylo',
   home: 'Sigylo',
+  kindText: 'Texto',
+  kindFile: 'Archivo',
+  fileLabel: 'El archivo',
+  fileHint: 'Hasta 10 MB. El nombre del archivo también viaja sellado.',
+  uploading: 'Subiendo el archivo sellado…',
+  downloading: 'Descargando y abriendo el archivo…',
+  saveFile: 'Guardar el archivo',
+  burnedFile: 'Este archivo se ha destruido en el servidor. Guárdalo antes de cerrar la página.',
+  errFileTooLarge: 'El archivo es demasiado grande (máximo 10 MB).',
+  errFileName: 'El nombre del archivo contiene caracteres no permitidos: cámbialo e inténtalo de nuevo.',
+  errFileIncomplete: 'El archivo no llegó completo. Si se destruía al leerlo, se ha perdido.',
+  errStorageFull: 'Ahora mismo no queda espacio para archivos. Inténtalo más tarde.',
 };
 
 const de: Messages = {
@@ -432,6 +480,18 @@ const de: Messages = {
   legalUpdated: 'Zuletzt aktualisiert:',
   back: 'Zurück zu Sigylo',
   home: 'Sigylo',
+  kindText: 'Text',
+  kindFile: 'Datei',
+  fileLabel: 'Die Datei',
+  fileHint: 'Bis zu 10 MB. Auch der Dateiname reist versiegelt.',
+  uploading: 'Die versiegelte Datei wird hochgeladen…',
+  downloading: 'Die Datei wird heruntergeladen und geöffnet…',
+  saveFile: 'Datei speichern',
+  burnedFile: 'Diese Datei wurde auf dem Server vernichtet. Speichere sie, bevor du die Seite schließt.',
+  errFileTooLarge: 'Die Datei ist zu groß (maximal 10 MB).',
+  errFileName: 'Der Dateiname enthält unzulässige Zeichen: benenne sie um und versuche es erneut.',
+  errFileIncomplete: 'Die Datei ist nicht vollständig angekommen. Sollte sie nach dem Lesen vernichtet werden, ist sie verloren.',
+  errStorageFull: 'Im Moment ist kein Platz für Dateien frei. Versuche es später erneut.',
 };
 
 export const languages = ['it', 'en', 'fr', 'es', 'de'] as const;

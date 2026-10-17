@@ -63,6 +63,13 @@ secret_array!(
 );
 
 secret_array!(
+    /// The random key of one file: it seals the file's chunks and travels
+    /// only inside the file's sealed manifest.
+    FileKey,
+    KEY_LEN
+);
+
+secret_array!(
     /// A sender's whole signing key: one 32-byte seed from which the Ed25519
     /// and ML-DSA-65 secrets are expanded. It never leaves the sender's device.
     SenderSeed,
@@ -165,8 +172,9 @@ mod tests {
         #[test]
         fn debug_output_never_contains_secret_bytes() {
             let rendered = format!(
-                "{:?} {:?} {:?} {:?} {:?} {:?}",
+                "{:?} {:?} {:?} {:?} {:?} {:?} {:?}",
                 SymmetricKey::from_array([0x41; 32]),
+                FileKey::from_array([0x41; 32]),
                 LinkKey::from_array([0x41; 32]),
                 RecipientSeed::from_array([0x41; 32]),
                 SenderSeed::from_array([0x41; 32]),
@@ -175,7 +183,7 @@ mod tests {
             );
             assert!(!rendered.contains("65") && !rendered.contains("hunter2"));
             assert!(!rendered.contains("top secret") && !rendered.contains("AAAA"));
-            assert_eq!(rendered.matches("redacted").count(), 6);
+            assert_eq!(rendered.matches("redacted").count(), 7);
         }
     }
 }
