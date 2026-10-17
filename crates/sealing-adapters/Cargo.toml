@@ -1,0 +1,28 @@
+[package]
+name = "sealing-adapters"
+description = "RustCrypto implementations of the Sealing ports: X25519 + ML-KEM-768, XChaCha20-Poly1305, Argon2id, HKDF-SHA3-256"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sealing.workspace = true
+zeroize.workspace = true
+ml-kem = { version = "0.3.2", features = ["hazmat"] }
+x25519-dalek = { version = "3.0.0", features = ["static_secrets", "zeroize"] }
+chacha20poly1305 = "0.11.0"
+hkdf = "0.13.0"
+sha3 = "0.11.0"
+argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "zeroize"] }
+getrandom = "0.4.3"
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.4.3", features = ["wasm_js"] }
+
+[lints]
+workspace = true
+
+[package.metadata.rosette]
+role = "adapters"

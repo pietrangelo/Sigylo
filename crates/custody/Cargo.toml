@@ -1,0 +1,17 @@
+[package]
+name = "custody"
+description = "Custody bounded context (pure domain): blind safekeeping of sealed envelopes, burn-after-reading, expiry, revocation and recipient requests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+zeroize.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.rosette]
+role = "domain"

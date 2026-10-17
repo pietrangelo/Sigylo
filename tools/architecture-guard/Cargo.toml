@@ -1,0 +1,20 @@
+[package]
+name = "architecture-guard"
+description = "Static check of Sigylo's rosette architecture: pure domain rings, adapters outside, shells only wire"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.rosette]
+role = "tool"
+
+[dependencies]
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = "1"
+toml = "0.8"
+
+[lints]
+workspace = true
