@@ -11,6 +11,7 @@ use custody::{
     UnixTime,
 };
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 
 /// Largest request body accepted (a maximal payload in base64 plus JSON).
 pub const MAX_BODY_LEN: usize = 100 * 1024;
@@ -30,6 +31,8 @@ pub enum Route {
 pub enum ApiError {
     NotFound,
     MethodNotAllowed,
+    /// A browser page of another origin tried to call the relay.
+    CrossOrigin,
     BodyTooLarge,
     InvalidJson,
     InvalidEncoding,
@@ -47,6 +50,7 @@ impl ApiError {
         match self {
             Self::NotFound | Self::Custody(CustodyError::NotFound) => 404,
             Self::MethodNotAllowed => 405,
+            Self::CrossOrigin => 403,
             Self::BodyTooLarge | Self::Custody(CustodyError::PayloadTooLarge) => 413,
             Self::Custody(CustodyError::AlreadyExists) => 409,
             Self::Custody(CustodyError::VaultUnavailable | CustodyError::RandomnessUnavailable) => 503,
@@ -72,6 +76,35 @@ pub fn check_declared_length(content_length: Option<&str>) -> Result<(), ApiErro
     match content_length.map(|v| v.trim().parse::<u64>()) {
         Some(Ok(n)) if n > MAX_BODY_LEN as u64 => Err(ApiError::BodyTooLarge),
         _ => Ok(()),
+    }
+}
+
+/// Refuse calls from pages of other origins. Browsers attach `Origin` to every
+/// cross-origin request (and to same-origin POSTs), so a page elsewhere cannot
+/// use its visitors' browsers as a botnet against the relay. Clients that send
+/// no `Origin`, such as the app's shell, are not browsers acting for a page.
+pub fn check_origin(origin: Option<&str>, own_origin: &str) -> Result<(), ApiError> {
+    match origin {
+        Some(origin) if origin != own_origin => Err(ApiError::CrossOrigin),
+        _ => Ok(()),
+    }
+}
+
+/// The key a client address is throttled under: an IPv4 address as is, an
+/// IPv6 address by its /64, the network one subscriber usually gets, so
+/// rotating addresses inside it does not buy a fresh allowance. Anything
+/// unparsable shares a single bucket.
+pub fn limiter_key(address: &str) -> String {
+    match address.trim().parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => v4.to_string(),
+        Ok(IpAddr::V6(v6)) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.to_string(),
+            None => {
+                let s = v6.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+            }
+        },
+        Err(_) => "unknown".into(),
     }
 }
 
@@ -430,6 +463,35 @@ mod tests {
             // Missing or odd headers fall through to the check on the bytes actually read.
             assert_eq!(check_declared_length(None), Ok(()));
             assert_eq!(check_declared_length(Some("lots")), Ok(()));
+        }
+
+        #[test]
+        fn pages_of_other_sites_cannot_call_the_relay() {
+            // A page elsewhere could otherwise make its visitors' browsers deposit
+            // junk from thousands of addresses, past the per-address limit.
+            let own = "https://sigylo.net";
+            for origin in ["https://evil.example", "null", "http://sigylo.net", "https://sigylo.net.evil.example"] {
+                assert_eq!(check_origin(Some(origin), own), Err(ApiError::CrossOrigin), "{origin}");
+            }
+            assert_eq!(ApiError::CrossOrigin.status(), 403);
+            // Our own pages, and clients that send no Origin (the app's shell), pass.
+            assert_eq!(check_origin(Some(own), own), Ok(()));
+            assert_eq!(check_origin(None, own), Ok(()));
+        }
+
+        #[test]
+        fn one_ipv6_network_is_one_client_for_the_limiter() {
+            // A /64 is what one subscriber gets: rotating addresses inside it
+            // must not buy a fresh allowance each time.
+            let a = limiter_key("2001:db8:1:2:aaaa::1");
+            assert_eq!(a, limiter_key("2001:db8:1:2:ffff:ffff:ffff:ffff"));
+            assert_ne!(a, limiter_key("2001:db8:1:3::1"));
+            assert_eq!(limiter_key("203.0.113.7"), "203.0.113.7");
+            assert_ne!(limiter_key("203.0.113.7"), limiter_key("203.0.113.8"));
+            // An IPv4-mapped address is the IPv4 client it maps.
+            assert_eq!(limiter_key("::ffff:203.0.113.7"), "203.0.113.7");
+            // Missing or garbled headers share one bucket rather than escape it.
+            assert_eq!(limiter_key(""), limiter_key("not an address"));
         }
 
         #[test]
