@@ -44,7 +44,43 @@ describe('relay client', () => {
     expect(await fakeRelay(429, { error: 'RateLimited' }).open(id)).toEqual({ ok: false, error: 'RateLimited' });
   });
 
+  it('sends account messages as base64url and reads the session back', async () => {
+    const calls: Call[] = [];
+    const token = new Uint8Array(32).fill(4);
+    const login = await fakeRelay(200, { session: encode(token), expires_at: 99 }, calls).loginFinish(new Uint8Array(16), Uint8Array.of(1, 2));
+    expect(login).toEqual({ ok: true, value: { token, expiresAt: 99 } });
+    expect(calls[0]!.url).toBe('/api/account/login/finish');
+    expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ handle: encode(new Uint8Array(16)), finalization: 'AQI' });
+  });
+
+  it('presents the session as a bearer token, and reads an empty keyring', async () => {
+    const calls: Call[] = [];
+    const token = new Uint8Array(32).fill(4);
+    const read = await fakeRelay(200, { keyring: null, version: 0 }, calls).readKeyring(token);
+    expect(read).toEqual({ ok: true, value: { keyring: null, version: 0 } });
+    expect(calls[0]!.init).toMatchObject({ method: 'GET', headers: { Authorization: `Bearer ${encode(token)}` } });
+    expect(calls[0]!.init.body).toBeUndefined();
+    const stored = await fakeRelay(200, { version: 3 }, calls).storeKeyring(token, Uint8Array.of(7), 2);
+    expect(stored).toEqual({ ok: true, value: 3 });
+    expect(JSON.parse(calls[1]!.init.body as string)).toEqual({ keyring: 'Bw', version: 2 });
+  });
+
+  it('maps account error codes', async () => {
+    const token = new Uint8Array(32);
+    expect(await fakeRelay(409, { error: 'Conflict' }).storeKeyring(token, Uint8Array.of(1), 0)).toEqual({ ok: false, error: 'Conflict' });
+    expect(await fakeRelay(401, { error: 'Unauthorized' }).readKeyring(token)).toEqual({ ok: false, error: 'Unauthorized' });
+    expect(await fakeRelay(429, { error: 'Throttled' }).loginStart('ada', new Uint8Array(96))).toEqual({ ok: false, error: 'Throttled' });
+  });
+
   describe('adversary', () => {
+    it('refuses a session token or keyring of the wrong shape', async () => {
+      const short = encode(new Uint8Array(16));
+      expect(await fakeRelay(200, { session: short, expires_at: 1 }).loginFinish(new Uint8Array(16), new Uint8Array(64))).toEqual({ ok: false, error: 'Unexpected' });
+      for (const body of [{ keyring: 'not base64!', version: 1 }, { keyring: null, version: -1 }, { keyring: null, version: 1.5 }, { keyring: null }]) {
+        expect(await fakeRelay(200, body).readKeyring(new Uint8Array(32))).toEqual({ ok: false, error: 'Unexpected' });
+      }
+    });
+
     it('opens with POST, without credentials or referrer, never cached', async () => {
       const calls: Call[] = [];
       await fakeRelay(200, { payload: 'AQI', burned: true }, calls).open(id);

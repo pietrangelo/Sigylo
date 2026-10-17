@@ -31,6 +31,7 @@ psql "$admin" -q -X -c "alter role sigylo_relay login password 'relay-test-only'
 (cd "$root/web" && npm ci --no-fund --no-audit && npm run build)
 # Own process group, so cleanup stops npx, wrangler and workerd together.
 (cd "$root/worker" && exec setsid npx --yes wrangler@4.151.1 dev --var DB_TLS:disable \
+    --var OPAQUE_SERVER_SEED:e2e-only-not-a-secret-AAAAAAAAAAAAAAAAAAAAA \
     --ip 127.0.0.1 --port 8787 >"$tmp/wrangler.log" 2>&1) &
 wrangler_pid=$!
 ready=""
@@ -45,4 +46,4 @@ if [[ -z "$ready" ]]; then
     exit 1
 fi
 
-(cd "$root/web" && npx playwright test)
+(cd "$root/web" && npx playwright test "$@")

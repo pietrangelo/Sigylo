@@ -1,5 +1,6 @@
 // Turns engine and relay error codes into sentences for people.
 
+import type { AccountError } from './account';
 import type { SealErrorCode } from './crypto';
 import { t } from './i18n';
 import type { RelayError } from './relay';
@@ -33,6 +34,31 @@ export function relayMessage(error: RelayError): string {
       return t.errTooLarge;
     default:
       return t.errGeneric;
+  }
+}
+
+export function accountMessage(error: AccountError): string {
+  switch (error) {
+    case 'NotAuthentic':
+      return t.errBadLogin;
+    case 'AlreadyRegistered':
+      return t.errTaken;
+    case 'InvalidUsername':
+      return t.errUsername;
+    case 'InvalidPassword':
+      return t.errPassword;
+    case 'Unauthorized':
+      return t.errSessionEnded;
+    case 'Throttled':
+      return t.errThrottled;
+    case 'NotConfigured':
+      return t.errAccountsOff;
+    case 'KeyringUnreadable':
+      return t.errKeyring;
+    case 'StoreUnavailable':
+      return t.errNetwork;
+    default:
+      return relayMessage(error);
   }
 }
 

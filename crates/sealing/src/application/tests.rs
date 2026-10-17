@@ -45,6 +45,18 @@ fn link_mode_roundtrip() {
 }
 
 #[test]
+fn a_held_key_seals_a_link_envelope_that_only_it_opens() {
+    let world = World::new();
+    let key = LinkKey::from_array([9; 32]);
+    let first = world.sealer().seal_with_link_key(&secret(), &key).unwrap();
+    let second = world.sealer().seal_with_link_key(&secret(), &key).unwrap();
+    assert_ne!(first.header().nonce, second.header().nonce);
+    assert_eq!(world.sealer().open_link(&first, &key, None).unwrap(), secret());
+    let other = LinkKey::from_array([8; 32]);
+    assert_eq!(world.sealer().open_link(&second, &other, None).unwrap_err(), SealError::NotAuthentic);
+}
+
+#[test]
 fn passphrase_is_stretched_with_the_cost_written_in_the_envelope() {
     let world = World::new();
     let cost = KdfCost::new(32 * 1024, 4, 2).unwrap();
