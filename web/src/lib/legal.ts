@@ -108,14 +108,14 @@ const it: LegalTexts = {
       {
         heading: `Cosa conserviamo`,
         body: [
-          `Per ogni segreto: la busta cifrata, la scadenza, la regola di distruzione e l'impronta SHA-256 del codice di revoca. Per ogni richiesta: la chiave pubblica di chi la crea e, se arriva, la risposta cifrata.`,
+          `Per ogni segreto: la busta cifrata, la scadenza, la regola di distruzione e l'impronta SHA-256 del codice di revoca. Per ogni richiesta: la chiave pubblica di chi la crea e, se arriva, la risposta cifrata. Per un file, in più: i suoi pezzi cifrati, quanti sono e, dopo l'apertura, l'impronta SHA-256 del codice che li consegna solo a chi l'ha aperto.`,
           `Niente altro: né orario di creazione, né indirizzo IP, né identità. Anche se un segreto contiene dati personali, per noi resta illeggibile.`,
         ],
       },
       {
         heading: `Per quanto tempo`,
         body: [
-          `I dati vengono cancellati alla prima lettura, alla revoca o alla scadenza, al massimo dopo 7 giorni. Ciò che scade viene eliminato fisicamente entro circa 15 minuti. Le eventuali copie di ripristino dei fornitori contengono gli stessi dati cifrati e si rinnovano secondo i loro cicli.`,
+          `I dati vengono cancellati alla prima lettura, alla revoca o alla scadenza, al massimo dopo 7 giorni. Un file a lettura unica viene cancellato pezzo per pezzo mentre lo scarichi; se il download si interrompe, ciò che resta scade entro un'ora. Ciò che scade viene eliminato fisicamente entro circa 15 minuti. Le eventuali copie di ripristino dei fornitori contengono gli stessi dati cifrati e si rinnovano secondo i loro cicli.`,
         ],
       },
       {
@@ -225,14 +225,14 @@ const en: LegalTexts = {
       {
         heading: `What we keep`,
         body: [
-          `For each secret: the encrypted envelope, its expiry, its destruction rule and the SHA-256 digest of the revocation code. For each request: the public key of whoever creates it and, once it arrives, the encrypted answer.`,
+          `For each secret: the encrypted envelope, its expiry, its destruction rule and the SHA-256 digest of the revocation code. For each request: the public key of whoever creates it and, once it arrives, the encrypted answer. For a file, in addition: its encrypted pieces, how many there are and, once opened, the SHA-256 digest of the code that releases them only to whoever opened it.`,
           `Nothing else: no creation time, no IP address, no identity. Even if a secret contains personal data, it stays unreadable to us.`,
         ],
       },
       {
         heading: `For how long`,
         body: [
-          `Data is deleted at the first read, on revocation or at expiry, after 7 days at most. Whatever expires is physically removed within about 15 minutes. Any recovery copies held by our providers contain the same encrypted data and roll over on their own cycles.`,
+          `Data is deleted at the first read, on revocation or at expiry, after 7 days at most. A burn-after-reading file is deleted piece by piece as it downloads; if the download stops, what is left expires within an hour. Whatever expires is physically removed within about 15 minutes. Any recovery copies held by our providers contain the same encrypted data and roll over on their own cycles.`,
         ],
       },
       {
@@ -342,14 +342,14 @@ const fr: LegalTexts = {
       {
         heading: `Ce que nous conservons`,
         body: [
-          `Pour chaque secret : l'enveloppe chiffrée, son expiration, sa règle de destruction et l'empreinte SHA-256 du code de révocation. Pour chaque demande : la clé publique de son auteur et, si elle arrive, la réponse chiffrée.`,
+          `Pour chaque secret : l'enveloppe chiffrée, son expiration, sa règle de destruction et l'empreinte SHA-256 du code de révocation. Pour chaque demande : la clé publique de son auteur et, si elle arrive, la réponse chiffrée. Pour un fichier, en plus : ses morceaux chiffrés, leur nombre et, après l'ouverture, l'empreinte SHA-256 du code qui ne les remet qu'à la personne qui l'a ouvert.`,
           `Rien d'autre : ni heure de création, ni adresse IP, ni identité. Même si un secret contient des données personnelles, il reste illisible pour nous.`,
         ],
       },
       {
         heading: `Pendant combien de temps`,
         body: [
-          `Les données sont supprimées à la première lecture, à la révocation ou à l'expiration, au plus tard après 7 jours. Ce qui expire est effacé physiquement en 15 minutes environ. Les éventuelles copies de restauration de nos prestataires contiennent les mêmes données chiffrées et se renouvellent selon leurs propres cycles.`,
+          `Les données sont supprimées à la première lecture, à la révocation ou à l'expiration, au plus tard après 7 jours. Un fichier à lecture unique est supprimé morceau par morceau pendant son téléchargement ; si celui-ci s'interrompt, le reste expire dans l'heure. Ce qui expire est effacé physiquement en 15 minutes environ. Les éventuelles copies de restauration de nos prestataires contiennent les mêmes données chiffrées et se renouvellent selon leurs propres cycles.`,
         ],
       },
       {
@@ -459,14 +459,14 @@ const es: LegalTexts = {
       {
         heading: `Qué guardamos`,
         body: [
-          `Para cada secreto: el sobre cifrado, su vencimiento, su regla de destrucción y la huella SHA-256 del código de revocación. Para cada solicitud: la clave pública de quien la crea y, si llega, la respuesta cifrada.`,
+          `Para cada secreto: el sobre cifrado, su vencimiento, su regla de destrucción y la huella SHA-256 del código de revocación. Para cada solicitud: la clave pública de quien la crea y, si llega, la respuesta cifrada. Para un archivo, además: sus fragmentos cifrados, cuántos son y, tras abrirlo, la huella SHA-256 del código que solo se los entrega a quien lo abrió.`,
           `Nada más: ni hora de creación, ni dirección IP, ni identidad. Aunque un secreto contenga datos personales, para nosotros sigue siendo ilegible.`,
         ],
       },
       {
         heading: `Durante cuánto tiempo`,
         body: [
-          `Los datos se borran en la primera lectura, con la revocación o al vencer, como máximo a los 7 días. Lo que vence se elimina físicamente en unos 15 minutos. Las posibles copias de restauración de nuestros proveedores contienen los mismos datos cifrados y se renuevan según sus propios ciclos.`,
+          `Los datos se borran en la primera lectura, con la revocación o al vencer, como máximo a los 7 días. Un archivo de lectura única se borra fragmento a fragmento mientras se descarga; si la descarga se interrumpe, lo que queda vence en una hora. Lo que vence se elimina físicamente en unos 15 minutos. Las posibles copias de restauración de nuestros proveedores contienen los mismos datos cifrados y se renuevan según sus propios ciclos.`,
         ],
       },
       {
@@ -576,14 +576,14 @@ const de: LegalTexts = {
       {
         heading: `Was wir speichern`,
         body: [
-          `Für jedes Geheimnis: den verschlüsselten Umschlag, den Ablauf, die Vernichtungsregel und den SHA-256-Fingerabdruck des Widerrufscodes. Für jede Anfrage: den öffentlichen Schlüssel der Person, die sie erstellt, und, falls sie eintrifft, die verschlüsselte Antwort.`,
+          `Für jedes Geheimnis: den verschlüsselten Umschlag, den Ablauf, die Vernichtungsregel und den SHA-256-Fingerabdruck des Widerrufscodes. Für jede Anfrage: den öffentlichen Schlüssel der Person, die sie erstellt, und, falls sie eintrifft, die verschlüsselte Antwort. Bei einer Datei zusätzlich: ihre verschlüsselten Teile, deren Anzahl und, nach dem Öffnen, den SHA-256-Fingerabdruck des Codes, der sie nur an die Person ausgibt, die sie geöffnet hat.`,
           `Sonst nichts: keine Erstellungszeit, keine IP-Adresse, keine Identität. Selbst wenn ein Geheimnis personenbezogene Daten enthält, bleibt es für uns unlesbar.`,
         ],
       },
       {
         heading: `Wie lange`,
         body: [
-          `Die Daten werden beim ersten Lesen, beim Widerruf oder zum Ablauf gelöscht, spätestens nach 7 Tagen. Was abläuft, wird binnen etwa 15 Minuten physisch entfernt. Etwaige Wiederherstellungskopien unserer Anbieter enthalten dieselben verschlüsselten Daten und erneuern sich nach deren eigenen Zyklen.`,
+          `Die Daten werden beim ersten Lesen, beim Widerruf oder zum Ablauf gelöscht, spätestens nach 7 Tagen. Eine Datei zum einmaligen Lesen wird beim Herunterladen Teil für Teil gelöscht; bricht der Download ab, läuft der Rest binnen einer Stunde ab. Was abläuft, wird binnen etwa 15 Minuten physisch entfernt. Etwaige Wiederherstellungskopien unserer Anbieter enthalten dieselben verschlüsselten Daten und erneuern sich nach deren eigenen Zyklen.`,
         ],
       },
       {

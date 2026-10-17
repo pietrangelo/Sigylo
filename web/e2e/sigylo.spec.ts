@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { expect, test, type Browser, type Page, type Request } from '@playwright/test';
 import { catalogs } from '../src/lib/i18n';
 import { legal } from '../src/lib/legal';
@@ -46,6 +47,74 @@ test('burn after reading: opens once with the passphrase, then is gone', async (
   await latecomer.getByTestId('open-passphrase').fill('seconda chiave');
   await latecomer.getByTestId('reveal').click();
   await expect(latecomer.getByTestId('open-error')).toContainText('Non c');
+});
+
+// 2.5 MiB: three chunks, the last one short. The marker sits at both ends.
+const MARKER = 'contenuto riservato del file 4c1d';
+function fileContents(): Buffer {
+  const contents = Buffer.alloc(2.5 * 1024 * 1024, 0x2e);
+  contents.write(MARKER, 0);
+  contents.write(MARKER, contents.length - MARKER.length);
+  return contents;
+}
+
+async function sealFile(page: Page, options: { retention?: 'burn' | 'expiry' } = {}) {
+  await page.goto('/');
+  await page.getByTestId('kind-file').check();
+  await page.getByTestId('file').setInputFiles({ name: 'Bilancio 2026 è pronto.xlsx', mimeType: 'text/html', buffer: fileContents() });
+  if (options.retention === 'expiry') await page.getByTestId('retention-expiry').check();
+  await page.getByTestId('seal').click();
+  await expect(page.getByTestId('sent')).toBeVisible();
+  return { link: await page.getByTestId('secret-link').inputValue(), revoke: await page.getByTestId('revoke-link').inputValue() };
+}
+
+async function openAndSave(reader: Page, link: string): Promise<{ name: string; contents: Buffer }> {
+  await reader.goto(link);
+  await reader.getByTestId('reveal').click();
+  await expect(reader.getByTestId('file-name')).toHaveText('Bilancio 2026 è pronto.xlsx');
+  const [download] = await Promise.all([reader.waitForEvent('download'), reader.getByTestId('save-file').click()]);
+  return { name: download.suggestedFilename(), contents: await readFile((await download.path())!) };
+}
+
+test('a file sealed by link: saved once, then gone', async ({ page, browser }) => {
+  const { link } = await sealFile(page);
+  const reader = await freshPage(browser);
+  const saved = await openAndSave(reader, link);
+  expect(saved.name).toBe('Bilancio 2026 è pronto.xlsx');
+  expect(saved.contents.equals(fileContents())).toBe(true);
+  await expect(reader.getByTestId('retention-note')).toHaveClass(/notice/);
+  expect(new URL(reader.url()).hash).toBe('');
+
+  const latecomer = await freshPage(browser);
+  await latecomer.goto(link);
+  await latecomer.getByTestId('reveal').click();
+  await expect(latecomer.getByTestId('open-error')).toContainText('Non c');
+});
+
+test('a file kept until expiry can be saved more than once', async ({ page, browser }) => {
+  const { link } = await sealFile(page, { retention: 'expiry' });
+  for (let i = 0; i < 2; i++) {
+    const saved = await openAndSave(await freshPage(browser), link);
+    expect(saved.contents.equals(fileContents())).toBe(true);
+  }
+});
+
+test('request mode: a file sealed to the recipient’s post-quantum key', async ({ page, browser }) => {
+  await page.goto('/');
+  await page.getByTestId('tab-receive').click();
+  await page.getByTestId('create-request').click();
+  const requestLink = await page.getByTestId('request-link').inputValue();
+  const inboxLink = await page.getByTestId('inbox-link').inputValue();
+
+  const sender = await freshPage(browser);
+  await sender.goto(requestLink);
+  await sender.getByTestId('kind-file').check();
+  await sender.getByTestId('file').setInputFiles({ name: 'Bilancio 2026 è pronto.xlsx', mimeType: 'application/vnd.ms-excel', buffer: fileContents() });
+  await sender.getByTestId('answer').click();
+  await expect(sender.getByTestId('answered')).toBeVisible();
+
+  const saved = await openAndSave(await freshPage(browser), inboxLink);
+  expect(saved.contents.equals(fileContents())).toBe(true);
 });
 
 test('until expiry: readable more than once', async ({ page, browser }) => {
@@ -130,6 +199,44 @@ test.describe('adversary', () => {
         expect(url.includes(leak) || body.includes(leak), `${leak} leaked in ${url}`).toBe(false);
       }
     }
+  });
+
+  test('no file byte, file name or key leaves the browser unsealed', async ({ page, browser }) => {
+    const outgoing: { url: string; body: Buffer }[] = [];
+    const record = (r: Request) => outgoing.push({ url: r.url(), body: r.postDataBuffer() ?? Buffer.alloc(0) });
+    page.on('request', record);
+    const { link } = await sealFile(page);
+    const reader = await freshPage(browser);
+    reader.on('request', record);
+    await openAndSave(reader, link);
+
+    const key = link.split('/').at(-1)!;
+    expect(outgoing.filter((o) => o.url.includes('/chunks/')).length).toBe(6);
+    for (const { url, body } of outgoing) {
+      for (const leak of [key, MARKER, 'Bilancio']) {
+        expect(url.includes(leak) || body.includes(leak), `${leak} leaked in ${url}`).toBe(false);
+      }
+    }
+  });
+
+  test('chunks of a burned file go only to whoever opened it', async ({ page, request, browser }) => {
+    const { link } = await sealFile(page);
+    const id = link.split('/').at(-2)!;
+    // Before anyone opens it, chunks are not served, and a GET never is.
+    expect((await request.get(`/api/secrets/${id}/chunks/0/open`)).status()).toBe(405);
+    expect((await request.post(`/api/secrets/${id}/chunks/0/open`, { data: {} })).status()).toBe(404);
+
+    const reader = await freshPage(browser);
+    const responses: string[] = [];
+    reader.on('response', (r) => r.url().endsWith('/open') && !r.url().includes('/chunks/') && responses.push(r.url()));
+    await openAndSave(reader, link);
+    // Afterwards the chunks are gone, claim or no claim, and nothing can be added.
+    for (const body of [{}, { claim: 'A'.repeat(43) }]) {
+      expect((await request.post(`/api/secrets/${id}/chunks/2/open`, { data: body })).status()).toBe(404);
+    }
+    const refill = await request.post(`/api/secrets/${id}/chunks/0`, { data: Buffer.alloc(300, 1), headers: { 'Content-Type': 'application/octet-stream' } });
+    expect(refill.status()).toBe(404);
+    expect(responses).toHaveLength(1);
   });
 
   test('the page runs under the strict policy without violations', async ({ page }) => {

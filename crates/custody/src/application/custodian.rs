@@ -2,16 +2,18 @@
 
 use super::ports::{IdSource, TokenDigest, Vault};
 use crate::core::{
-    CustodyError, Deposit, DropId, Lifetime, Opened, PostedRequest, Receipt, RecipientKeyBlob, Request, Retention,
-    RevocationToken, SealedPayload, UnixTime,
+    ChunkCount, ChunkIndex, ClaimToken, CustodyError, Deposit, DropId, Lifetime, Opened, PostedRequest, Receipt,
+    RecipientKeyBlob, Request, Retention, RevocationToken, SealedChunk, SealedPayload, UnixTime,
 };
 
-/// What a sender hands over when answering a request.
+/// What a sender hands over when answering a request. For a file, the
+/// payload is its sealed manifest and the chunks are uploaded after.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Answer {
     pub payload: SealedPayload,
     pub retention: Retention,
     pub lifetime: Lifetime,
+    pub chunks: Option<ChunkCount>,
 }
 
 /// Keeps sealed envelopes on behalf of senders and recipients.
@@ -36,16 +38,63 @@ impl<V: Vault, D: TokenDigest, I: IdSource> Custodian<V, D, I> {
         lifetime: Lifetime,
         revocation: Option<&RevocationToken>,
     ) -> Result<Receipt, CustodyError> {
+        self.deposit_with(payload, None, retention, lifetime, revocation).await
+    }
+
+    /// Deposit a file: its sealed manifest now, its `chunks` with
+    /// [`Custodian::put_chunk`] right after. Nobody can open it before the
+    /// last chunk is in.
+    pub async fn deposit_file(
+        &self,
+        manifest: SealedPayload,
+        chunks: ChunkCount,
+        retention: Retention,
+        lifetime: Lifetime,
+        revocation: Option<&RevocationToken>,
+    ) -> Result<Receipt, CustodyError> {
+        self.deposit_with(manifest, Some(chunks), retention, lifetime, revocation).await
+    }
+
+    async fn deposit_with(
+        &self,
+        payload: SealedPayload,
+        chunks: Option<ChunkCount>,
+        retention: Retention,
+        lifetime: Lifetime,
+        revocation: Option<&RevocationToken>,
+    ) -> Result<Receipt, CustodyError> {
         let id = self.ids.fresh()?;
         let revocation = revocation.map(|token| self.digest.digest(token));
-        let expires_at = self.vault.deposit(&Deposit { id, payload, retention, lifetime, revocation }).await?;
+        let deposit = Deposit { id, payload, retention, lifetime, revocation, chunks };
+        let expires_at = self.vault.deposit(&deposit).await?;
         Ok(Receipt { id, expires_at })
     }
 
+    /// Store one chunk of a file deposited under `id` (or of an answer).
+    pub async fn put_chunk(&self, id: &DropId, index: ChunkIndex, chunk: SealedChunk) -> Result<(), CustodyError> {
+        if self.vault.put_chunk(id, index, &chunk).await? { Ok(()) } else { Err(CustodyError::NotFound) }
+    }
+
     /// Hand the payload to whoever holds the link. Burn-after-reading
-    /// deposits are destroyed by this very call.
+    /// deposits are destroyed by this very call; a burn-after-reading file is
+    /// claimed, and the claim token that releases its chunks comes back here only.
     pub async fn open(&self, id: &DropId) -> Result<Opened, CustodyError> {
-        self.vault.open(id).await?.ok_or(CustodyError::NotFound)
+        let claim = self.ids.fresh_claim()?;
+        let opened = self.vault.open(id, &self.digest.digest_claim(&claim)).await?.ok_or(CustodyError::NotFound)?;
+        let claimed = opened.burned && opened.chunks.is_some();
+        Ok(Opened { claim: claimed.then_some(claim), ..opened })
+    }
+
+    /// Hand out one chunk of an opened file. A burn-after-reading file's
+    /// chunks need the claim from [`Custodian::open`] and are destroyed as they go.
+    pub async fn open_chunk(
+        &self,
+        id: &DropId,
+        index: ChunkIndex,
+        claim: Option<&ClaimToken>,
+    ) -> Result<SealedChunk, CustodyError> {
+        let digest = claim.map(|claim| self.digest.digest_claim(claim));
+        self.vault.open_chunk(id, index, digest.as_ref()).await?.ok_or(CustodyError::NotFound)
     }
 
     /// Destroy a deposit before anyone reads it.
@@ -79,6 +128,7 @@ impl<V: Vault, D: TokenDigest, I: IdSource> Custodian<V, D, I> {
             retention: answer.retention,
             lifetime: answer.lifetime,
             revocation: None,
+            chunks: answer.chunks,
         };
         self.vault.answer_request(&deposit).await?.ok_or(CustodyError::NotFound)
     }
