@@ -13,6 +13,10 @@ begin
         'truncate custody.deposits',
         'select count(*) from custody.chunks',
         'delete from custody.chunks',
+        'select object from custody.chunks',
+        'select * from custody.garbage',
+        'delete from custody.garbage',
+        'insert into custody.garbage values (''\x00''::bytea)',
         'update custody.deposits set claim_digest = null',
         'select custody.lifetime(300)',
         'select custody.complete(''\x00''::bytea, 0::smallint)'

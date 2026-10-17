@@ -31,9 +31,9 @@ Condividere dati segreti (credenziali, chiavi, codici, file fino a 10 MiB) nel m
 crates/sealing/            Dominio puro "Sealing": buste, schedule delle chiavi, port crittografici
 crates/sealing-adapters/   RustCrypto: X25519 + ML-KEM-768, XChaCha20-Poly1305, Argon2id, HKDF-SHA3-256, CSPRNG
 crates/custody/            Dominio puro "Custody": custodia cieca, burn-after-reading, scadenza, revoca, richieste
-crates/custody-adapters/   PostgresVault (tokio-postgres, anche via Hyperdrive), digest SHA-256 dei token
+crates/custody-adapters/   PostgresVault (tokio-postgres, anche via Hyperdrive), R2ChunkStore (blocchi dei file su Cloudflare R2), digest SHA-256 dei token
 crates/sigylo-wasm/        Shell browser: Sealing + RustCrypto esposti a JavaScript (wasm-bindgen)
-worker/                    Shell Cloudflare Worker (workers-rs): relay cieco HTTP → Custody → PostgreSQL
+worker/                    Shell Cloudflare Worker (workers-rs): relay cieco HTTP → Custody → PostgreSQL + R2
 web/                       Client Svelte 5 + TypeScript strict, solo dipendenze di sviluppo, nessuna a runtime
 app/                       Shell Tauri 2 (workspace a parte): client web e motore Wasm installati, relay solo verso sigylo.net
 supabase/migrations/       Schema SQL e funzioni atomiche della custodia
@@ -91,18 +91,19 @@ Tutto avviene sul dispositivo, in Rust compilato a Wasm. Le implementazioni sono
 * **Regole:** durata da 5 minuti a 7 giorni; `BurnAfterReading` restituisce la busta **al massimo una volta** anche con letture concorrenti; `UntilExpiry` è leggibile fino alla scadenza; inesistente, scaduto, già letto e revocato sono indistinguibili (`404 NotFound`); un id vivo non si sovrascrive; una richiesta riceve al massimo una risposta, salvata sotto lo stesso id.
 * **Limite noto della modalità richiesta:** chiunque abbia il link di richiesta può rispondere per primo, e il destinatario non sa chi ha sigillato (il mittente legittimo vede però "richiesta già usata"). L'autenticazione del mittente è rinviata (§7).
 * **File:** il deposito (o la risposta) porta il manifest sigillato e `chunks`; i blocchi si caricano dopo, uno per richiesta, una volta sola ciascuno e solo finché nessuno ha aperto il deposito. Un file incompleto non si apre (`404`). Aprire un file `BurnAfterReading` non lo cancella ma lo *reclama*: il relay sceglie un token casuale, ne conserva solo lo SHA-256 e lo restituisce soltanto a chi ha aperto; da quel momento il deposito non si riapre, ogni blocco va solo a chi presenta il token, al massimo una volta, e viene cancellato mentre parte; il deposito se ne va con l'ultimo blocco, e un download abbandonato scade entro un'ora. Un file `UntilExpiry` resta scaricabile da chiunque abbia il link fino alla scadenza.
+* **Blocchi su R2, mai nel database:** il relay salva ogni blocco come oggetto nel bucket R2 `sigylo-chunks` (giurisdizione UE) sotto un nome casuale di 128 bit scelto da lui (`IdSource::fresh_object`), che non dice nulla del deposito; poi `custody.put_chunk` decide atomicamente se quel blocco può essere registrato, e un oggetto rifiutato viene cancellato subito. PostgreSQL conserva solo nome e dimensione. Ogni blocco che se ne va (bruciato, revocato, scaduto, anche per cascata) lascia il nome in `custody.garbage`; il cron cancella quegli oggetti da R2 e solo dopo li dimentica, così un errore di R2 non perde traccia di nulla. Un blocco bruciato sparisce da R2 già mentre parte; uno revocato o scaduto entro circa 15 minuti; una regola di ciclo di vita del bucket (8 giorni) fa da rete di sicurezza.
 * **API (`worker/src/api.rs`):** `POST /api/secrets`, `POST /api/secrets/{id}/open`, `POST /api/secrets/{id}/revoke`, `POST /api/secrets/{id}/chunks/{n}`, `POST /api/secrets/{id}/chunks/{n}/open`, `POST /api/requests`, `GET /api/requests/{id}`, `POST /api/requests/{id}/answer`. Aprire è sempre una POST: anteprime dei link e prefetch (GET) non possono bruciare un segreto. Campi binari in base64url senza padding, tranne i blocchi, che viaggiano come corpo binario grezzo (nessun base64 da 1 MiB nei 10 ms di CPU del Worker). Il corpo si valida (anche la `Content-Length` dichiarata) prima di aprire una connessione al database.
 * **Rate limit:** binding `WRITE_LIMITER` di Cloudflare sulle POST per indirizzo, in memoria di Cloudflare, mai salvato da noi.
 
-## 4. PERSISTENZA (Supabase PostgreSQL via Hyperdrive)
+## 4. PERSISTENZA (Supabase PostgreSQL via Hyperdrive, blocchi su Cloudflare R2)
 
-* Schema `custody` con tre tabelle (`deposits`, `requests`, `chunks`) e **13 colonne in tutto** (verificato dai test): niente orari di creazione, niente IP, niente account. Colonne `bytea`, vincoli di lunghezza nel database.
+* Schema `custody` con quattro tabelle (`deposits`, `requests`, `chunks`, `garbage`) e **15 colonne in tutto** (verificato dai test): niente orari di creazione, niente IP, niente account. Colonne `bytea`, vincoli di lunghezza nel database.
 * Ogni operazione è una funzione `SECURITY DEFINER` con `search_path` vuoto; burn-after-reading è un solo `DELETE … RETURNING` atomico; l'orologio che decide la scadenza è solo `now()` del database.
 * **Nessuna cache di Hyperdrive:** Hyperdrive memorizza per un minuto le `SELECT` che crede di sola lettura e non vede che `custody.open` cancella; una risposta in cache restituirebbe un segreto già bruciato, revocato o scaduto. La configurazione Hyperdrive si crea con `--caching-disabled` e, in più, ogni statement del vault seleziona anche `now()`, che Hyperdrive non mette mai in cache (test in `postgres_vault.rs`).
 * Il Worker si collega come `sigylo_relay`, che può **solo eseguire le funzioni**: nessun privilegio sulle tabelle, quindi una credenziale del relay rubata non può elencare o scaricare i segreti. Nessun altro ruolo, né `PUBLIC` né `anon`/`authenticated`/`service_role` di Supabase, ha privilegi nello schema `custody` (verificato sulle ACL dai test, con i ruoli Supabase ricreati). RLS attiva e forzata.
 * Disattivati per scelta: Supabase Auth, supabase-js nel browser, Vault/pgsodium (la crittografia non avviene mai nel database), PostgREST sullo schema `custody`.
-* Un cron ogni 15 minuti (`purge_expired`) cancella fisicamente ciò che è scaduto; i blocchi seguono il loro deposito (`on delete cascade`).
-* **Tetto ai blocchi:** tutti i blocchi insieme non superano 256 MiB (`custody.put_chunk` fallisce con `53100`, il relay risponde `507 StorageFull`), così il piano gratuito di Supabase (500 MB) non si riempie. Con il limite di 30 POST al minuto per indirizzo, un file da 10 MiB costa 11 richieste per caricarlo e 11 per scaricarlo.
+* Un cron ogni 15 minuti (`purge_expired`) cancella fisicamente ciò che è scaduto; i blocchi seguono il loro deposito (`on delete cascade`). Lo stesso cron del Worker raccoglie poi la `garbage` e cancella gli oggetti da R2 (al massimo 1000 per giro).
+* **Tetto ai blocchi:** tutti i blocchi insieme non superano 5 GiB (`custody.put_chunk` somma le dimensioni e fallisce con `53100`, il relay risponde `507 StorageFull`), metà dei 10 GB gratuiti di R2. Il database non contiene mai i byte dei blocchi (verificato dai test). Con il limite di 30 POST al minuto per indirizzo, un file da 10 MiB costa 11 richieste per caricarlo e 11 per scaricarlo.
 * Le migrazioni sono additive: le funzioni della prima conservano la firma (il vecchio `custody.open(bytea)` ignora i file), così il relay in produzione continua a funzionare mentre si applica una migrazione nuova, prima del deploy.
 
 ## 5. CLIENT WEB E INTEGRITÀ DEL CODICE
@@ -127,6 +128,7 @@ Tutto avviene sul dispositivo, in Rust compilato a Wasm. Le implementazioni sono
 
 1. Supabase, in un progetto dedicato solo a Sigylo: applicare `supabase/migrations/*.sql`, poi `alter role sigylo_relay login password '<password forte>';`.
 2. Cloudflare: `npx wrangler hyperdrive create sigylo-db --caching-disabled --connection-string="postgres://sigylo_relay:<password>@<host>:5432/postgres"` e mettere l'id in `worker/wrangler.toml`. `--caching-disabled` è obbligatorio (vedi §4); su una configurazione già creata: `npx wrangler hyperdrive update <id> --caching-disabled`.
+   R2: `npx wrangler r2 bucket create sigylo-chunks --jurisdiction eu` e, come rete di sicurezza, `npx wrangler r2 bucket lifecycle add sigylo-chunks backstop --expire-days 8 --jurisdiction eu` (il token del deploy deve poter modificare R2).
 3. Pubblicazione su `https://sigylo.net` (custom domain del Worker, `workers.dev` spento; il primo deploy crea record DNS e certificato nella zona). Di norma la fa `.github/workflows/deploy.yml`: parte solo su `main`, solo dopo che la CI è passata su quello stesso commit, mai da una pull request. Segreti del repository: `CLOUDFLARE_API_TOKEN` (modello "Edit Cloudflare Workers", limitato a questo account e alla zona sigylo.net) e `CLOUDFLARE_ACCOUNT_ID`. A mano: `(cd web && npm ci && npm run build)` poi `(cd worker && npx wrangler deploy)`.
 4. Nella zona sigylo.net disattivare tutte le funzioni Cloudflare che modificano l'HTML (Rocket Loader, Email Obfuscation, Web Analytics automatico): romperebbero CSP e SRI. Dopo ogni deploy il workflow verifica che la pagina servita sia identica byte per byte a `web/dist/index.html` e porti la CSP di `_headers`, e fallisce se la zona la riscrive.
 
@@ -135,6 +137,6 @@ Tutto avviene sul dispositivo, in Rust compilato a Wasm. Le implementazioni sono
 * **Autenticazione del mittente nella modalità richiesta:** firma ML-DSA-65 + Ed25519 o codice di conferma da confrontare fuori banda (vedi il limite noto in §3).
 * **Account e autenticazione:** OPAQUE o challenge firmate con Ed25519 + ML-DSA-65, MEK/chiave di autenticazione derivate con Argon2id + HKDF. L'MVP non ha account: il link è la capacità.
 * **Client verificabile:** build dell'app firmate e riproducibili, chiavi in Secure Enclave / TPM, oppure estensione browser firmata. Aprire i link `https://sigylo.net` direttamente nell'app (universal/app links) richiede gli identificativi degli account sviluppatore.
-* **File oltre 10 MiB:** i blocchi su R2 o Supabase Storage invece che in PostgreSQL.
+* **File oltre 10 MiB:** l'archiviazione su R2 c'è già; servirebbero più blocchi per file e, oltre una certa misura, upload multipart.
 * **Blind index:** non serve finché non esistono ricerche lato server.
 * **Naming:** verifiche su marchi e handle (il dominio sigylo.net c'è già).

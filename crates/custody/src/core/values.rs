@@ -12,6 +12,8 @@ pub const MAX_CHUNKS: u16 = 10;
 pub const MAX_CHUNK_LEN: usize = 1024 * 1024 + 16;
 /// How long whoever opened a burn-after-reading file has to fetch its chunks.
 pub const CLAIM_WINDOW_SECONDS: u32 = 60 * 60;
+/// How many orphaned chunk objects one garbage collection deletes at most.
+pub const GARBAGE_BATCH: u16 = 1000;
 
 /// An unguessable 128-bit identifier, always chosen by the custodian.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -162,6 +164,35 @@ impl ClaimDigest {
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
+}
+
+/// The name of one stored chunk in the chunk store: 128 random bits drawn by
+/// the custodian. It says nothing of the deposit it belongs to; only the vault
+/// maps a deposit's chunk to its object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ObjectName([u8; ObjectName::LEN]);
+
+impl ObjectName {
+    pub const LEN: usize = 16;
+
+    pub fn from_array(bytes: [u8; Self::LEN]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, CustodyError> {
+        Ok(Self(bytes.try_into().map_err(|_| CustodyError::InvalidChunk)?))
+    }
+
+    pub fn as_bytes(&self) -> &[u8; Self::LEN] {
+        &self.0
+    }
+}
+
+/// Where the vault found a chunk, and whether handing it out burned it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChunkRef {
+    pub object: ObjectName,
+    pub burned: bool,
 }
 
 /// What happens after a successful read.

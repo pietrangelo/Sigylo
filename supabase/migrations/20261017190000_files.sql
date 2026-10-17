@@ -1,8 +1,10 @@
 -- Sigylo custody: files sealed in chunks.
 --
 -- A file is a deposit whose payload is the file's sealed manifest, plus up
--- to 10 chunks of opaque ciphertext (1 MiB + 16 bytes at most each) in
--- custody.chunks. The relay still sees only random ids and ciphertext.
+-- to 10 chunks of opaque ciphertext (1 MiB + 16 bytes at most each). The
+-- chunks themselves live in Cloudflare R2, never in this database: for each
+-- one, custody.chunks keeps only the random name of its R2 object and its
+-- size. The relay still sees only random ids and ciphertext.
 --
 -- * A file deposit cannot be opened until all its chunks are in. Chunks are
 --   written once, and only while the deposit has not been opened.
@@ -11,9 +13,10 @@
 --   can no longer be opened, and expires within an hour at most. Each chunk is
 --   handed out at most once, against the claim, and deleted as it goes; the
 --   deposit goes with its last chunk.
--- * Deleting a deposit (burn, revocation, expiry, purge) deletes its chunks.
--- * All chunks together may not exceed 256 MiB, which keeps the Supabase
---   free plan (500 MB) safe from filling up.
+-- * Deleting a deposit (burn, revocation, expiry, purge) deletes its chunks,
+--   and every chunk that goes leaves its object name in custody.garbage,
+--   where the relay finds the R2 objects to delete.
+-- * All chunks together may not exceed 5 GiB, half of R2's free 10 GB.
 --
 -- Additive on purpose: the functions of the first migration keep their
 -- signatures, so the relay that is live while this runs keeps working. The
@@ -26,13 +29,32 @@ alter table custody.deposits
 create table custody.chunks (
     deposit_id bytea    not null references custody.deposits (id) on delete cascade,
     idx        smallint not null check (idx between 0 and 9),
-    ciphertext bytea    not null check (octet_length(ciphertext) between 1 and 1048592),
+    object     bytea    not null unique check (octet_length(object) = 16),
+    size       integer  not null check (size between 1 and 1048592),
     primary key (deposit_id, idx)
+);
+
+-- R2 objects whose chunk is gone; the relay deletes them and then forgets them.
+create table custody.garbage (
+    object bytea primary key check (octet_length(object) = 16)
 );
 
 alter table custody.chunks enable row level security;
 alter table custody.chunks force row level security;
-revoke all on custody.chunks from public;
+alter table custody.garbage enable row level security;
+alter table custody.garbage force row level security;
+revoke all on custody.chunks, custody.garbage from public;
+
+-- Fires for every way a chunk goes, cascades from its deposit included.
+create function custody.chunk_gone() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+    insert into custody.garbage (object) values (old.object) on conflict do nothing;
+    return null;
+end $$;
+
+create trigger chunk_gone after delete on custody.chunks
+    for each row execute function custody.chunk_gone();
 
 -- Whether every chunk of a deposit is in (a text deposit has none to wait for).
 create function custody.complete(p_id bytea, p_chunk_count smallint) returns boolean
@@ -57,15 +79,16 @@ begin
     return extract(epoch from v_expires)::bigint;
 end $$;
 
-create function custody.put_chunk(p_id bytea, p_idx smallint, p_ciphertext bytea) returns boolean
+-- Records that chunk p_idx of a file is the R2 object p_object, already
+-- stored by the relay. False when the deposit does not take that chunk.
+create function custody.put_chunk(p_id bytea, p_idx smallint, p_object bytea, p_size integer) returns boolean
 language plpgsql security definer set search_path = '' as $$
 begin
-    if (select coalesce(sum(octet_length(c.ciphertext)), 0) from custody.chunks c)
-        + octet_length(p_ciphertext) > 256 * 1024 * 1024 then
+    if (select coalesce(sum(c.size), 0) from custody.chunks c) + p_size > 5::bigint * 1024 * 1024 * 1024 then
         raise exception 'chunk storage full' using errcode = '53100';
     end if;
-    insert into custody.chunks (deposit_id, idx, ciphertext)
-    select d.id, p_idx, p_ciphertext
+    insert into custody.chunks (deposit_id, idx, object, size)
+    select d.id, p_idx, p_object, p_size
     from custody.deposits d
     where d.id = p_id and d.expires_at > now() and d.claim_digest is null and p_idx < d.chunk_count;
     return found;
@@ -97,11 +120,13 @@ language sql security definer set search_path = '' as $$
       and custody.complete(d.id, d.chunk_count);
 $$;
 
-create function custody.open_chunk(p_id bytea, p_idx smallint, p_claim_digest bytea) returns bytea
+-- The R2 object of one chunk, and whether handing it out burned it.
+create function custody.open_chunk(p_id bytea, p_idx smallint, p_claim_digest bytea)
+returns table (object bytea, burned boolean)
 language plpgsql security definer set search_path = '' as $$
 declare
     v_burn boolean;
-    v_ciphertext bytea;
+    v_object bytea;
 begin
     -- The row lock serializes the chunk reads of one file, so the read that
     -- takes the last chunk sees that it is the last.
@@ -112,18 +137,30 @@ begin
                else custody.complete(d.id, d.chunk_count) end
     for update;
     if not found then
-        return null;
+        return;
     end if;
     if not v_burn then
-        select c.ciphertext into v_ciphertext from custody.chunks c where c.deposit_id = p_id and c.idx = p_idx;
-        return v_ciphertext;
+        return query select c.object, false from custody.chunks c where c.deposit_id = p_id and c.idx = p_idx;
+        return;
     end if;
-    delete from custody.chunks c where c.deposit_id = p_id and c.idx = p_idx returning c.ciphertext into v_ciphertext;
+    delete from custody.chunks c where c.deposit_id = p_id and c.idx = p_idx returning c.object into v_object;
     if not exists (select 1 from custody.chunks c where c.deposit_id = p_id) then
-        delete from custody.deposits where id = p_id;
+        delete from custody.deposits d where d.id = p_id;
     end if;
-    return v_ciphertext;
+    if v_object is not null then
+        return query select v_object, true;
+    end if;
 end $$;
+
+create function custody.garbage(p_limit integer) returns setof bytea
+language sql security definer set search_path = '' as $$
+    select g.object from custody.garbage g limit least(greatest(p_limit, 0), 1000);
+$$;
+
+create function custody.forget_garbage(p_objects bytea[]) returns void
+language sql security definer set search_path = '' as $$
+    delete from custody.garbage g where g.object = any (p_objects);
+$$;
 
 create function custody.answer_request(
     p_id bytea, p_payload bytea, p_burn_after_reading boolean, p_lifetime_seconds integer, p_chunk_count smallint
@@ -156,8 +193,10 @@ $$;
 revoke execute on all functions in schema custody from public;
 grant execute on function
     custody.deposit(bytea, bytea, boolean, integer, bytea, smallint),
-    custody.put_chunk(bytea, smallint, bytea),
+    custody.put_chunk(bytea, smallint, bytea, integer),
     custody.open(bytea, bytea),
     custody.open_chunk(bytea, smallint, bytea),
+    custody.garbage(integer),
+    custody.forget_garbage(bytea[]),
     custody.answer_request(bytea, bytea, boolean, integer, smallint)
 to sigylo_relay;

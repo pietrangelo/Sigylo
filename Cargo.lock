@@ -241,6 +241,7 @@ dependencies = [
  "sha2",
  "tokio",
  "tokio-postgres",
+ "worker",
 ]
 
 [[package]]

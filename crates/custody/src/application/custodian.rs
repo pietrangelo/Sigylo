@@ -1,9 +1,11 @@
 //! Use cases of the Custody context.
 
-use super::ports::{IdSource, TokenDigest, Vault};
+use core::slice;
+
+use super::ports::{ChunkStore, IdSource, TokenDigest, Vault};
 use crate::core::{
-    ChunkCount, ChunkIndex, ClaimToken, CustodyError, Deposit, DropId, Lifetime, Opened, PostedRequest, Receipt,
-    RecipientKeyBlob, Request, Retention, RevocationToken, SealedChunk, SealedPayload, UnixTime,
+    ChunkCount, ChunkIndex, ClaimToken, CustodyError, Deposit, DropId, GARBAGE_BATCH, Lifetime, Opened, PostedRequest,
+    Receipt, RecipientKeyBlob, Request, Retention, RevocationToken, SealedChunk, SealedPayload, UnixTime,
 };
 
 /// What a sender hands over when answering a request. For a file, the
@@ -16,17 +18,19 @@ pub struct Answer {
     pub chunks: Option<ChunkCount>,
 }
 
-/// Keeps sealed envelopes on behalf of senders and recipients.
+/// Keeps sealed envelopes on behalf of senders and recipients: in the vault,
+/// and a file's chunks in the chunk store.
 #[derive(Debug)]
-pub struct Custodian<V, D, I> {
+pub struct Custodian<V, S, D, I> {
     vault: V,
+    store: S,
     digest: D,
     ids: I,
 }
 
-impl<V: Vault, D: TokenDigest, I: IdSource> Custodian<V, D, I> {
-    pub fn new(vault: V, digest: D, ids: I) -> Self {
-        Self { vault, digest, ids }
+impl<V: Vault, S: ChunkStore, D: TokenDigest, I: IdSource> Custodian<V, S, D, I> {
+    pub fn new(vault: V, store: S, digest: D, ids: I) -> Self {
+        Self { vault, store, digest, ids }
     }
 
     /// Deposit a sealed secret under a fresh id. The revocation token, if
@@ -70,9 +74,24 @@ impl<V: Vault, D: TokenDigest, I: IdSource> Custodian<V, D, I> {
         Ok(Receipt { id, expires_at })
     }
 
-    /// Store one chunk of a file deposited under `id` (or of an answer).
+    /// Store one chunk of a file deposited under `id` (or of an answer). The
+    /// bytes go to the store under a fresh name first; the vault then decides,
+    /// atomically, whether that chunk may be recorded. A refused object is
+    /// deleted at once, so nothing is kept that no deposit points at.
     pub async fn put_chunk(&self, id: &DropId, index: ChunkIndex, chunk: SealedChunk) -> Result<(), CustodyError> {
-        if self.vault.put_chunk(id, index, &chunk).await? { Ok(()) } else { Err(CustodyError::NotFound) }
+        let object = self.ids.fresh_object()?;
+        self.store.put(&object, &chunk).await?;
+        // A chunk is at most 1 MiB + 16 bytes.
+        let len = chunk.as_bytes().len() as u32;
+        let refusal = match self.vault.put_chunk(id, index, &object, len).await {
+            Ok(true) => return Ok(()),
+            Ok(false) => CustodyError::NotFound,
+            // The vault may have recorded it after all: keep the object.
+            Err(CustodyError::VaultUnavailable) => return Err(CustodyError::VaultUnavailable),
+            Err(error) => error,
+        };
+        let _ = self.store.delete(slice::from_ref(&object)).await;
+        Err(refusal)
     }
 
     /// Hand the payload to whoever holds the link. Burn-after-reading
@@ -94,7 +113,26 @@ impl<V: Vault, D: TokenDigest, I: IdSource> Custodian<V, D, I> {
         claim: Option<&ClaimToken>,
     ) -> Result<SealedChunk, CustodyError> {
         let digest = claim.map(|claim| self.digest.digest_claim(claim));
-        self.vault.open_chunk(id, index, digest.as_ref()).await?.ok_or(CustodyError::NotFound)
+        let found = self.vault.open_chunk(id, index, digest.as_ref()).await?.ok_or(CustodyError::NotFound)?;
+        let chunk = self.store.get(&found.object).await?;
+        if found.burned {
+            // It is in the garbage already; this only makes it go sooner.
+            let _ = self.store.delete(slice::from_ref(&found.object)).await;
+        }
+        chunk.ok_or(CustodyError::NotFound)
+    }
+
+    /// Delete from the store the objects whose chunks are gone (burned,
+    /// revoked, expired). They leave the garbage only once the store has
+    /// deleted them, so a failing store loses track of nothing.
+    pub async fn collect_garbage(&self) -> Result<usize, CustodyError> {
+        let objects = self.vault.garbage(GARBAGE_BATCH).await?;
+        if objects.is_empty() {
+            return Ok(0);
+        }
+        self.store.delete(&objects).await?;
+        self.vault.forget_garbage(&objects).await?;
+        Ok(objects.len())
     }
 
     /// Destroy a deposit before anyone reads it.
