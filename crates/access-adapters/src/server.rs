@@ -4,6 +4,8 @@ use access::{
     AccessError, AccountId, CredentialFinalization, CredentialRequest, CredentialResponse, LoginState, OpaqueServer,
     RegistrationRecord, RegistrationRequest, RegistrationResponse, Username,
 };
+use chacha20poly1305::aead::{Aead as _, Payload};
+use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce};
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use opaque_ke::{ServerLogin, ServerLoginParameters, ServerRegistration, ServerSetup};
@@ -17,12 +19,22 @@ use crate::suite::Suite;
 
 /// The relay's OPAQUE keys, all derived from one 32-byte secret (the
 /// Worker secret `OPAQUE_SERVER_SEED`): the OPRF seed and the 3DH key pair,
-/// and the key that files accounts under a hash of their name. Losing or
+/// the key that files accounts under a hash of their name, and the key that
+/// seals a login in progress while it waits in the database. Losing or
 /// changing the secret locks every account out; leaking it together with the
 /// database lets an attacker test passwords offline, one Argon2id each.
 pub struct OpaqueKeys {
     setup: ServerSetup<Suite>,
     account_key: Zeroizing<[u8; 32]>,
+    state_key: Zeroizing<[u8; 32]>,
+}
+
+/// Raw opaque-ke `ServerLogin` state; [`LoginState`] adds nonce and tag.
+const RAW_STATE_LEN: usize = 128;
+const NONCE_LEN: usize = 24;
+
+fn state_aad(account: &AccountId) -> Vec<u8> {
+    [b"sigylo/v1/login-state\0".as_slice(), account.as_bytes()].concat()
 }
 
 impl OpaqueKeys {
@@ -35,12 +47,36 @@ impl OpaqueKeys {
         let hkdf = Hkdf::<Sha512>::new(Some(b"sigylo/v1/opaque"), seed);
         let mut setup_seed = Zeroizing::new([0u8; 32]);
         let mut account_key = Zeroizing::new([0u8; 32]);
+        let mut state_key = Zeroizing::new([0u8; 32]);
         hkdf.expand(b"server-setup", &mut *setup_seed).map_err(|_| AccessError::NotConfigured)?;
         hkdf.expand(b"account-id", &mut *account_key).map_err(|_| AccessError::NotConfigured)?;
+        hkdf.expand(b"login-state", &mut *state_key).map_err(|_| AccessError::NotConfigured)?;
         // Deterministic: the same secret always yields the same keys
         // (pinned by tests/opaque_pin.rs, so a library upgrade cannot drift).
         let setup = ServerSetup::<Suite>::new(&mut ChaCha20Rng::from_seed(*setup_seed));
-        Ok(Self { setup, account_key })
+        Ok(Self { setup, account_key, state_key })
+    }
+
+    /// Seals a raw login state to its account. Whoever can write the
+    /// database still cannot plant a state of their own, nor move one to
+    /// another account: only this relay's secret makes one that opens.
+    fn seal_state(&self, account: &AccountId, raw: &[u8]) -> Result<LoginState, AccessError> {
+        let mut nonce = [0u8; NONCE_LEN];
+        getrandom::fill(&mut nonce).map_err(|_| AccessError::RandomnessUnavailable)?;
+        let sealed = XChaCha20Poly1305::new(&(*self.state_key).into())
+            .encrypt(&XNonce::from(nonce), Payload { msg: raw, aad: &state_aad(account) })
+            .map_err(|_| AccessError::MalformedMessage)?;
+        let parked = Zeroizing::new([nonce.as_slice(), &sealed].concat());
+        LoginState::from_slice(&parked)
+    }
+
+    fn open_state(&self, account: &AccountId, state: &LoginState) -> Result<Zeroizing<Vec<u8>>, AccessError> {
+        let (nonce, sealed) = state.expose().split_at(NONCE_LEN);
+        let nonce: [u8; NONCE_LEN] = nonce.try_into().map_err(|_| AccessError::NotAuthentic)?;
+        let raw = XChaCha20Poly1305::new(&(*self.state_key).into())
+            .decrypt(&XNonce::from(nonce), Payload { msg: sealed, aad: &state_aad(account) })
+            .map_err(|_| AccessError::NotAuthentic)?;
+        Ok(Zeroizing::new(raw))
     }
 
     /// The relay's long-term public key (the 3DH static key).
@@ -99,11 +135,18 @@ impl OpaqueServer for OpaqueKeys {
         )
         .map_err(|_| AccessError::MalformedMessage)?;
         let state = Zeroizing::new(started.state.serialize());
-        Ok((CredentialResponse::from_slice(&started.message.serialize())?, LoginState::from_slice(&state)?))
+        debug_assert_eq!(state.len(), RAW_STATE_LEN);
+        Ok((CredentialResponse::from_slice(&started.message.serialize())?, self.seal_state(account, &state)?))
     }
 
-    fn finish_login(&self, state: &LoginState, finalization: &CredentialFinalization) -> Result<(), AccessError> {
-        let state = ServerLogin::<Suite>::deserialize(state.expose()).map_err(|_| AccessError::NotAuthentic)?;
+    fn finish_login(
+        &self,
+        account: &AccountId,
+        state: &LoginState,
+        finalization: &CredentialFinalization,
+    ) -> Result<(), AccessError> {
+        let raw = self.open_state(account, state)?;
+        let state = ServerLogin::<Suite>::deserialize(&raw).map_err(|_| AccessError::NotAuthentic)?;
         let finalization = opaque_ke::CredentialFinalization::<Suite>::deserialize(finalization.as_bytes())
             .map_err(|_| AccessError::NotAuthentic)?;
         state.finish(finalization, ServerLoginParameters::default()).map_err(|_| AccessError::NotAuthentic)?;

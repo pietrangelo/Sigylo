@@ -69,7 +69,7 @@ fn fresh_name() -> Username {
 
 async fn register(relay: &Relay<'_>, name: &Username) {
     let (request, pending) = device().begin_registration(pw()).unwrap();
-    let response = relay.registration_response(name, &request).unwrap();
+    let response = relay.registration_response(name, &request).await.unwrap();
     let (record, _) = device().finish_registration(pending, &response).unwrap();
     relay.register(name, &record).await.unwrap();
 }
@@ -132,12 +132,16 @@ async fn a_taken_name_is_never_overwritten() {
     databases!(client, _admin);
     let relay = relay(&client);
     let name = fresh_name();
-    register(&relay, &name).await;
+    // A rival started while the name was still free, and finishes second.
     let (request, pending) =
         device().begin_registration(Password::new(b"attacker password".to_vec()).unwrap()).unwrap();
-    let response = relay.registration_response(&name, &request).unwrap();
+    let response = relay.registration_response(&name, &request).await.unwrap();
+    register(&relay, &name).await;
     let (record, _) = device().finish_registration(pending, &response).unwrap();
     assert_eq!(relay.register(&name, &record).await.unwrap_err(), AccessError::AlreadyRegistered);
+    // Once taken, the name gets no OPRF evaluation at all.
+    let (request, _) = device().begin_registration(pw()).unwrap();
+    assert_eq!(relay.registration_response(&name, &request).await.unwrap_err(), AccessError::AlreadyRegistered);
     login(&relay, &name).await;
 }
 

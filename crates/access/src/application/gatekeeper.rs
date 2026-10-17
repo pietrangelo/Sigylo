@@ -30,14 +30,24 @@ impl<O: OpaqueServer, S: AccountStore, T: Tokens, D: SessionDigester, R: Throttl
         Self { opaque, store, tokens, digest, throttle }
     }
 
-    /// First half of a registration. Says nothing about whether the name is
-    /// free: that is only known (and only revealed) when [`Self::register`] runs.
-    pub fn registration_response(
+    /// First half of a registration. A taken name is refused here, never
+    /// evaluated: the OPRF answer for an existing account's key would let
+    /// anyone holding one KE2 of that account test password guesses offline.
+    /// Saying "taken" reveals nothing [`Self::register`] would not. Each
+    /// attempt also spends the account's login budget.
+    pub async fn registration_response(
         &self,
         username: &Username,
         request: &RegistrationRequest,
     ) -> Result<RegistrationResponse, AccessError> {
-        self.opaque.registration_response(&self.opaque.account_of(username), request)
+        let account = self.opaque.account_of(username);
+        if !self.throttle.admit(&account).await {
+            return Err(AccessError::Throttled);
+        }
+        if self.store.record(&account).await?.is_some() {
+            return Err(AccessError::AlreadyRegistered);
+        }
+        self.opaque.registration_response(&account, request)
     }
 
     /// Second half: file the record. An existing account is never overwritten.
@@ -70,7 +80,7 @@ impl<O: OpaqueServer, S: AccountStore, T: Tokens, D: SessionDigester, R: Throttl
         finalization: &CredentialFinalization,
     ) -> Result<Session, AccessError> {
         let (account, state) = self.store.take_login(handle).await?.ok_or(AccessError::NotAuthentic)?;
-        self.opaque.finish_login(&state, finalization)?;
+        self.opaque.finish_login(&account, &state, finalization)?;
         let token = self.tokens.session()?;
         let expires_at = self
             .store

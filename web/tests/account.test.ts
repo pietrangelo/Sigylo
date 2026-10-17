@@ -52,6 +52,8 @@ function toyRelay(calls: Call[]) {
     const authorized = (init.headers as Record<string, string> | undefined)?.['Authorization'] === `Bearer ${session}`;
     switch (url) {
       case '/api/account/register/start':
+        // Like the relay: a taken name gets no OPRF evaluation at all.
+        if (records.has(body.username)) return reply(409, { error: 'AlreadyRegistered' });
         return reply(200, { response: encode(new Uint8Array(64)) });
       case '/api/account/register/finish':
         if (records.has(body.username)) return reply(409, { error: 'AlreadyRegistered' });

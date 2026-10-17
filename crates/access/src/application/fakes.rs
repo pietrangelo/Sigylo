@@ -95,12 +95,23 @@ impl OpaqueServer for ToyOpaque {
         response.extend_from_slice(&record);
         response.resize(CredentialResponse::LEN, 0);
         let mut state = Self::mac(&record);
+        state.extend_from_slice(account.as_bytes());
         state.resize(LoginState::LEN, 0);
         Ok((CredentialResponse::from_slice(&response)?, LoginState::from_slice(&state)?))
     }
 
-    fn finish_login(&self, state: &LoginState, finalization: &CredentialFinalization) -> Result<(), AccessError> {
-        if state.expose()[..64] == *finalization.as_bytes() { Ok(()) } else { Err(AccessError::NotAuthentic) }
+    fn finish_login(
+        &self,
+        account: &AccountId,
+        state: &LoginState,
+        finalization: &CredentialFinalization,
+    ) -> Result<(), AccessError> {
+        let (mac, bound) = state.expose().split_at(64);
+        if mac == finalization.as_bytes() && bound[..32] == *account.as_bytes() {
+            Ok(())
+        } else {
+            Err(AccessError::NotAuthentic)
+        }
     }
 }
 

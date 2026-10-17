@@ -8,7 +8,7 @@
 //!
 //! Accounts use OPAQUE through the Access use cases: the relay's OPAQUE keys
 //! come from the Worker secret `OPAQUE_SERVER_SEED` (32 bytes, base64url),
-//! and logins are throttled per account by the `LOGIN_LIMITER` binding.
+//! and logins and registrations are throttled per account by the `LOGIN_LIMITER` binding.
 #![forbid(unsafe_code)]
 
 pub mod api;
@@ -79,15 +79,16 @@ mod runtime {
         limiter.limit(key).await.map(|o| !o.success).unwrap_or(false)
     }
 
-    /// Login attempts per account, wherever they come from (kept in memory by
-    /// Cloudflare, keyed by a prefix of the account's keyed hash).
+    /// Login and registration attempts per account, wherever they come from
+    /// (kept in memory by Cloudflare, keyed by a prefix of the account's
+    /// keyed hash). Fails closed: without a working limiter, no guessing.
     struct LoginLimiter<'a>(&'a Env);
 
     impl Throttle for LoginLimiter<'_> {
         async fn admit(&self, account: &AccountId) -> bool {
-            let Ok(limiter) = self.0.rate_limiter("LOGIN_LIMITER") else { return true };
+            let Ok(limiter) = self.0.rate_limiter("LOGIN_LIMITER") else { return false };
             let key: String = account.as_bytes()[..16].iter().map(|b| format!("{b:02x}")).collect();
-            limiter.limit(key).await.map(|o| o.success).unwrap_or(true)
+            limiter.limit(key).await.map(|o| o.success).unwrap_or(false)
         }
     }
 
@@ -104,7 +105,7 @@ mod runtime {
             Gatekeeper::new(keys, PostgresAccounts::new(&client), RandomTokens, Sha256SessionDigest, LoginLimiter(env));
         Ok(match command {
             AccountCommand::RegisterStart(username, request) => {
-                (200, api::registration_response_body(&gatekeeper.registration_response(&username, &request)?))
+                (200, api::registration_response_body(&gatekeeper.registration_response(&username, &request).await?))
             }
             AccountCommand::RegisterFinish(username, record) => {
                 gatekeeper.register(&username, &record).await?;

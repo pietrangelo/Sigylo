@@ -28,7 +28,12 @@ pub trait OpaqueServer {
     ) -> Result<(CredentialResponse, LoginState), AccessError>;
 
     /// Checks KE3. [`AccessError::NotAuthentic`] on any mismatch.
-    fn finish_login(&self, state: &LoginState, finalization: &CredentialFinalization) -> Result<(), AccessError>;
+    fn finish_login(
+        &self,
+        account: &AccountId,
+        state: &LoginState,
+        finalization: &CredentialFinalization,
+    ) -> Result<(), AccessError>;
 }
 
 /// The device's side of OPAQUE. The states hold the blinding factor and
@@ -173,8 +178,13 @@ impl<T: OpaqueServer> OpaqueServer for &T {
         (**self).begin_login(account, record, request)
     }
 
-    fn finish_login(&self, state: &LoginState, finalization: &CredentialFinalization) -> Result<(), AccessError> {
-        (**self).finish_login(state, finalization)
+    fn finish_login(
+        &self,
+        account: &AccountId,
+        state: &LoginState,
+        finalization: &CredentialFinalization,
+    ) -> Result<(), AccessError> {
+        (**self).finish_login(account, state, finalization)
     }
 }
 
