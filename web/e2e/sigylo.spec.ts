@@ -1,4 +1,5 @@
-import { expect, test, type Browser, type Page, type Request } from '@playwright/test';
+import { type Browser, type Page, type Request } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { catalogs } from '../src/lib/i18n';
 import { legal } from '../src/lib/legal';
 
@@ -283,6 +284,15 @@ test.describe('adversary', () => {
     const foreign = await request.post('/api/secrets', { data, headers: { Origin: 'https://evil.example' } });
     expect(foreign.status()).toBe(403);
     expect(await foreign.json()).toEqual({ error: 'CrossOrigin' });
+  });
+
+  test('one client address gets 30 writes a minute, then 429', async ({ request }) => {
+    const data = { payload: 'U0dZAQEA' + 'A'.repeat(400), retention: 'burn_after_reading', lifetime_seconds: 300 };
+    const headers = { 'CF-Connecting-IP': '2001:db8:7:7::1' };
+    for (let i = 0; i < 30; i++) expect((await request.post('/api/secrets', { data, headers })).status()).toBe(201);
+    // Another address in the same IPv6 /64 is the same client.
+    const next = await request.post('/api/secrets', { data, headers: { 'CF-Connecting-IP': '2001:db8:7:7::2' } });
+    expect(next.status()).toBe(429);
   });
 
   test('a link preview bot (GET) cannot burn a secret', async ({ page, request, browser }) => {
