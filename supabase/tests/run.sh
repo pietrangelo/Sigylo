@@ -60,3 +60,6 @@ psql "$relay_url" -v ON_ERROR_STOP=1 -q -X -f "$root/supabase/tests/relay_cannot
 
 echo "== Vault contract tests (Rust, against this database)"
 (cd "$root" && cargo test -p custody-adapters --test postgres_vault -- --test-threads=1)
+
+echo "== Account store contract tests (Rust, against this database)"
+(cd "$root" && cargo test -p access-adapters --features postgres --test postgres_accounts -- --test-threads=1)

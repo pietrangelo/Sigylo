@@ -26,6 +26,13 @@ describe('platform', () => {
       expect(await response.json()).toEqual({ id: 'x' });
     });
 
+    it('hands a signed-in session to the shell, without the Bearer prefix', async () => {
+      const calls: Call[] = [];
+      const token = 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8';
+      await ipcFetch(recording({ status: 200, body: '{}' }, calls))('/api/account/keyring', { method: 'GET', headers: { Authorization: `Bearer ${token}` } });
+      expect(calls[0]!.args).toEqual({ method: 'GET', path: '/account/keyring', body: null, session: token });
+    });
+
     it('sends no body when there is none', async () => {
       const calls: Call[] = [];
       await ipcFetch(recording({ status: 200, body: '{}' }, calls))('/api/requests/abc', { method: 'GET' });
@@ -60,6 +67,12 @@ describe('platform', () => {
     });
 
     describe('adversary', () => {
+      it('refuses any other authorization than a bearer session', async () => {
+        for (const value of ['Basic dXNlcjpwYXNz', 'bearer x', 'Bearer', 'Bearer  x', 'Token x']) {
+          await expect(ipcFetch(recording({ status: 200, body: '{}' }))('/api/account/close', { method: 'POST', headers: { Authorization: value } })).rejects.toThrow();
+        }
+      });
+
       it('refuses anything outside the relay API before reaching the shell', async () => {
         const calls: Call[] = [];
         const fetch = ipcFetch(recording({ status: 200, body: '{}' }, calls));
