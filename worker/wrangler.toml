@@ -27,12 +27,17 @@ binding = "DB"
 id = "c9378333c78c410c8ceffd9b7e19488f"
 localConnectionString = "postgres://sigylo_relay:relay-test-only@127.0.0.1:55432/postgres"
 
-# Throttles every API call per client address, IPv6 by /64 (kept in memory by
-# Cloudflare, never stored by us).
+# Throttle every API call per client address, IPv6 by /64 (kept in memory by
+# Cloudflare, never stored by us): POSTs and GETs each have their own allowance.
 [[ratelimits]]
-name = "API_LIMITER"
+name = "WRITE_LIMITER"
 namespace_id = "7301"
 simple = { limit = 30, period = 60 }
+
+[[ratelimits]]
+name = "READ_LIMITER"
+namespace_id = "7302"
+simple = { limit = 60, period = 60 }
 
 # Physically delete expired rows (reads already ignore them).
 [triggers]

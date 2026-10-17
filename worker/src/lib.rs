@@ -66,7 +66,10 @@ mod runtime {
 
     async fn rate_limited(env: &Env, req: &Request) -> bool {
         // The client address is used in memory for throttling and never stored.
-        let Ok(limiter) = env.rate_limiter("API_LIMITER") else { return false };
+        // Writes and reads have their own allowance, so fetching a request does
+        // not eat into the allowance for answering it.
+        let binding = if req.method() == Method::Post { "WRITE_LIMITER" } else { "READ_LIMITER" };
+        let Ok(limiter) = env.rate_limiter(binding) else { return false };
         let address = req.headers().get("CF-Connecting-IP").ok().flatten().unwrap_or_default();
         limiter.limit(api::limiter_key(&address)).await.map(|o| !o.success).unwrap_or(false)
     }
