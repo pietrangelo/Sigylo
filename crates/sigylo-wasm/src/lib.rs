@@ -19,10 +19,10 @@
 //! garbage collector may keep copies we cannot wipe.
 #![forbid(unsafe_code)]
 
-use js_sys::Uint8Array;
+use js_sys::{Array, Uint8Array};
 use sealing::{
-    Envelope, Fingerprint, LinkKey, Passphrase, Plaintext, RecipientPublicKey, RecipientSeed, SealError, Sealer,
-    SenderCode, SenderPin, SenderSeed,
+    Envelope, FileBytes, FileManifest, FileName, Fingerprint, LinkKey, Passphrase, Plaintext, RecipientPublicKey,
+    RecipientSeed, SealError, SealedChunk, SealedFile, Sealer, SenderCode, SenderPin, SenderSeed,
 };
 use sealing_adapters::rustcrypto_suite;
 use wasm_bindgen::prelude::*;
@@ -300,5 +300,176 @@ pub fn open_as_recipient(
             plaintext: hand_over(received.plaintext.expose()),
             sender_code: received.sender.map(|sender| sender.code()),
         })
+    })
+}
+
+/// A file sealed for a link: the manifest envelope is deposited first, then
+/// each chunk in order; the key goes into the fragment.
+#[wasm_bindgen]
+#[derive(Debug)]
+pub struct SealedFileLink {
+    envelope: Vec<u8>,
+    key: Uint8Array,
+    chunks: Array,
+}
+
+#[wasm_bindgen]
+impl SealedFileLink {
+    #[wasm_bindgen(getter)]
+    pub fn envelope(&self) -> Vec<u8> {
+        self.envelope.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn key(&self) -> Uint8Array {
+        self.key.clone()
+    }
+
+    /// The sealed chunks, in order, as `Uint8Array`s.
+    #[wasm_bindgen(getter)]
+    pub fn chunks(&self) -> Array {
+        self.chunks.clone()
+    }
+}
+
+/// A file sealed to a recipient's public key.
+#[wasm_bindgen]
+#[derive(Debug)]
+pub struct SealedFileForRecipient {
+    envelope: Vec<u8>,
+    chunks: Array,
+}
+
+#[wasm_bindgen]
+impl SealedFileForRecipient {
+    #[wasm_bindgen(getter)]
+    pub fn envelope(&self) -> Vec<u8> {
+        self.envelope.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn chunks(&self) -> Array {
+        self.chunks.clone()
+    }
+}
+
+/// What an opened secret says about the file it stands for.
+#[wasm_bindgen]
+#[derive(Debug)]
+pub struct FileInfo {
+    name: String,
+    size: u32,
+    chunks: u32,
+}
+
+#[wasm_bindgen]
+impl FileInfo {
+    #[wasm_bindgen(getter)]
+    pub fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn size(&self) -> u32 {
+        self.size
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn chunks(&self) -> u32 {
+        self.chunks
+    }
+}
+
+fn chunk_array(chunks: Vec<SealedChunk>) -> Array {
+    chunks.into_iter().map(|chunk| JsValue::from(Uint8Array::from(chunk.as_bytes()))).collect()
+}
+
+fn file_parts(name: String, contents: Vec<u8>) -> Result<(FileName, FileBytes), SealError> {
+    let contents = FileBytes::new(contents)?;
+    Ok((FileName::new(name)?, contents))
+}
+
+/// The manifest inside an opened secret, `None` for a text. Takes the bytes
+/// by value so they are wiped once read.
+fn manifest(plaintext: Vec<u8>) -> Result<Option<FileManifest>, SealError> {
+    FileManifest::recognize(&Plaintext::new(plaintext)?)
+}
+
+/// `name` must be NFC-normalized by the caller.
+#[wasm_bindgen(js_name = sealFileForLink)]
+pub fn seal_file_for_link(
+    name: String,
+    contents: Vec<u8>,
+    passphrase_utf8: Option<Vec<u8>>,
+) -> Result<SealedFileLink, JsError> {
+    scrubbed(|| {
+        let (name, contents) = file_parts(name, contents).map_err(js_error)?;
+        let passphrase = passphrase(passphrase_utf8).map_err(js_error)?;
+        let (file, key) = sealer().seal_file_for_link(name, &contents, passphrase.as_ref()).map_err(js_error)?;
+        let SealedFile { manifest, chunks } = file;
+        Ok(SealedFileLink { envelope: manifest.to_bytes(), key: hand_over(key.expose()), chunks: chunk_array(chunks) })
+    })
+}
+
+#[wasm_bindgen(js_name = sealFileForRecipient)]
+pub fn seal_file_for_recipient(
+    name: String,
+    contents: Vec<u8>,
+    public_key: &[u8],
+    fingerprint: &[u8],
+    passphrase_utf8: Option<Vec<u8>>,
+    sender_seed: Option<Vec<u8>>,
+    expected_sender: Option<Vec<u8>>,
+) -> Result<SealedFileForRecipient, JsError> {
+    scrubbed(|| {
+        let (name, contents) = file_parts(name, contents).map_err(js_error)?;
+        let public_key = RecipientPublicKey::from_slice(public_key).map_err(js_error)?;
+        let fingerprint = Fingerprint::from_slice(fingerprint).map_err(js_error)?;
+        let passphrase = passphrase(passphrase_utf8).map_err(js_error)?;
+        let sender = sender_identity(sender_seed).map_err(js_error)?;
+        let pin = self::expected_sender(expected_sender).map_err(js_error)?;
+        let file = sealer()
+            .seal_file_for_recipient(
+                name,
+                &contents,
+                &public_key,
+                &fingerprint,
+                passphrase.as_ref(),
+                sender.as_ref(),
+                pin.as_ref(),
+            )
+            .map_err(js_error)?;
+        Ok(SealedFileForRecipient { envelope: file.manifest.to_bytes(), chunks: chunk_array(file.chunks) })
+    })
+}
+
+/// Name, size and chunk count of the file an opened secret stands for, or
+/// `undefined` when the secret is a text.
+#[wasm_bindgen(js_name = fileInfo)]
+pub fn file_info(plaintext: Vec<u8>) -> Result<Option<FileInfo>, JsError> {
+    scrubbed(|| {
+        Ok(manifest(plaintext).map_err(js_error)?.map(|m| FileInfo {
+            name: m.name().as_str().to_owned(),
+            // MAX_FILE_LEN fits in u32.
+            size: m.size().bytes() as u32,
+            chunks: m.size().chunk_count(),
+        }))
+    })
+}
+
+/// Opens the chunks of a file with the manifest from its opened secret.
+#[wasm_bindgen(js_name = openFile)]
+pub fn open_file(plaintext: Vec<u8>, chunks: Array) -> Result<Uint8Array, JsError> {
+    scrubbed(|| {
+        let manifest = manifest(plaintext).map_err(js_error)?.ok_or(SealError::MalformedEnvelope).map_err(js_error)?;
+        let chunks = chunks
+            .iter()
+            .map(|chunk| {
+                SealedChunk::new(chunk.dyn_into::<Uint8Array>().map_err(|_| SealError::MalformedEnvelope)?.to_vec())
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(js_error)?;
+        let contents = sealer().open_file(&manifest, &chunks).map_err(js_error)?;
+        Ok(hand_over(contents.expose()))
     })
 }
