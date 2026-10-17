@@ -4,6 +4,7 @@
   import { SEED_LEN, browserStore, loadOrCreateSeed } from '../lib/identity';
   import { relayMessage, sealMessage } from '../lib/messages';
   import { Relay, type Retention } from '../lib/relay';
+  import { relayFetch } from '../lib/platform';
   import SealOptions from './SealOptions.svelte';
 
   let {
@@ -12,7 +13,7 @@
     expectedSender,
   }: { id: Uint8Array; fingerprint: Uint8Array; expectedSender: Uint8Array | null } = $props();
 
-  const relay = new Relay();
+  const relay = new Relay(relayFetch);
   let secret = $state('');
   let retention: Retention = $state('burn_after_reading');
   let lifetime = $state(86400);
