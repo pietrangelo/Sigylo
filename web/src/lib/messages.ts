@@ -15,6 +15,10 @@ export function sealMessage(code: SealErrorCode): string {
       return t.errTooLarge;
     case 'PlaintextEmpty':
       return t.errEmpty;
+    case 'FileTooLarge':
+      return t.errFileTooLarge;
+    case 'InvalidFileName':
+      return t.errFileName;
     case 'InvalidSenderCode':
       return t.errSenderCode;
     case 'UnexpectedSender':
@@ -35,11 +39,17 @@ export function relayMessage(error: RelayError): string {
       return t.errRateLimited;
     case 'PayloadTooLarge':
       return t.errTooLarge;
-    case 'CustodyFull':
-      return t.errFull;
+    case 'StorageFull':
+      return t.errStorageFull;
     default:
       return t.errGeneric;
   }
+}
+
+/** "3.4 MB", "820 kB", "12 byte", in the page's language. */
+export function formatSize(bytes: number, locale = document.documentElement.lang): string {
+  const [value, unit] = bytes >= 1_000_000 ? [bytes / 1_000_000, 'megabyte'] : bytes >= 1_000 ? [bytes / 1_000, 'kilobyte'] : [bytes, 'byte'];
+  return new Intl.NumberFormat(locale, { style: 'unit', unit, unitDisplay: 'short', maximumFractionDigits: 1 }).format(value);
 }
 
 export function formatExpiry(unixSeconds: number): string {
