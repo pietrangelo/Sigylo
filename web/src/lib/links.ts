@@ -11,6 +11,7 @@
 //   #/k/<id>/<seed>/<pin> ... refusing an answer from anyone but that sender
 //   #/me                 this browser's sender code
 //   #/terms, #/privacy   the terms of service and the privacy notice
+//   #/account            sign in, and the seals of a signed-in sender
 //
 // The pin is a per-request commitment to the expected sender's code, never
 // the code itself, so links to the same sender cannot be linked together.
@@ -30,6 +31,7 @@ export type Route =
   | { kind: 'me' }
   | { kind: 'terms' }
   | { kind: 'privacy' }
+  | { kind: 'account' }
   | { kind: 'invalid' };
 
 export function parseFragment(fragment: string): Route {
@@ -37,6 +39,7 @@ export function parseFragment(fragment: string): Route {
   if (path === '' || path === '/') return { kind: 'compose' };
   if (path === '/terms') return { kind: 'terms' };
   if (path === '/privacy') return { kind: 'privacy' };
+  if (path === '/account') return { kind: 'account' };
   if (path === '/me') return { kind: 'me' };
   const parts = path.split('/');
   if (parts[0] !== '') return { kind: 'invalid' };

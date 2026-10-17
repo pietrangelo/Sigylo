@@ -29,3 +29,28 @@ begin
         end;
     end loop;
 end $$;
+
+-- Same for accounts: a leaked relay credential cannot list or dump them.
+do $$
+declare
+    attempt text;
+begin
+    foreach attempt in array array[
+        'select count(*) from access.accounts',
+        'select record from access.accounts',
+        'select * from access.sessions',
+        'select * from access.logins',
+        'update access.accounts set keyring = null',
+        'delete from access.sessions',
+        'insert into access.sessions values (''\x00''::bytea, ''\x00''::bytea, now())',
+        'truncate access.accounts',
+        'select access.lifetime(300)'
+    ] loop
+        begin
+            execute attempt;
+            raise exception 'relay was allowed to run: %', attempt;
+        exception when insufficient_privilege then
+            null; -- expected
+        end;
+    end loop;
+end $$;

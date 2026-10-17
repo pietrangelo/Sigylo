@@ -66,6 +66,22 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # The relay's OPAQUE keys derive from this secret (CLAUDE.md §4). It is made
+      # once, on the runner, straight into Cloudflare, and never printed. It is
+      # never replaced: a new one would lock every account out. If the list
+      # cannot be read, the step fails rather than risk making a second one.
+      - name: The OPAQUE secret exists
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          names="$(npx --yes wrangler@${{ env.WRANGLER_VERSION }} secret list --format json | jq -r '.[].name')"
+          if ! grep -qx OPAQUE_SERVER_SEED <<<"$names"; then
+            openssl rand 32 | basenc --base64url | tr -d '=\n' \
+              | npx --yes wrangler@${{ env.WRANGLER_VERSION }} secret put OPAQUE_SERVER_SEED
+          fi
       # Rocket Loader, Email Obfuscation or an analytics beacon would rewrite the
       # page and break CSP and SRI (CLAUDE.md §6): the zone must serve the page
       # byte for byte as built, with the policy from _headers. A new custom

@@ -7,8 +7,9 @@ import { legal } from '../src/lib/legal';
 
 const SECRET = 'password del DB: cavallo-corretto-batteria-graffetta 🔐';
 
-async function freshPage(browser: Browser): Promise<Page> {
-  const context = await browser.newContext();
+async function freshPage(browser: Browser, address?: string): Promise<Page> {
+  // Its own client address, so the per-address write limit of the rest of the suite does not apply.
+  const context = await browser.newContext(address === undefined ? {} : { extraHTTPHeaders: { 'CF-Connecting-IP': address } });
   return context.newPage();
 }
 
@@ -440,4 +441,72 @@ test('the footer opens the terms and the privacy notice in a new tab, in the bro
     expect(violations).toEqual([]);
     await context.close();
   }
+});
+
+// Argon2id (64 MiB) runs on every sign-up and sign-in: give it time on a busy runner.
+const ARGON = { timeout: 30_000 };
+
+test('account: sign up, keep seals across devices, destroy one, close the account', async ({ browser }) => {
+  test.setTimeout(120_000);
+  const page = await freshPage(browser, '198.51.100.1');
+  const name = `e2e-${Date.now().toString(36)}`;
+  const password = 'una password lunga e mia 🔑';
+  const wire: string[] = [];
+  const listen = (p: Page) => p.on('request', (r: Request) => wire.push(`${r.url()} ${r.postData() ?? ''} ${JSON.stringify(r.headers())}`));
+  listen(page);
+
+  await page.goto('/');
+  await page.getByTestId('account-link').click();
+  await page.getByTestId('tab-sign-up').click();
+  await page.getByTestId('username').fill(name);
+  await page.getByTestId('password').fill(password);
+  await page.getByTestId('account-submit').click();
+  await expect(page.getByTestId('signed-in')).toContainText(name, ARGON);
+  await expect(page.getByTestId('no-seals')).toBeVisible();
+
+  // Sealed while signed in: the revocation token goes into the sealed keyring.
+  await page.locator('.brand').click();
+  await page.getByTestId('secret').fill(SECRET);
+  await page.getByTestId('seal').click();
+  await expect(page.getByTestId('saved-to-account')).toBeVisible(ARGON);
+  const link = await page.getByTestId('secret-link').inputValue();
+
+  // Another device: a wrong password opens nothing, the right one shows the seal.
+  const laptop = await freshPage(browser, '198.51.100.2');
+  listen(laptop);
+  await laptop.goto('/#/account');
+  await laptop.getByTestId('username').fill(name.toUpperCase());
+  await laptop.getByTestId('password').fill('non è la mia password');
+  await laptop.getByTestId('account-submit').click();
+  await expect(laptop.getByRole('alert')).toHaveText(catalogs.it.errBadLogin, ARGON);
+  await laptop.getByTestId('password').fill(password);
+  await laptop.getByTestId('account-submit').click();
+  await expect(laptop.getByTestId('seals').locator('li')).toHaveCount(1, ARGON);
+  await laptop.getByTestId('destroy-seal').click();
+  await expect(laptop.getByTestId('no-seals')).toBeVisible();
+
+  const reader = await freshPage(browser, '198.51.100.3');
+  await reader.goto(link);
+  await reader.getByTestId('reveal').click();
+  await expect(reader.getByTestId('open-error')).toContainText('Non c');
+
+  // The first device sees the change, then closes the account.
+  await page.getByTestId('account-link').click();
+  await expect(page.getByTestId('no-seals')).toBeVisible();
+  await page.getByTestId('close-account').click();
+  await page.getByTestId('confirm-close').click();
+  await expect(page.getByTestId('account-notice')).toHaveText(catalogs.it.closed);
+  await page.getByTestId('username').fill(name);
+  await page.getByTestId('password').fill(password);
+  await page.getByTestId('account-submit').click();
+  await expect(page.getByRole('alert')).toHaveText(catalogs.it.errBadLogin, ARGON);
+
+  // OPAQUE: the password never travelled, in any form, in any request.
+  const encoded = Buffer.from(password, 'utf8');
+  for (const line of wire) {
+    expect(line).not.toContain('password lunga');
+    expect(line).not.toContain(encoded.toString('base64url'));
+    expect(line).not.toContain(encodeURIComponent(password));
+  }
+  expect(wire.some((l) => l.includes('/api/account/login/finish'))).toBe(true);
 });

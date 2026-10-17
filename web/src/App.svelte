@@ -6,6 +6,8 @@
   import Answer from './components/Answer.svelte';
   import Revoke from './components/Revoke.svelte';
   import Legal from './components/Legal.svelte';
+  import Account from './components/Account.svelte';
+  import { signedIn } from './lib/session.svelte';
   import Me from './components/Me.svelte';
   import PasteLink from './components/PasteLink.svelte';
   import { isApp, openLegal } from './lib/platform';
@@ -29,6 +31,7 @@
       </svg>
       <span>{t.home}</span>
     </a>
+    <a class="account" href="#/account" data-testid="account-link">{signedIn.session ? t.accountMine : t.accountLink}</a>
     <p class="muted">{t.tagline}</p>
   </header>
 
@@ -46,6 +49,8 @@
       <Me />
     {:else if route.kind === 'revoke'}
       <Revoke id={route.id} token={route.token} />
+    {:else if route.kind === 'account'}
+      <Account />
     {:else if route.kind === 'terms' || route.kind === 'privacy'}
       <Legal kind={route.kind} />
     {:else}
@@ -91,6 +96,12 @@
     font-size: var(--t-display);
     font-weight: 700;
     letter-spacing: -0.02em;
+  }
+
+  .account {
+    float: right;
+    margin-top: var(--s4);
+    color: var(--muted);
   }
 
   .brand svg {
