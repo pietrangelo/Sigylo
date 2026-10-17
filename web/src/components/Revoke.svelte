@@ -2,10 +2,11 @@
   import { t } from '../lib/i18n';
   import { relayMessage } from '../lib/messages';
   import { Relay } from '../lib/relay';
+  import { relayFetch } from '../lib/platform';
 
   let { id, token }: { id: Uint8Array; token: Uint8Array } = $props();
 
-  const relay = new Relay();
+  const relay = new Relay(relayFetch);
   let busy = $state(false);
   let error = $state('');
   let done = $state(false);

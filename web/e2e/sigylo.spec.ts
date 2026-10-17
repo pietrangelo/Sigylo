@@ -4,8 +4,9 @@ import { legal } from '../src/lib/legal';
 
 const SECRET = 'password del DB: cavallo-corretto-batteria-graffetta 🔐';
 
-async function freshPage(browser: Browser): Promise<Page> {
-  const context = await browser.newContext();
+async function freshPage(browser: Browser, address?: string): Promise<Page> {
+  // Its own client address, so the per-address write limit of the rest of the suite does not apply.
+  const context = await browser.newContext(address === undefined ? {} : { extraHTTPHeaders: { 'CF-Connecting-IP': address } });
   return context.newPage();
 }
 
@@ -219,12 +220,14 @@ test('the footer opens the terms and the privacy notice in a new tab, in the bro
 // Argon2id (64 MiB) runs on every sign-up and sign-in: give it time on a busy runner.
 const ARGON = { timeout: 30_000 };
 
-test('account: sign up, keep seals across devices, destroy one, close the account', async ({ page, browser }) => {
+test('account: sign up, keep seals across devices, destroy one, close the account', async ({ browser }) => {
   test.setTimeout(120_000);
+  const page = await freshPage(browser, '198.51.100.1');
   const name = `e2e-${Date.now().toString(36)}`;
   const password = 'una password lunga e mia 🔑';
   const wire: string[] = [];
-  page.on('request', (r: Request) => wire.push(`${r.url()} ${r.postData() ?? ''} ${JSON.stringify(r.headers())}`));
+  const listen = (p: Page) => p.on('request', (r: Request) => wire.push(`${r.url()} ${r.postData() ?? ''} ${JSON.stringify(r.headers())}`));
+  listen(page);
 
   await page.goto('/');
   await page.getByTestId('account-link').click();
@@ -243,7 +246,8 @@ test('account: sign up, keep seals across devices, destroy one, close the accoun
   const link = await page.getByTestId('secret-link').inputValue();
 
   // Another device: a wrong password opens nothing, the right one shows the seal.
-  const laptop = await freshPage(browser);
+  const laptop = await freshPage(browser, '198.51.100.2');
+  listen(laptop);
   await laptop.goto('/#/account');
   await laptop.getByTestId('username').fill(name.toUpperCase());
   await laptop.getByTestId('password').fill('non è la mia password');
@@ -255,7 +259,7 @@ test('account: sign up, keep seals across devices, destroy one, close the accoun
   await laptop.getByTestId('destroy-seal').click();
   await expect(laptop.getByTestId('no-seals')).toBeVisible();
 
-  const reader = await freshPage(browser);
+  const reader = await freshPage(browser, '198.51.100.3');
   await reader.goto(link);
   await reader.getByTestId('reveal').click();
   await expect(reader.getByTestId('open-error')).toContainText('Non c');
