@@ -29,6 +29,8 @@ impl Ring {
 const IMPURE_STD: &[&str] = &["fs", "net", "io", "process", "env", "thread", "time", "os", "path"];
 /// Macros that read files or the environment at compile time.
 const COMPILE_TIME_IO: &[&str] = &["include", "include_str", "include_bytes", "env", "option_env"];
+/// Macros that write to stdout or stderr: I/O, and the shortest way to leak a key.
+const CONSOLE_IO: &[&str] = &["print", "println", "eprint", "eprintln", "dbg"];
 
 /// Check a file of the `core` or `application` ring.
 pub fn check_source(file: &Path, text: &str, ring: Ring) -> Vec<Violation> {
@@ -193,6 +195,11 @@ impl<'ast> Visit<'ast> for Checker<'_> {
             && COMPILE_TIME_IO.contains(&name.as_str())
         {
             self.push(Rule::CompileTimeIo, format!("`{name}!` reads outside the source at compile time"));
+        }
+        if let Some(name) = mac.path.segments.last().map(|s| s.ident.to_string())
+            && CONSOLE_IO.contains(&name.as_str())
+        {
+            self.push(Rule::ConsoleIo, format!("`{name}!` writes to the console from a domain"));
         }
         self.check_tokens(mac.tokens.clone());
         visit::visit_macro(self, mac);
