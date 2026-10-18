@@ -12,7 +12,7 @@ export const operator = {
 } as const;
 
 /** Date of the last change to any of these texts (ISO 8601). */
-export const LEGAL_UPDATED = '2026-10-17';
+export const LEGAL_UPDATED = '2026-10-18';
 
 export interface LegalSection {
   heading: string;
@@ -123,6 +123,7 @@ const it: LegalTexts = {
         heading: `Sul tuo dispositivo`,
         body: [
           `Quando rispondi a una richiesta, il browser crea la tua chiave di firma di mittente e la tiene nella memoria locale (localStorage) di sigylo.net, così il tuo codice mittente resta sempre lo stesso. Non ci viene mai inviata e non ti identifica presso di noi: in ogni risposta firmata viaggia solo la chiave pubblica, cifrata insieme al segreto, che soltanto il destinatario può leggere. Puoi cancellarla quando vuoi eliminando i dati del sito dal browser.`,
+          `Se accedi a un account, il browser annota nella stessa memoria locale il numero dell'ultima versione del tuo portachiavi che ha visto, sotto un nome ricavato dalla chiave del portachiavi e non dal tuo nome utente: così si accorge se il server gli restituisce una copia più vecchia. Non contiene sigilli e non ci viene mai inviato.`,
         ],
       },
       {
@@ -255,6 +256,7 @@ const en: LegalTexts = {
         heading: `On your device`,
         body: [
           `When you answer a request, your browser creates your sender signing key and keeps it in the local storage (localStorage) of sigylo.net, so your sender code stays the same. It is never sent to us and does not identify you to us: each signed answer carries only the public key, encrypted together with the secret, which only the recipient can read. You can delete it at any time by clearing the site data in your browser.`,
+          `If you sign in to an account, your browser notes in the same local storage the number of the latest version of your keyring it has seen, under a name derived from the keyring key and not from your username, so it notices if the server hands back an older copy. It holds no seals and is never sent to us.`,
         ],
       },
       {
@@ -387,6 +389,7 @@ const fr: LegalTexts = {
         heading: `Sur votre appareil`,
         body: [
           `Lorsque vous répondez à une demande, votre navigateur crée votre clé de signature d'expéditeur et la garde dans le stockage local (localStorage) de sigylo.net, afin que votre code d'expéditeur reste le même. Elle ne nous est jamais envoyée et ne vous identifie pas auprès de nous : chaque réponse signée ne transporte que la clé publique, chiffrée avec le secret, que seul le destinataire peut lire. Vous pouvez la supprimer à tout moment en effaçant les données du site dans votre navigateur.`,
+          `Si vous vous connectez à un compte, votre navigateur note dans le même stockage local le numéro de la dernière version de votre trousseau qu'il a vue, sous un nom dérivé de la clé du trousseau et non de votre nom d'utilisateur, afin de remarquer si le serveur lui renvoie une copie plus ancienne. Il ne contient aucun sceau et ne nous est jamais envoyé.`,
         ],
       },
       {
@@ -519,6 +522,7 @@ const es: LegalTexts = {
         heading: `En tu dispositivo`,
         body: [
           `Cuando respondes a una solicitud, tu navegador crea tu clave de firma de remitente y la guarda en el almacenamiento local (localStorage) de sigylo.net, para que tu código de remitente sea siempre el mismo. Nunca se nos envía y no te identifica ante nosotros: cada respuesta firmada lleva solo la clave pública, cifrada junto con el secreto, que solo el destinatario puede leer. Puedes borrarla cuando quieras eliminando los datos del sitio en tu navegador.`,
+          `Si inicias sesión en una cuenta, tu navegador anota en el mismo almacenamiento local el número de la última versión de tu llavero que ha visto, con un nombre derivado de la clave del llavero y no de tu nombre de usuario, para darse cuenta si el servidor le devuelve una copia más antigua. No contiene sellos y nunca se nos envía.`,
         ],
       },
       {
@@ -651,6 +655,7 @@ const de: LegalTexts = {
         heading: `Auf deinem Gerät`,
         body: [
           `Wenn du eine Anfrage beantwortest, erzeugt dein Browser deinen Absender-Signaturschlüssel und bewahrt ihn im lokalen Speicher (localStorage) von sigylo.net auf, damit dein Absendercode gleich bleibt. Er wird nie an uns gesendet und identifiziert dich uns gegenüber nicht: Jede signierte Antwort enthält nur den öffentlichen Schlüssel, zusammen mit dem Geheimnis verschlüsselt, den nur die empfangende Person lesen kann. Du kannst ihn jederzeit löschen, indem du die Websitedaten in deinem Browser entfernst.`,
+          `Wenn du dich bei einem Konto anmeldest, notiert dein Browser im selben lokalen Speicher die Nummer der neuesten Version deines Schlüsselbunds, die er gesehen hat, unter einem Namen, der aus dem Schlüssel des Schlüsselbunds abgeleitet ist und nicht aus deinem Benutzernamen: So bemerkt er, wenn der Server ihm eine ältere Kopie liefert. Sie enthält keine Siegel und wird nie an uns gesendet.`,
         ],
       },
       {
