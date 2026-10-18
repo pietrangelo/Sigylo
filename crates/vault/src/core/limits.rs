@@ -9,16 +9,18 @@ pub const OBJECT_BYTES_CEILING: u64 = 5 * 1024 * 1024 * 1024;
 /// The largest, a request, is under 1.3 KiB, so this stays near 1 GiB at most.
 pub const RECORD_CEILING: u64 = 1_000_000;
 
-/// Rows written in one day (UTC) past which nothing new is stored: half of
-/// the 100,000 a Workers Free account may write each day, so opening,
-/// burning, revoking and purging keep working when storing has stopped.
-/// On a paid plan, where each million rows costs money, it caps the bill.
-pub const STORING_WRITES_PER_DAY: u32 = 50_000;
+/// Rows written in one day (UTC) past which nothing new is stored. The vault
+/// runs on Workers Paid, where rows past the 50 million a month included cost
+/// $1 per million and nothing is blocked: this caps what a flood can add to
+/// the bill at about $1 a day, instead of switching storing off for everyone.
+/// On Workers Free (100,000 rows a day, then every write fails) it must be
+/// back under half of that.
+pub const STORING_WRITES_PER_DAY: u32 = 1_000_000;
 /// Rows written in one day past which purging and collecting wait for the
 /// next day: tearing a secret down costs about twice the writes of storing
-/// it, so a week of floods expiring at once must not eat the 20,000 left
-/// for opening, burning and revoking. Expired records are invisible anyway.
-pub const TEARDOWN_WRITES_PER_DAY: u32 = 80_000;
+/// it, so this leaves room to clean up a full day of storing, and still caps
+/// the bill. Expired records are invisible anyway.
+pub const TEARDOWN_WRITES_PER_DAY: u32 = 2 * STORING_WRITES_PER_DAY;
 
 /// Expired records one purge removes at most, so a purge fits in a request.
 pub const PURGE_BATCH: usize = 500;
