@@ -148,8 +148,8 @@ const it: LegalTexts = {
       {
         heading: `Fornitori e trasferimenti`,
         body: [
-          `Cloudflare, Inc.: hosting, rete e limitazione della frequenza, su una rete globale, e archiviazione dei pezzi cifrati dei file su Cloudflare R2 nella giurisdizione dell'Unione europea; i trasferimenti verso gli Stati Uniti si basano sull'EU-U.S. Data Privacy Framework e sulle clausole contrattuali tipo.`,
-          `Supabase, Inc.: database PostgreSQL ospitato nella regione eu-central-1 (Francoforte, Germania). Entrambi agiscono come responsabili del trattamento in base ai rispettivi accordi sul trattamento dei dati.`,
+          `Cloudflare, Inc.: hosting, rete e limitazione della frequenza, su una rete globale, e custodia dei segreti nella giurisdizione dell'Unione europea: buste e pezzi cifrati dei file su Cloudflare R2, scadenze, regole e impronte in un Durable Object di Cloudflare; i trasferimenti verso gli Stati Uniti si basano sull'EU-U.S. Data Privacy Framework e sulle clausole contrattuali tipo.`,
+          `Supabase, Inc.: database PostgreSQL ospitato nella regione eu-central-1 (Francoforte, Germania), per gli account e, fino alla loro scadenza (al massimo 7 giorni), per i segreti custoditi lì in precedenza. Entrambi agiscono come responsabili del trattamento in base ai rispettivi accordi sul trattamento dei dati.`,
         ],
       },
       {
@@ -281,8 +281,8 @@ const en: LegalTexts = {
       {
         heading: `Providers and transfers`,
         body: [
-          `Cloudflare, Inc.: hosting, network and rate limiting, on a global network, and storage of the encrypted pieces of files on Cloudflare R2 in the European Union jurisdiction; transfers to the United States rely on the EU-U.S. Data Privacy Framework and the standard contractual clauses.`,
-          `Supabase, Inc.: PostgreSQL database hosted in the eu-central-1 region (Frankfurt, Germany). Both act as processors under their data processing agreements.`,
+          `Cloudflare, Inc.: hosting, network and rate limiting, on a global network, and safekeeping of secrets in the European Union jurisdiction: envelopes and encrypted pieces of files on Cloudflare R2, expiries, rules and digests in a Cloudflare Durable Object; transfers to the United States rely on the EU-U.S. Data Privacy Framework and the standard contractual clauses.`,
+          `Supabase, Inc.: PostgreSQL database hosted in the eu-central-1 region (Frankfurt, Germany), for accounts and, until they expire (7 days at most), for secrets kept there before. Both act as processors under their data processing agreements.`,
         ],
       },
       {
@@ -414,8 +414,8 @@ const fr: LegalTexts = {
       {
         heading: `Prestataires et transferts`,
         body: [
-          `Cloudflare, Inc. : hébergement, réseau et limitation de fréquence, sur un réseau mondial, et stockage des morceaux chiffrés des fichiers sur Cloudflare R2 dans la juridiction de l'Union européenne ; les transferts vers les États-Unis reposent sur l'EU-U.S. Data Privacy Framework et les clauses contractuelles types.`,
-          `Supabase, Inc. : base de données PostgreSQL hébergée dans la région eu-central-1 (Francfort, Allemagne). Tous deux agissent en tant que sous-traitants selon leurs accords de traitement des données.`,
+          `Cloudflare, Inc. : hébergement, réseau et limitation de fréquence, sur un réseau mondial, et garde des secrets dans la juridiction de l'Union européenne : enveloppes et morceaux chiffrés des fichiers sur Cloudflare R2, expirations, règles et empreintes dans un Durable Object de Cloudflare ; les transferts vers les États-Unis reposent sur l'EU-U.S. Data Privacy Framework et les clauses contractuelles types.`,
+          `Supabase, Inc. : base de données PostgreSQL hébergée dans la région eu-central-1 (Francfort, Allemagne), pour les comptes et, jusqu'à leur expiration (7 jours au plus), pour les secrets qui y étaient gardés auparavant. Tous deux agissent en tant que sous-traitants selon leurs accords de traitement des données.`,
         ],
       },
       {
@@ -547,8 +547,8 @@ const es: LegalTexts = {
       {
         heading: `Proveedores y transferencias`,
         body: [
-          `Cloudflare, Inc.: alojamiento, red y limitación de frecuencia, en una red global, y almacenamiento de los fragmentos cifrados de los archivos en Cloudflare R2 en la jurisdicción de la Unión Europea; las transferencias a Estados Unidos se basan en el EU-U.S. Data Privacy Framework y en las cláusulas contractuales tipo.`,
-          `Supabase, Inc.: base de datos PostgreSQL alojada en la región eu-central-1 (Fráncfort, Alemania). Ambos actúan como encargados del tratamiento según sus acuerdos de tratamiento de datos.`,
+          `Cloudflare, Inc.: alojamiento, red y limitación de frecuencia, en una red global, y custodia de los secretos en la jurisdicción de la Unión Europea: sobres y fragmentos cifrados de los archivos en Cloudflare R2, vencimientos, reglas y huellas en un Durable Object de Cloudflare; las transferencias a Estados Unidos se basan en el EU-U.S. Data Privacy Framework y en las cláusulas contractuales tipo.`,
+          `Supabase, Inc.: base de datos PostgreSQL alojada en la región eu-central-1 (Fráncfort, Alemania), para las cuentas y, hasta su vencimiento (7 días como máximo), para los secretos custodiados allí anteriormente. Ambos actúan como encargados del tratamiento según sus acuerdos de tratamiento de datos.`,
         ],
       },
       {
@@ -680,8 +680,8 @@ const de: LegalTexts = {
       {
         heading: `Anbieter und Übermittlungen`,
         body: [
-          `Cloudflare, Inc.: Hosting, Netzwerk und Ratenbegrenzung in einem globalen Netz sowie Speicherung der verschlüsselten Teile von Dateien auf Cloudflare R2 im Rechtsraum der Europäischen Union; Übermittlungen in die Vereinigten Staaten stützen sich auf das EU-U.S. Data Privacy Framework und die Standardvertragsklauseln.`,
-          `Supabase, Inc.: PostgreSQL-Datenbank in der Region eu-central-1 (Frankfurt, Deutschland). Beide handeln als Auftragsverarbeiter auf Grundlage ihrer Auftragsverarbeitungsverträge.`,
+          `Cloudflare, Inc.: Hosting, Netzwerk und Ratenbegrenzung in einem globalen Netz sowie Verwahrung der Geheimnisse im Rechtsraum der Europäischen Union: Umschläge und verschlüsselte Teile von Dateien auf Cloudflare R2, Abläufe, Regeln und Fingerabdrücke in einem Durable Object von Cloudflare; Übermittlungen in die Vereinigten Staaten stützen sich auf das EU-U.S. Data Privacy Framework und die Standardvertragsklauseln.`,
+          `Supabase, Inc.: PostgreSQL-Datenbank in der Region eu-central-1 (Frankfurt, Deutschland), für Konten und, bis zu ihrem Ablauf (höchstens 7 Tage), für zuvor dort verwahrte Geheimnisse. Beide handeln als Auftragsverarbeiter auf Grundlage ihrer Auftragsverarbeitungsverträge.`,
         ],
       },
       {
