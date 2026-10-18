@@ -48,10 +48,10 @@
   <text x="365" y="349" class="t">TLS pool, caching disabled</text>
   <text x="365" y="370" class="s">role sigylo_relay: EXECUTE only</text>
 
-  <rect x="720" y="430" width="320" height="95" rx="10" class="box"/>
-  <text x="740" y="457" class="t b">Supabase PostgreSQL</text>
-  <text x="740" y="479" class="t">accounts: OPAQUE records, sessions,</text>
-  <text x="740" y="499" class="t">sealed keyrings; legacy custody (draining)</text>
+  <rect x="720" y="430" width="320" height="95" rx="10" class="box" stroke-dasharray="6 4"/>
+  <text x="740" y="457" class="t b">PostgreSQL · being retired</text>
+  <text x="740" y="479" class="t">accounts until they move to the vault;</text>
+  <text x="740" y="499" class="t">old custody draining (max 7 days)</text>
   <text x="740" y="517" class="s">SECURITY DEFINER functions, forced RLS</text>
 
   <rect x="30" y="430" width="250" height="95" rx="10" class="box"/>
