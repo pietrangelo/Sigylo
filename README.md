@@ -1,24 +1,24 @@
 # Sigylo
 
-Il sigillo digitale per i tuoi segreti. Scrivi una password, scegli se deve distruggersi alla prima lettura o a una scadenza, invia il link. Il segreto viene cifrato nel tuo browser; il server conserva solo dati illeggibili e li distrugge come hai deciso.
+**English** · [Italiano](README.it.md)
 
-Indirizzo di produzione: **https://sigylo.net**.
+The digital seal for your secrets. Write a password, choose whether it is destroyed on first read or at an expiry, send the link. The secret is encrypted in your browser; the server keeps only unreadable data and destroys it as you decided.
 
-Specifica, architettura e regole di sviluppo: [CLAUDE.md](CLAUDE.md).
+Production: **https://sigylo.net**.
 
-## Come funziona
+Specification, architecture and development rules (in Italian): [CLAUDE.md](CLAUDE.md).
 
-- **Link:** una chiave casuale di 256 bit, solo nel frammento `#` del link, che i browser non mandano mai ai server. Facoltativa una passphrase (Argon2id) da inviare per un altro canale.
-- **Richiesta, post-quantistica:** chi deve ricevere crea una coppia di chiavi ibrida X25519 + ML-KEM-768 sul proprio dispositivo; chi invia sigilla con quella chiave. Nessuna chiave di lettura viaggia mai.
-- **File fino a 10 MiB:** un manifest sigillato come qualsiasi segreto porta la chiave del file; il file viaggia in blocchi da 1 MiB autenticati con posizione e numero totale, e un file a lettura unica va solo a chi l'ha aperto, blocco per blocco. I blocchi stanno su Cloudflare R2 (UE) sotto nomi casuali, mai nel database.
-- **Relay cieco:** un Cloudflare Worker in Rust custodisce buste opache in PostgreSQL (Supabase, via Hyperdrive). Burn-after-reading atomico, scadenza da 5 minuti a 7 giorni, revoca da parte del mittente.
+## How it works
 
-```text
-browser (Svelte + Rust/Wasm)  ──buste sigillate──▶  Worker Rust (relay cieco)  ──funzioni SQL──▶  PostgreSQL
-   chiavi e testo in chiaro                          niente chiavi, niente log         solo bytea e scadenze
-```
+- **Link:** a random 256-bit key, only in the link's `#` fragment, which browsers never send to servers. Optionally a passphrase (Argon2id) to send over another channel.
+- **Request, post-quantum:** the recipient creates a hybrid X25519 + ML-KEM-768 key pair on their own device; the sender seals with that key. No reading key ever travels.
+- **Files up to 10 MiB:** a manifest sealed like any secret carries the file key; the file travels in 1 MiB chunks authenticated with their position and total count, and a read-once file goes, chunk by chunk, only to whoever opened it. Chunks live on Cloudflare R2 (EU) under random names.
+- **Blind relay:** a Rust Cloudflare Worker keeps opaque envelopes: the ledger lives in a Durable Object in the EU, the envelopes on R2. Atomic burn-after-reading, expiry from 5 minutes to 7 days, revocation by the sender.
+- **Optional accounts:** OPAQUE login (the password never leaves the device), on PostgreSQL (Supabase, via Hyperdrive).
 
-## Avvio rapido
+![Sigylo system and application architecture](docs/architecture.svg)
+
+## Quick start
 
 ```bash
 cargo test --workspace
@@ -28,6 +28,6 @@ bash supabase/tests/run.sh
 bash scripts/e2e.sh
 ```
 
-App installabile (Tauri, desktop e predisposta per mobile): vedi [app/README.md](app/README.md).
+Installable app (Tauri, desktop and ready for mobile): see [app/README.md](app/README.md).
 
-Licenza del codice: Apache-2.0 (vedi [LICENSE](LICENSE) e [NOTICE](NOTICE)). L'uso del servizio su sigylo.net è regolato dai termini di servizio e dall'informativa sulla privacy, raggiungibili dal piè di pagina del sito.
+Code licence: Apache-2.0 (see [LICENSE](LICENSE) and [NOTICE](NOTICE)). Use of the service at sigylo.net is governed by the terms of service and the privacy policy, linked from the site footer.
