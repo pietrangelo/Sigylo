@@ -9,15 +9,17 @@
 //!
 //! Accounts use OPAQUE through the Access use cases: the relay's OPAQUE keys
 //! come from the Worker secret `OPAQUE_SERVER_SEED` (32 bytes, base64url),
-//! and logins and registrations are throttled per account by the `LOGIN_LIMITER` binding.
+//! and logins and registrations are throttled per account and budget by the
+//! `LOGIN_LIMITER` binding and the database. When `OPAQUE_CANARY` is set,
+//! accounts answer only if the secret is the one it names.
 #![forbid(unsafe_code)]
 
 pub mod api;
 
 #[cfg(target_arch = "wasm32")]
 mod runtime {
-    use access::{AccessError, AccountId, Gatekeeper, Throttle};
-    use access_adapters::{OpaqueKeys, PostgresAccounts, PostgresThrottle, RandomTokens};
+    use access::{AccessError, AccountId, Budget, Gatekeeper, Throttle, UnixTime};
+    use access_adapters::{OpaqueKeys, PostgresAccounts, PostgresThrottle, RandomTokens, throttle_bucket};
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     use custody::Custodian;
     use custody_adapters::{PostgresVault, R2ChunkStore, RandomIds, Sha256TokenDigest};
@@ -114,16 +116,16 @@ mod runtime {
     /// same limit in `LOGIN_LIMITER` (wrangler.toml).
     const LOGIN_ATTEMPTS_PER_MINUTE: u16 = 10;
 
-    /// Login and registration attempts per account in Cloudflare's memory,
-    /// keyed by a prefix of the account's keyed hash. Its count is per
+    /// Login and registration attempts per account and budget in Cloudflare's
+    /// memory, keyed by a prefix of the budget's bucket. Its count is per
     /// Cloudflare location, so it only spares the database the obvious
     /// floods. Fails closed: without a working limiter, no guessing.
     struct LoginLimiter<'a>(&'a Env);
 
     impl Throttle for LoginLimiter<'_> {
-        async fn admit(&self, account: &AccountId) -> bool {
+        async fn admit(&self, account: &AccountId, budget: &Budget) -> bool {
             let Ok(limiter) = self.0.rate_limiter("LOGIN_LIMITER") else { return false };
-            let key: String = account.as_bytes()[..16].iter().map(|b| format!("{b:02x}")).collect();
+            let key: String = throttle_bucket(account, budget)[..16].iter().map(|b| format!("{b:02x}")).collect();
             limiter.limit(key).await.map(|o| o.success).unwrap_or(false)
         }
     }
@@ -134,13 +136,26 @@ mod runtime {
         OpaqueKeys::from_seed(&seed)
     }
 
+    /// The relay's clock, which dates device passes.
+    fn now() -> UnixTime {
+        UnixTime((worker::Date::now().as_millis() / 1000) as i64)
+    }
+
     async fn account(command: AccountCommand, env: &Env) -> std::result::Result<Reply, ApiError> {
         let keys = opaque_keys(env)?;
+        let canary = keys.canary();
+        // The canary always reports the live secret, so the deploy can compare it.
+        if let AccountCommand::Canary = command {
+            return Ok(Reply::Json(200, api::canary_body(&canary)));
+        }
+        let expected = env.var("OPAQUE_CANARY").ok().map(|v| v.to_string());
+        api::check_canary(expected.as_deref(), &canary)?;
         let client = connect(env).await.map_err(|_| AccessError::StoreUnavailable)?;
         let digest = keys.session_digest();
+        let passes = keys.passes(now());
         // The binding is a cheap first filter; the database holds the one global count.
         let throttle = (LoginLimiter(env), PostgresThrottle::new(&client, LOGIN_ATTEMPTS_PER_MINUTE));
-        let gatekeeper = Gatekeeper::new(keys, PostgresAccounts::new(&client), RandomTokens, digest, throttle);
+        let gatekeeper = Gatekeeper::new(keys, PostgresAccounts::new(&client), RandomTokens, digest, throttle, passes);
         Ok(match command {
             AccountCommand::RegisterStart(username, request) => Reply::Json(
                 200,
@@ -150,9 +165,10 @@ mod runtime {
                 gatekeeper.register(&username, &record).await?;
                 Reply::Json(201, "{}".into())
             }
-            AccountCommand::LoginStart(username, request) => {
-                Reply::Json(200, api::login_challenge_body(&gatekeeper.begin_login(&username, &request).await?))
-            }
+            AccountCommand::LoginStart(username, request, pass) => Reply::Json(
+                200,
+                api::login_challenge_body(&gatekeeper.begin_login(&username, &request, pass.as_ref()).await?),
+            ),
             AccountCommand::LoginFinish(handle, finalization) => {
                 Reply::Json(200, api::session_body(&gatekeeper.finish_login(&handle, &finalization).await?))
             }
@@ -170,6 +186,11 @@ mod runtime {
                 gatekeeper.close_account(&token).await?;
                 Reply::Json(200, "{}".into())
             }
+            AccountCommand::LogoutEverywhere(token) => {
+                gatekeeper.sign_out_everywhere(&token).await?;
+                Reply::Json(200, "{}".into())
+            }
+            AccountCommand::Canary => Reply::Json(200, api::canary_body(&canary)),
         })
     }
 
@@ -281,7 +302,8 @@ mod runtime {
             if let Ok(keys) = opaque_keys(&env) {
                 let store = PostgresAccounts::new(&client);
                 let digest = keys.session_digest();
-                let gatekeeper = Gatekeeper::new(keys, store, RandomTokens, digest, LoginLimiter(&env));
+                let passes = keys.passes(now());
+                let gatekeeper = Gatekeeper::new(keys, store, RandomTokens, digest, LoginLimiter(&env), passes);
                 let _ = gatekeeper.purge_expired().await;
             }
         }

@@ -10,12 +10,12 @@ use core::task::{Context, Poll, Waker};
 use std::collections::HashMap;
 
 use super::ports::{
-    AccountStore, KeyringKdf, KeyringWrite, OpaqueClient, OpaqueServer, SessionDigester, Throttle, Tokens,
+    AccountStore, KeyringKdf, KeyringWrite, OpaqueClient, OpaqueServer, Passes, SessionDigester, Throttle, Tokens,
 };
 use crate::core::{
-    AccessError, AccountId, CredentialFinalization, CredentialRequest, CredentialResponse, ExportKey, Keyring,
-    KeyringKey, KeyringSnapshot, KeyringVersion, LoginHandle, LoginState, Password, RegistrationRecord,
-    RegistrationRequest, RegistrationResponse, SessionDigest, SessionToken, UnixTime, Username,
+    AccessError, AccountId, Budget, CredentialFinalization, CredentialRequest, CredentialResponse, DevicePass,
+    ExportKey, Keyring, KeyringKey, KeyringSnapshot, KeyringVersion, LoginHandle, LoginState, MAX_SESSIONS, Password,
+    RegistrationRecord, RegistrationRequest, RegistrationResponse, SessionDigest, SessionToken, UnixTime, Username,
 };
 
 /// Drive a future that never actually waits (all fakes complete immediately).
@@ -205,23 +205,51 @@ impl Tokens for SequentialTokens {
     }
 }
 
-/// Admits `budget` logins, then refuses.
+/// Admits `limit` attempts per account and budget, then refuses.
 #[derive(Debug)]
 pub struct CountingThrottle {
-    pub budget: Cell<u32>,
+    pub limit: Cell<u32>,
+    spent: RefCell<HashMap<(AccountId, Vec<u8>), u32>>,
+}
+
+impl CountingThrottle {
+    pub fn spent_total(&self) -> u32 {
+        self.spent.borrow().values().sum()
+    }
 }
 
 impl Default for CountingThrottle {
     fn default() -> Self {
-        Self { budget: Cell::new(u32::MAX) }
+        Self { limit: Cell::new(u32::MAX), spent: RefCell::default() }
     }
 }
 
 impl Throttle for CountingThrottle {
-    async fn admit(&self, _account: &AccountId) -> bool {
-        let left = self.budget.get();
-        self.budget.set(left.saturating_sub(1));
-        left > 0
+    async fn admit(&self, account: &AccountId, budget: &Budget) -> bool {
+        let bucket = match budget {
+            Budget::Login => vec![0],
+            Budget::Registration => vec![1],
+            Budget::Device(pass) => [&[2][..], pass.expose()].concat(),
+        };
+        let mut spent = self.spent.borrow_mut();
+        let count = spent.entry((*account, bucket)).or_default();
+        *count += 1;
+        *count <= self.limit.get()
+    }
+}
+
+/// Passes that are a plain hash of account and record: forgeable, but
+/// bound the way real ones are.
+#[derive(Debug)]
+pub struct ToyPasses;
+
+impl Passes for ToyPasses {
+    fn issue(&self, account: &AccountId, record: &RegistrationRecord) -> Result<DevicePass, AccessError> {
+        DevicePass::from_slice(&fnv(&[b"pass", account.as_bytes(), record.as_bytes()], DevicePass::LEN))
+    }
+
+    fn admits(&self, pass: &DevicePass, account: &AccountId, record: &RegistrationRecord) -> bool {
+        self.issue(account, record).is_ok_and(|p| p == *pass)
     }
 }
 
@@ -312,7 +340,16 @@ impl AccountStore for FakeStore {
             return Ok(None);
         }
         let expires = self.now.get() + i64::from(lifetime_seconds);
-        self.sessions.borrow_mut().insert(*digest, (*account, expires));
+        let mut sessions = self.sessions.borrow_mut();
+        sessions.insert(*digest, (*account, expires));
+        loop {
+            let mine = sessions.iter().filter(|(_, (a, _))| a == account);
+            if mine.clone().count() <= MAX_SESSIONS as usize {
+                break;
+            }
+            let oldest = *mine.min_by_key(|(_, (_, e))| *e).map(|(d, _)| d).expect("over the cap");
+            sessions.remove(&oldest);
+        }
         Ok(Some(UnixTime(expires)))
     }
 
@@ -320,6 +357,13 @@ impl AccountStore for FakeStore {
         self.up()?;
         self.sessions.borrow_mut().remove(digest);
         Ok(())
+    }
+
+    async fn close_sessions(&self, digest: &SessionDigest) -> Result<bool, AccessError> {
+        self.up()?;
+        let Some(account) = self.session(digest) else { return Ok(false) };
+        self.sessions.borrow_mut().retain(|_, (a, _)| *a != account);
+        Ok(true)
     }
 
     async fn keyring(&self, digest: &SessionDigest) -> Result<Option<KeyringSnapshot>, AccessError> {

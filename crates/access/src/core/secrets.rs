@@ -61,6 +61,14 @@ secret_array!(
     SessionToken, 32
 );
 secret_array!(
+    /// Proof that a device logged in to the account before, issued by the
+    /// relay at each login and kept by the device. It opens nothing; it only
+    /// lets the device's logins spend an allowance of their own, so a flood
+    /// of guesses for the name cannot lock its owner out. Bound to the
+    /// account's record and dated by the relay.
+    DevicePass, 56
+);
+secret_array!(
     /// Names a login between its two round trips. Single use, five minutes.
     LoginHandle, 16
 );
