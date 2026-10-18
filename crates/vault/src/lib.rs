@@ -16,6 +16,6 @@ pub mod core;
 
 pub use crate::core::{
     Call, DepositRecord, GarbageEntry, INCOMPLETE_FILE_SECONDS, OBJECT_BYTES_CEILING, PURGE_BATCH, RECORD_CEILING,
-    Reply, RequestRecord, STORING_WRITES_PER_DAY, Stored, Usage,
+    Reply, RequestRecord, STORING_WRITES_PER_DAY, Stored, TEARDOWN_WRITES_PER_DAY, Usage,
 };
 pub use application::{Clock, Draining, KeyValue, Ledger, LedgerVault, Link, PayloadStore, RemoteVault, serve};

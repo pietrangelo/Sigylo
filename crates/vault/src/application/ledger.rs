@@ -15,7 +15,7 @@ use super::ports::KeyValue;
 use crate::core::keys::{self, Kind};
 use crate::core::{
     DepositRecord, GarbageEntry, INCOMPLETE_FILE_SECONDS, OBJECT_BYTES_CEILING, PURGE_BATCH, RECORD_CEILING,
-    RequestRecord, SECONDS_PER_DAY, STORING_WRITES_PER_DAY, Stored, Usage, chunk_len,
+    RequestRecord, SECONDS_PER_DAY, STORING_WRITES_PER_DAY, Stored, TEARDOWN_WRITES_PER_DAY, Usage, chunk_len,
 };
 
 /// A deposit whose payload is already in the object store.
@@ -239,7 +239,13 @@ impl<K: KeyValue> Ledger<K> {
             // Expired is gone in every observable way; let the id be reused.
             self.remove_deposit(usage, now, id, &old)?;
         }
-        Self::ensure_room(usage, u64::from(entry.payload.len), 1)?;
+        // Its payload was reserved (and counted) before it went to the store.
+        let fresh = after(now, RESERVATION_SECONDS - RESERVATION_FRESH_SECONDS);
+        let reserved = self
+            .read(&keys::object(&entry.payload.object), GarbageEntry::decode)?
+            .filter(|r| r.len == entry.payload.len && r.due > fresh)
+            .ok_or(CustodyError::VaultUnavailable)?;
+        self.drop_garbage_entry(usage, &entry.payload.object, reserved)?;
         let chosen = after(now, entry.lifetime.seconds());
         let (expires_at, completes_at) = match entry.chunks {
             // Until its last chunk is in, a file expires soon.
@@ -258,16 +264,32 @@ impl<K: KeyValue> Ledger<K> {
         self.save_deposit(id, &record)?;
         self.put(&keys::expiry(expires_at, Kind::Deposit, id), &[])?;
         usage.records += 1;
-        usage.object_bytes += u64::from(entry.payload.len);
         Ok(chosen)
     }
 
     // ---- use cases -----------------------------------------------------
 
-    /// Records a deposit whose payload the object store already keeps.
+    /// Before a payload goes to the store: counts it and puts its name in
+    /// the garbage, so that if it is never filed it is still collected.
+    pub fn reserve_payload(&self, now: UnixTime, stored: Stored) -> Result<(), CustodyError> {
+        // Two records: the reservation now, the deposit once it is filed.
+        self.check_room(now, u64::from(stored.len), 2)?;
+        self.step(now, |usage| {
+            Self::ensure_room(usage, u64::from(stored.len), 2)?;
+            self.add_garbage(usage, stored, after(now, RESERVATION_SECONDS))?;
+            usage.object_bytes += u64::from(stored.len);
+            Ok(())
+        })
+    }
+
+    /// Files a deposit whose payload was reserved and is in the store.
     pub fn deposit(&self, now: UnixTime, entry: &Entry) -> Result<UnixTime, CustodyError> {
-        self.check_room(now, u64::from(entry.payload.len), 1)?;
         self.step(now, |usage| self.insert_deposit(usage, now, &entry.id, entry))
+    }
+
+    /// Whether today's writes leave room for cleaning up (see [`TEARDOWN_WRITES_PER_DAY`]).
+    fn may_tear_down(&self, now: UnixTime) -> Result<bool, CustodyError> {
+        Ok(self.usage(now)?.writes < TEARDOWN_WRITES_PER_DAY)
     }
 
     /// Whether the deposit can be opened, and where its payload is. Writes nothing.
@@ -425,6 +447,9 @@ impl<K: KeyValue> Ledger<K> {
 
     /// Objects due for deletion from the store. Writes nothing.
     pub fn garbage(&self, now: UnixTime, limit: u16) -> Result<Vec<ObjectName>, CustodyError> {
+        if !self.may_tear_down(now)? {
+            return Ok(Vec::new());
+        }
         let limit = usize::from(limit.min(GARBAGE_BATCH));
         let due = self.kv.range(keys::GARBAGE, &keys::garbage_bound(now), limit)?;
         due.iter()
@@ -434,6 +459,9 @@ impl<K: KeyValue> Ledger<K> {
 
     /// Forgets objects the store has deleted; their bytes are free again.
     pub fn forget_garbage(&self, now: UnixTime, objects: &[ObjectName]) -> Result<(), CustodyError> {
+        if !self.may_tear_down(now)? {
+            return Ok(());
+        }
         self.step(now, |usage| {
             for object in objects {
                 if let Some(entry) = self.read(&keys::object(object), GarbageEntry::decode)? {
@@ -491,7 +519,6 @@ impl<K: KeyValue> Ledger<K> {
     /// Consumes the live request `entry.id` and files `entry` in its inbox,
     /// in one step. `None` when there was no live request.
     pub fn answer_request(&self, now: UnixTime, entry: &Entry) -> Result<Option<Receipt>, CustodyError> {
-        self.check_room(now, u64::from(entry.payload.len), 1)?;
         self.step(now, |usage| {
             let Some(request) = self.request_record(&entry.id)?.filter(|r| r.expires_at > now) else {
                 return Ok(None);
@@ -506,6 +533,9 @@ impl<K: KeyValue> Ledger<K> {
     /// [`PURGE_BATCH`] of them at most. Says how many went, and whether more
     /// may be waiting.
     pub fn purge_batch(&self, now: UnixTime) -> Result<(u64, bool), CustodyError> {
+        if !self.may_tear_down(now)? {
+            return Ok((0, false));
+        }
         self.step(now, |usage| {
             let expired = self.kv.range(keys::EXPIRY, &keys::expiry_bound(now), PURGE_BATCH)?;
             let more = expired.len() == PURGE_BATCH;
