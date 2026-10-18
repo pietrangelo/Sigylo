@@ -5,6 +5,8 @@
 //! * [`HkdfKeyringKdf`] — export key → keyring key (HKDF-SHA-512).
 //! * [`RandomTokens`], [`HmacSessionDigest`] — session tokens, login
 //!   handles and the digest the store keeps instead of a token.
+//! * [`HmacPasses`], [`throttle_bucket`] — device passes, and the key under
+//!   which a throttle counts each budget.
 //! * `PostgresAccounts` (feature `postgres`) — the account store, reached
 //!   through the `access.*` functions of `supabase/migrations`.
 //!
@@ -16,6 +18,7 @@
 
 mod client;
 mod keyring;
+mod passes;
 #[cfg(feature = "postgres")]
 mod postgres_store;
 mod rng;
@@ -25,6 +28,7 @@ mod tokens;
 
 pub use client::OpaqueDevice;
 pub use keyring::HkdfKeyringKdf;
+pub use passes::{HmacPasses, throttle_bucket};
 #[cfg(feature = "postgres")]
 pub use postgres_store::{PostgresAccounts, PostgresThrottle};
 pub use server::OpaqueKeys;

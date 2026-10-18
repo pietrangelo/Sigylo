@@ -1,5 +1,5 @@
 use access::{
-    AccessError, AccountId, AccountStore, Keyring, KeyringSnapshot, KeyringVersion, KeyringWrite, LoginHandle,
+    AccessError, AccountId, AccountStore, Budget, Keyring, KeyringSnapshot, KeyringVersion, KeyringWrite, LoginHandle,
     LoginState, RegistrationRecord, SessionDigest, Throttle, UnixTime,
 };
 use tokio_postgres::Client;
@@ -29,6 +29,7 @@ mod sql {
     pub const TAKE_LOGIN: &str = "select account, state, now() from access.take_login($1)";
     pub const OPEN_SESSION: &str = "select access.open_session($1, $2, $3), now()";
     pub const CLOSE_SESSION: &str = "select access.close_session($1), now()";
+    pub const CLOSE_SESSIONS: &str = "select access.close_sessions($1), now()";
     pub const KEYRING: &str = "select keyring, version, now() from access.keyring($1)";
     pub const STORE_KEYRING: &str = "select access.store_keyring($1, $2, $3), now()";
     pub const CLOSE_ACCOUNT: &str = "select access.close_account($1), now()";
@@ -36,13 +37,14 @@ mod sql {
     pub const ADMIT: &str = "select access.admit($1, $2), now()";
 
     #[cfg(test)]
-    pub const ALL: [&str; 11] = [
+    pub const ALL: [&str; 12] = [
         ENROLL,
         REGISTRATION,
         PARK_LOGIN,
         TAKE_LOGIN,
         OPEN_SESSION,
         CLOSE_SESSION,
+        CLOSE_SESSIONS,
         KEYRING,
         STORE_KEYRING,
         CLOSE_ACCOUNT,
@@ -131,6 +133,12 @@ impl AccountStore for PostgresAccounts<'_> {
         Ok(())
     }
 
+    async fn close_sessions(&self, digest: &SessionDigest) -> Result<bool, AccessError> {
+        let row =
+            self.client.query_one(sql::CLOSE_SESSIONS, &[&digest.as_bytes().as_slice()]).await.map_err(unavailable)?;
+        Ok(row.get(0))
+    }
+
     async fn keyring(&self, digest: &SessionDigest) -> Result<Option<KeyringSnapshot>, AccessError> {
         let row = self.client.query_opt(sql::KEYRING, &[&digest.as_bytes().as_slice()]).await.map_err(unavailable)?;
         row.map(|row| {
@@ -171,9 +179,10 @@ impl AccountStore for PostgresAccounts<'_> {
     }
 }
 
-/// The login budget per account, counted in the database: one count for the
-/// whole world, however many Cloudflare locations the attempts come through.
-/// Fails closed: if the count cannot be taken, the attempt is refused.
+/// The login budgets per account, counted in the database: one count for the
+/// whole world, however many Cloudflare locations the attempts come through,
+/// and one per budget ([`crate::throttle_bucket`]). Fails closed: if the
+/// count cannot be taken, the attempt is refused.
 #[derive(Debug)]
 pub struct PostgresThrottle<'a> {
     client: &'a Client,
@@ -187,8 +196,9 @@ impl<'a> PostgresThrottle<'a> {
 }
 
 impl Throttle for PostgresThrottle<'_> {
-    async fn admit(&self, account: &AccountId) -> bool {
-        match self.client.query_one(sql::ADMIT, &[&account.as_bytes().as_slice(), &self.per_minute]).await {
+    async fn admit(&self, account: &AccountId, budget: &Budget) -> bool {
+        let bucket = crate::throttle_bucket(account, budget);
+        match self.client.query_one(sql::ADMIT, &[&bucket.as_slice(), &self.per_minute]).await {
             Ok(row) => row.get(0),
             Err(_) => false,
         }

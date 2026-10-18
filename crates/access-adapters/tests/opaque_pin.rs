@@ -43,6 +43,16 @@ fn the_same_secret_always_yields_the_same_relay_keys() {
     assert_eq!(hex(&keys.public_key()), "c617fb15501ba29ba1d737642a756cb1e1319420a2e6832a8be133ec8835ba46");
     let account = keys.account_of(&Username::new("ada").unwrap());
     assert_eq!(hex(account.as_bytes()), "32e9430eb9ea9e59a423e47c8e388934c165f4aa29774933970d49fa3f1c94f0");
+    assert_eq!(hex(&keys.canary()), "6b40f8792f6a30e8746226d2d287a0a7152fa53f4ccbd69aa5fcf580332dff70");
+}
+
+#[test]
+fn the_canary_names_the_secret_and_nothing_else() {
+    let keys = OpaqueKeys::from_seed(&[7; 32]).unwrap();
+    let other = OpaqueKeys::from_seed(&[8; 32]).unwrap();
+    assert_ne!(keys.canary(), other.canary());
+    assert_ne!(keys.canary(), keys.public_key());
+    assert_ne!(&keys.canary(), keys.account_of(&Username::new("canary").unwrap()).as_bytes());
 }
 
 #[test]

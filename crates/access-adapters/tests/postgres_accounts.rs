@@ -7,11 +7,13 @@
 #![cfg(feature = "postgres")]
 
 use access::{
-    AccessError, AccountId, AccountStore, Gatekeeper, Keyring, KeyringVersion, KeyringWrite, LoginChallenge,
-    LoginHandle, Member, OpaqueServer, Password, Session, SessionDigester, Throttle, Tokens, Username,
+    AccessError, AccountId, AccountStore, Budget, Gatekeeper, Keyring, KeyringVersion, KeyringWrite, LoginChallenge,
+    LoginHandle, MAX_SESSIONS, Member, OpaqueServer, Password, Session, SessionDigester, Throttle, Tokens, UnixTime,
+    Username,
 };
 use access_adapters::{
-    HkdfKeyringKdf, HmacSessionDigest, OpaqueDevice, OpaqueKeys, PostgresAccounts, PostgresThrottle, RandomTokens,
+    HkdfKeyringKdf, HmacPasses, HmacSessionDigest, OpaqueDevice, OpaqueKeys, PostgresAccounts, PostgresThrottle,
+    RandomTokens,
 };
 use futures_util::future::join_all;
 use tokio_postgres::{Client, NoTls};
@@ -40,7 +42,7 @@ macro_rules! databases {
 struct Open;
 
 impl Throttle for Open {
-    async fn admit(&self, _account: &AccountId) -> bool {
+    async fn admit(&self, _account: &AccountId, _budget: &Budget) -> bool {
         true
     }
 }
@@ -49,10 +51,25 @@ fn keys() -> OpaqueKeys {
     OpaqueKeys::from_seed(&[9; 32]).unwrap()
 }
 
-type Relay<'a> = Gatekeeper<OpaqueKeys, PostgresAccounts<'a>, RandomTokens, HmacSessionDigest, Open>;
+type Relay<'a, R = Open> = Gatekeeper<OpaqueKeys, PostgresAccounts<'a>, RandomTokens, HmacSessionDigest, R, HmacPasses>;
+
+fn now() -> UnixTime {
+    UnixTime(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64)
+}
 
 fn relay(client: &Client) -> Relay<'_> {
-    Gatekeeper::new(keys(), PostgresAccounts::new(client), RandomTokens, keys().session_digest(), Open)
+    relay_with(client, Open)
+}
+
+fn relay_with<R: Throttle>(client: &Client, throttle: R) -> Relay<'_, R> {
+    Gatekeeper::new(
+        keys(),
+        PostgresAccounts::new(client),
+        RandomTokens,
+        keys().session_digest(),
+        throttle,
+        keys().passes(now()),
+    )
 }
 
 fn device() -> Member<OpaqueDevice, HkdfKeyringKdf> {
@@ -69,7 +86,7 @@ fn fresh_name() -> Username {
     Username::new(&format!("user-{tag}")).unwrap()
 }
 
-async fn register(relay: &Relay<'_>, name: &Username) {
+async fn register<R: Throttle>(relay: &Relay<'_, R>, name: &Username) {
     let (request, pending) = device().begin_registration(pw()).unwrap();
     let response = relay.registration_response(name, &request).await.unwrap();
     let (record, _) = device().finish_registration(pending, &response).unwrap();
@@ -77,14 +94,17 @@ async fn register(relay: &Relay<'_>, name: &Username) {
 }
 
 /// KE1 → KE2 → KE3, returning the challenge and KE3 without finishing.
-async fn challenge(relay: &Relay<'_>, name: &Username) -> (LoginChallenge, access::CredentialFinalization) {
+async fn challenge<R: Throttle>(
+    relay: &Relay<'_, R>,
+    name: &Username,
+) -> (LoginChallenge, access::CredentialFinalization) {
     let (request, pending) = device().begin_login(pw()).unwrap();
-    let challenge = relay.begin_login(name, &request).await.unwrap();
+    let challenge = relay.begin_login(name, &request, None).await.unwrap();
     let (finalization, _) = device().finish_login(pending, &challenge.response).unwrap();
     (challenge, finalization)
 }
 
-async fn login(relay: &Relay<'_>, name: &Username) -> Session {
+async fn login<R: Throttle>(relay: &Relay<'_, R>, name: &Username) -> Session {
     let (challenge, finalization) = challenge(relay, name).await;
     relay.finish_login(&challenge.handle, &finalization).await.unwrap()
 }
@@ -236,6 +256,92 @@ async fn purge_removes_only_what_expired() {
     assert!(relay.keyring(&live.token).await.is_ok());
 }
 
+#[tokio::test]
+async fn signing_out_everywhere_ends_every_session_of_the_account_only() {
+    databases!(client, _admin);
+    let relay = relay(&client);
+    let (ada, bob) = (fresh_name(), fresh_name());
+    register(&relay, &ada).await;
+    register(&relay, &bob).await;
+    let laptop = login(&relay, &ada).await;
+    let phone = login(&relay, &ada).await;
+    let other = login(&relay, &bob).await;
+    relay.store_keyring(&laptop.token, &keyring(1), KeyringVersion::NONE).await.unwrap();
+    relay.sign_out_everywhere(&phone.token).await.unwrap();
+    for gone in [&laptop, &phone] {
+        assert_eq!(relay.keyring(&gone.token).await.unwrap_err(), AccessError::Unauthorized);
+        assert_eq!(relay.sign_out_everywhere(&gone.token).await.unwrap_err(), AccessError::Unauthorized);
+    }
+    assert!(relay.keyring(&other.token).await.is_ok());
+    // The account and its keyring stay.
+    let again = login(&relay, &ada).await;
+    assert_eq!(relay.keyring(&again.token).await.unwrap().keyring, Some(keyring(1)));
+}
+
+#[tokio::test]
+async fn an_account_keeps_at_most_max_sessions_and_the_oldest_goes_first() {
+    databases!(client, admin);
+    let relay = relay(&client);
+    let name = fresh_name();
+    register(&relay, &name).await;
+    let mut sessions = Vec::new();
+    for _ in 0..=MAX_SESSIONS {
+        sessions.push(login(&relay, &name).await);
+    }
+    let account = keys().account_of(&name);
+    let kept: i64 = admin
+        .query_one("select count(*) from access.sessions where account = $1", &[&account.as_bytes().as_slice()])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(kept, i64::from(MAX_SESSIONS));
+    assert_eq!(relay.keyring(&sessions[0].token).await.unwrap_err(), AccessError::Unauthorized);
+    for live in &sessions[1..] {
+        assert!(relay.keyring(&live.token).await.is_ok());
+    }
+}
+
+#[tokio::test]
+async fn each_budget_has_its_own_count() {
+    databases!(client, _admin);
+    let throttle = PostgresThrottle::new(&client, 2);
+    let name = fresh_name();
+    let relay = relay(&client);
+    register(&relay, &name).await;
+    let session = login(&relay, &name).await;
+    let account = keys().account_of(&name);
+    let budgets = [Budget::Login, Budget::Registration, Budget::Device(session.pass.clone())];
+    for budget in &budgets {
+        assert!(throttle.admit(&account, budget).await);
+        assert!(throttle.admit(&account, budget).await);
+        assert!(!throttle.admit(&account, budget).await, "{budget:?}");
+    }
+    let fresh = login(&relay, &name).await;
+    assert!(throttle.admit(&account, &Budget::Device(fresh.pass)).await, "every pass counts on its own");
+}
+
+#[tokio::test]
+async fn a_flood_of_guesses_cannot_lock_out_a_device_that_logged_in_before() {
+    databases!(client, _admin);
+    let open = relay(&client);
+    let name = fresh_name();
+    register(&open, &name).await;
+    let session = login(&open, &name).await;
+    let relay = relay_with(&client, PostgresThrottle::new(&client, 3));
+    let (request, _) = device().begin_login(pw()).unwrap();
+    for _ in 0..3 {
+        relay.begin_login(&name, &request, None).await.unwrap();
+    }
+    assert_eq!(relay.begin_login(&name, &request, None).await.unwrap_err(), AccessError::Throttled);
+    let forged = access::DevicePass::from_array([7; access::DevicePass::LEN]);
+    assert_eq!(relay.begin_login(&name, &request, Some(&forged)).await.unwrap_err(), AccessError::Throttled);
+    // The owner's device still gets in, with the pass of its last login.
+    let (request, pending) = device().begin_login(pw()).unwrap();
+    let challenge = relay.begin_login(&name, &request, Some(&session.pass)).await.unwrap();
+    let (finalization, _) = device().finish_login(pending, &challenge.response).unwrap();
+    assert!(relay.finish_login(&challenge.handle, &finalization).await.is_ok());
+}
+
 mod adversary {
     use super::*;
 
@@ -299,7 +405,7 @@ mod adversary {
         let relay = relay(&client);
         let ghost = fresh_name();
         let (request, _) = device().begin_login(pw()).unwrap();
-        let challenge = relay.begin_login(&ghost, &request).await.unwrap();
+        let challenge = relay.begin_login(&ghost, &request, None).await.unwrap();
         let parked: i64 = admin
             .query_one("select count(*) from access.logins where handle = $1", &[&challenge.handle.expose().as_slice()])
             .await
@@ -396,7 +502,7 @@ mod adversary {
         let (stale, _) = challenge(&relay, &name).await;
         with_capacity(&admin, true, 0, async {
             let (request, _) = device().begin_login(pw()).unwrap();
-            assert_eq!(relay.begin_login(&name, &request).await.unwrap_err(), AccessError::StorageFull);
+            assert_eq!(relay.begin_login(&name, &request, None).await.unwrap_err(), AccessError::StorageFull);
             // Accounts have their own budget: registering still works.
             register(&relay, &fresh_name()).await;
             // A login that expired is purged on the spot to make room.
@@ -421,7 +527,7 @@ mod adversary {
         let session = login(&relay, &name).await;
         relay.store_keyring(&session.token, &keyring(1), KeyringVersion::NONE).await.unwrap();
         challenge(&relay, &name).await;
-        PostgresThrottle::new(&client, 10).admit(&keys().account_of(&fresh_name())).await;
+        PostgresThrottle::new(&client, 10).admit(&keys().account_of(&fresh_name()), &Budget::Login).await;
         let doomed = fresh_name();
         register(&relay, &doomed).await;
         let doomed_session = login(&relay, &doomed).await;
@@ -449,13 +555,16 @@ mod adversary {
         let throttle = PostgresThrottle::new(&client, 10);
         let target = keys().account_of(&fresh_name());
         for i in 0..10 {
-            assert!(throttle.admit(&target).await, "attempt {i}");
+            assert!(throttle.admit(&target, &Budget::Login).await, "attempt {i}");
         }
-        assert!(!throttle.admit(&target).await);
+        assert!(!throttle.admit(&target, &Budget::Login).await);
         // Another relay instance (another Cloudflare location) shares the count.
         let elsewhere = connect("SIGYLO_TEST_RELAY_URL").await.unwrap();
-        assert!(!PostgresThrottle::new(&elsewhere, 10).admit(&target).await);
-        assert!(throttle.admit(&keys().account_of(&fresh_name())).await, "other accounts are untouched");
+        assert!(!PostgresThrottle::new(&elsewhere, 10).admit(&target, &Budget::Login).await);
+        assert!(
+            throttle.admit(&keys().account_of(&fresh_name()), &Budget::Login).await,
+            "other accounts are untouched"
+        );
         // A minute later the budget is back, and the cron forgets the old window.
         admin
             .execute(
@@ -464,7 +573,7 @@ mod adversary {
             )
             .await
             .unwrap();
-        assert!(throttle.admit(&target).await);
+        assert!(throttle.admit(&target, &Budget::Login).await);
         admin
             .execute(
                 "update access.attempts set window_start = now() - interval '61 seconds' where account = $1",
@@ -491,7 +600,7 @@ mod adversary {
         }
         let outcomes = join_all((0..36).map(|i| {
             let c = &clients[i % clients.len()];
-            async move { PostgresThrottle::new(c, 10).admit(&target).await }
+            async move { PostgresThrottle::new(c, 10).admit(&target, &Budget::Login).await }
         }))
         .await;
         assert_eq!(outcomes.iter().filter(|admitted| **admitted).count(), 10);
@@ -502,7 +611,7 @@ mod adversary {
     async fn the_throttle_fails_closed() {
         databases!(client, _admin);
         // A limit the database refuses stands in for any failure to count.
-        assert!(!PostgresThrottle::new(&client, 0).admit(&keys().account_of(&fresh_name())).await);
+        assert!(!PostgresThrottle::new(&client, 0).admit(&keys().account_of(&fresh_name()), &Budget::Login).await);
     }
 
     #[tokio::test]

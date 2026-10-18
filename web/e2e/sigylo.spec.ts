@@ -559,3 +559,48 @@ test('account: sign up, keep seals across devices, destroy one, close the accoun
   }
   expect(wire.some((l) => l.includes('/api/account/login/finish'))).toBe(true);
 });
+
+test('account: signing out everywhere ends every device, and the next login shows the device pass', async ({ browser, request }) => {
+  test.setTimeout(120_000);
+  const page = await freshPage(browser, '203.0.113.71');
+  const name = `e2e-${Date.now().toString(36)}`;
+  const password = 'una password lunga e mia 🔑';
+  const starts: string[] = [];
+  page.on('request', (r: Request) => {
+    if (r.url().endsWith('/api/account/login/start')) starts.push(r.postData() ?? '');
+  });
+  await page.goto('/#/account');
+  await page.getByTestId('tab-sign-up').click();
+  await page.getByTestId('username').fill(name);
+  await page.getByTestId('password').fill(password);
+  await page.getByTestId('account-submit').click();
+  await expect(page.getByTestId('signed-in')).toContainText(name, ARGON);
+
+  const laptop = await freshPage(browser, '203.0.113.72');
+  await laptop.goto('/#/account');
+  await laptop.getByTestId('username').fill(name);
+  await laptop.getByTestId('password').fill(password);
+  await laptop.getByTestId('account-submit').click();
+  await expect(laptop.getByTestId('signed-in')).toContainText(name, ARGON);
+
+  await page.getByTestId('sign-out-everywhere').click();
+  await expect(page.getByTestId('account-notice')).toHaveText(catalogs.it.signedOutEverywhere);
+  // The laptop's session is gone too: its next keyring read is refused.
+  await laptop.locator('.brand').click();
+  await laptop.getByTestId('account-link').click();
+  await expect(laptop.getByTestId('username')).toBeVisible();
+
+  // Signing in again from the first device shows the pass its last login received.
+  await page.getByTestId('username').fill(name);
+  await page.getByTestId('password').fill(password);
+  await page.getByTestId('account-submit').click();
+  await expect(page.getByTestId('signed-in')).toContainText(name, ARGON);
+  expect(starts).toHaveLength(2);
+  expect(JSON.parse(starts[0]!)).not.toHaveProperty('pass');
+  expect(JSON.parse(starts[1]!).pass).toMatch(/^[A-Za-z0-9_-]{75}$/);
+
+  // The relay names the secret it runs on (the one scripts/e2e.sh configures).
+  const canary = await request.get('/api/account/canary', { headers: { 'CF-Connecting-IP': '203.0.113.73' } });
+  expect(canary.status()).toBe(200);
+  expect(await canary.json()).toEqual({ canary: 'voB1TN7wcGcZY8Ms-nY-RlT9xSOkkNM1KZPxcTdw61k' });
+});

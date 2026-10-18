@@ -98,9 +98,26 @@ describe('relay client', () => {
     const calls: Call[] = [];
     const token = new Uint8Array(32).fill(4);
     const login = await fakeRelay(200, { session: encode(token), expires_at: 99 }, calls).loginFinish(new Uint8Array(16), Uint8Array.of(1, 2));
-    expect(login).toEqual({ ok: true, value: { token, expiresAt: 99 } });
+    expect(login).toEqual({ ok: true, value: { token, expiresAt: 99, pass: null } });
     expect(calls[0]!.url).toBe('/api/account/login/finish');
     expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ handle: encode(new Uint8Array(16)), finalization: 'AQI' });
+  });
+
+  it('carries the device pass both ways, and signs out everywhere with the bearer', async () => {
+    const calls: Call[] = [];
+    const pass = new Uint8Array(56).fill(6);
+    await fakeRelay(200, { handle: 'AA', response: 'AA' }, calls).loginStart('ada', new Uint8Array(96), pass);
+    expect(JSON.parse(calls[0]!.init.body as string).pass).toBe(encode(pass));
+    await fakeRelay(200, { handle: 'AA', response: 'AA' }, calls).loginStart('ada', new Uint8Array(96));
+    expect(JSON.parse(calls[1]!.init.body as string)).not.toHaveProperty('pass');
+    const token = new Uint8Array(32).fill(4);
+    const granted = await fakeRelay(200, { session: encode(token), expires_at: 9, pass: encode(pass) }).loginFinish(new Uint8Array(16), new Uint8Array(64));
+    expect(granted).toEqual({ ok: true, value: { token, expiresAt: 9, pass } });
+    const odd = await fakeRelay(200, { session: encode(token), expires_at: 9, pass: 'AAAA' }).loginFinish(new Uint8Array(16), new Uint8Array(64));
+    expect(odd).toEqual({ ok: true, value: { token, expiresAt: 9, pass: null } });
+    expect(await fakeRelay(200, {}, calls).logoutEverywhere(token)).toEqual({ ok: true, value: true });
+    expect(calls[2]!.url).toBe('/api/account/logout/everywhere');
+    expect(calls[2]!.init).toMatchObject({ method: 'POST', headers: { Authorization: `Bearer ${encode(token)}` } });
   });
 
   it('presents the session as a bearer token, and reads an empty keyring', async () => {

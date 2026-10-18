@@ -60,6 +60,13 @@ simple = { limit = 10, period = 60 }
 # The relay's OPAQUE keys derive from the secret OPAQUE_SERVER_SEED (32 random
 # bytes, base64url). The deploy workflow creates it once if it is missing;
 # changing it afterwards locks every account out.
+#
+# OPAQUE_CANARY is the secret's public fingerprint, as GET /api/account/canary
+# reports it. Once it is set, account routes answer 503 under any other secret,
+# and the deploy refuses to create a new one or to finish with a different one.
+# Empty means not recorded yet: the deploy prints the live value to paste here.
+[vars]
+OPAQUE_CANARY = ""
 
 # Physically delete expired rows (reads already ignore them), then the R2 objects
 # of every chunk that went.

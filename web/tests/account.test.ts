@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { decode, encode } from '../src/lib/base64url';
 import { Accounts, normalizeUsername, type AccountEngine } from '../src/lib/account';
 import { EMPTY, addSeal, type Seal } from '../src/lib/keyring';
+import { loadPass, passSlot } from '../src/lib/passes';
 import { Relay } from '../src/lib/relay';
+
+function memoryStore() {
+  const items = new Map<string, string>();
+  return { getItem: (key: string) => items.get(key) ?? null, setItem: (key: string, value: string) => void items.set(key, value) };
+}
 
 // A toy engine and a toy relay: enough OPAQUE-shaped behaviour to test the
 // orchestration (what is sent, what stays here), not the cryptography.
@@ -45,6 +51,7 @@ function toyRelay(calls: Call[]) {
   const state = { keyring: null as string | null, version: 0 };
   const session = encode(new Uint8Array(32).fill(9));
   let parked = '';
+  let passes = 0;
   const fetchImpl = async (url: string, init: RequestInit) => {
     calls.push({ url, init });
     const body = init.body ? JSON.parse(init.body as string) : {};
@@ -65,7 +72,9 @@ function toyRelay(calls: Call[]) {
         return reply(200, { handle: encode(new Uint8Array(16)), response: encode(response) });
       }
       case '/api/account/login/finish':
-        return records.has(parked) ? reply(200, { session, expires_at: 99 }) : reply(401, { error: 'NotAuthentic' });
+        if (!records.has(parked)) return reply(401, { error: 'NotAuthentic' });
+        passes += 1;
+        return reply(200, { session, expires_at: 99, pass: encode(new Uint8Array(56).fill(passes)) });
       case '/api/account/keyring':
         if (!authorized) return reply(401, { error: 'Unauthorized' });
         if (init.method === 'GET') return reply(200, state);
@@ -75,6 +84,9 @@ function toyRelay(calls: Call[]) {
         return reply(200, { version: state.version });
       case '/api/account/logout':
         return reply(200, {});
+      case '/api/account/logout/everywhere':
+      case '/api/account/close':
+        return authorized ? reply(200, {}) : reply(401, { error: 'Unauthorized' });
       default:
         return reply(404, { error: 'NotFound' });
     }
@@ -163,6 +175,41 @@ describe('accounts', () => {
     await accounts.signOut(session.value);
     expect(session.value.token.every((b) => b === 0)).toBe(true);
     expect(session.value.keyringKey.every((b) => b === 0)).toBe(true);
+  });
+
+  it('shows the pass of the last login and keeps the new one', async () => {
+    const calls: Call[] = [];
+    const store = memoryStore();
+    const accounts = new Accounts(toyEngine(), toyRelay(calls).relay, store);
+    await accounts.register('ada', 'correct horse battery');
+    const first = JSON.parse(calls.find((c) => c.url === '/api/account/login/start')!.init.body as string);
+    expect(first.pass).toBeUndefined();
+    calls.length = 0;
+    await accounts.signIn('ADA', 'correct horse battery');
+    const second = JSON.parse(calls[0]!.init.body as string);
+    expect(second.pass).toBe(encode(new Uint8Array(56).fill(1)));
+    expect(loadPass(store, await passSlot('ada'))).toEqual(new Uint8Array(56).fill(2));
+  });
+
+  it('signing out everywhere ends the session here too', async () => {
+    const calls: Call[] = [];
+    const accounts = new Accounts(toyEngine(), toyRelay(calls).relay, memoryStore());
+    const session = await accounts.register('ada', 'correct horse battery');
+    if (!session.ok) throw new Error('no session');
+    expect(await accounts.signOutEverywhere(session.value)).toEqual({ ok: true, value: true });
+    expect(calls.at(-1)!.url).toBe('/api/account/logout/everywhere');
+    expect(session.value.token.every((b) => b === 0)).toBe(true);
+    expect(session.value.keyringKey.every((b) => b === 0)).toBe(true);
+  });
+
+  it('closing the account forgets its pass on this device', async () => {
+    const store = memoryStore();
+    const accounts = new Accounts(toyEngine(), toyRelay([]).relay, store);
+    const session = await accounts.register('ada', 'correct horse battery');
+    if (!session.ok) throw new Error('no session');
+    expect(loadPass(store, await passSlot('ada'))).not.toBeNull();
+    expect(await accounts.close(session.value)).toEqual({ ok: true, value: true });
+    expect(loadPass(store, await passSlot('ada'))).toBeNull();
   });
 
   it('normalizes names the way the relay compares them', () => {

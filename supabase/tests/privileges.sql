@@ -119,6 +119,10 @@ begin
         'relay must not touch access.attempts directly';
     assert not has_table_privilege('sigylo_relay', 'access.usage', 'select,insert,update,delete,truncate'),
         'relay must not touch access.usage directly';
+    assert has_function_privilege('sigylo_relay', 'access.close_sessions(bytea)', 'execute'),
+        'relay must be able to sign out everywhere';
+    assert not has_function_privilege('public', 'access.close_sessions(bytea)', 'execute'),
+        'PUBLIC must not execute access.close_sessions';
     assert has_function_privilege('sigylo_relay', 'access.admit(bytea, integer)', 'execute'),
         'relay must count login attempts';
     assert not has_function_privilege('sigylo_relay', 'access.ensure_room(bigint, boolean)', 'execute'),
