@@ -130,14 +130,15 @@ test('a file’s chunks live in R2, never in the database, and leave R2 once rev
   await sender.goto(revoke);
   await sender.getByTestId('revoke').click();
   await expect(sender.getByTestId('revoked')).toBeVisible();
-  expect(Number(sql('select count(*) from custody.garbage'))).toBeGreaterThanOrEqual(3);
-  // The cron (every 15 minutes in production) deletes what the database let go of.
+  // Revoking deletes a file's chunks from R2 at once, not at the next cron,
+  // so revoking in a loop cannot pile objects up in R2.
+  await expect.poll(r2Objects).toBe(before);
+  expect(sql('select count(*) from custody.garbage')).toBe('0');
+  // The cron (every 15 minutes in production) still runs cleanly.
   const cron = await request.post('/cdn-cgi/local/explorer/api/local/scheduled?worker=sigylo&cron=*/15+*+*+*+*', {
     data: { cron: '*/15 * * * *' },
   });
   expect(cron.ok(), await cron.text()).toBe(true);
-  await expect.poll(r2Objects).toBe(before);
-  expect(sql('select count(*) from custody.garbage')).toBe('0');
 });
 
 test('request mode: a file sealed to the recipient’s post-quantum key', async ({ page, browser }) => {
@@ -351,11 +352,12 @@ test.describe('adversary', () => {
     const responses: string[] = [];
     reader.on('response', (r) => r.url().endsWith('/open') && !r.url().includes('/chunks/') && responses.push(r.url()));
     await openAndSave(reader, link);
-    // Afterwards the chunks are gone, claim or no claim, and nothing can be added.
+    // Afterwards the chunks are gone, claim or no claim, and nothing can be added,
+    // not even a chunk of a size the sealer makes (256 + 16 bytes).
     for (const body of [{}, { claim: 'A'.repeat(43) }]) {
       expect((await request.post(`/api/secrets/${id}/chunks/2/open`, { data: body })).status()).toBe(404);
     }
-    const refill = await request.post(`/api/secrets/${id}/chunks/0`, { data: Buffer.alloc(300, 1), headers: { 'Content-Type': 'application/octet-stream' } });
+    const refill = await request.post(`/api/secrets/${id}/chunks/0`, { data: Buffer.alloc(272, 1), headers: { 'Content-Type': 'application/octet-stream' } });
     expect(refill.status()).toBe(404);
     expect(responses).toHaveLength(1);
   });

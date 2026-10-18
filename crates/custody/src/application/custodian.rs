@@ -4,8 +4,9 @@ use core::slice;
 
 use super::ports::{ChunkStore, IdSource, TokenDigest, Vault};
 use crate::core::{
-    ChunkCount, ChunkIndex, ClaimToken, CustodyError, Deposit, DropId, GARBAGE_BATCH, Lifetime, Opened, PostedRequest,
-    Receipt, RecipientKeyBlob, Request, RequestReceipt, Retention, RevocationToken, SealedChunk, SealedPayload,
+    ChunkCount, ChunkIndex, ClaimToken, CustodyError, Deposit, DropId, GARBAGE_BATCH, Lifetime, ObjectName, Opened,
+    PostedRequest, Receipt, RecipientKeyBlob, Request, RequestReceipt, Retention, RevocationToken, SealedChunk,
+    SealedPayload,
 };
 
 /// What a sender hands over when answering a request. For a file, the
@@ -74,24 +75,36 @@ impl<V: Vault, S: ChunkStore, D: TokenDigest, I: IdSource> Custodian<V, S, D, I>
         Ok(Receipt { id, expires_at })
     }
 
-    /// Store one chunk of a file deposited under `id` (or of an answer). The
-    /// bytes go to the store under a fresh name first; the vault then decides,
-    /// atomically, whether that chunk may be recorded. A refused object is
-    /// deleted at once, so nothing is kept that no deposit points at.
+    /// Store one chunk of a file deposited under `id` (or of an answer).
+    ///
+    /// The vault first reserves it: a chunk the deposit does not take is
+    /// refused before a byte reaches the store, and the fresh object name is
+    /// on record (as garbage due later) before the store writes it, so an
+    /// upload cut short anywhere leaves nothing that is not collected. Once
+    /// the store has the bytes, the vault records the chunk, atomically.
     pub async fn put_chunk(&self, id: &DropId, index: ChunkIndex, chunk: SealedChunk) -> Result<(), CustodyError> {
         let object = self.ids.fresh_object()?;
-        self.store.put(&object, &chunk).await?;
         // A chunk is at most 1 MiB + 16 bytes.
         let len = chunk.as_bytes().len() as u32;
-        let refusal = match self.vault.put_chunk(id, index, &object, len).await {
-            Ok(true) => return Ok(()),
-            Ok(false) => CustodyError::NotFound,
-            // The vault may have recorded it after all: keep the object.
-            Err(CustodyError::VaultUnavailable) => return Err(CustodyError::VaultUnavailable),
-            Err(error) => error,
-        };
-        let _ = self.store.delete(slice::from_ref(&object)).await;
-        Err(refusal)
+        if !self.vault.reserve_chunk(id, index, &object, len).await? {
+            return Err(CustodyError::NotFound);
+        }
+        self.store.put(&object, &chunk).await?;
+        if self.vault.put_chunk(id, index, &object, len).await? {
+            return Ok(());
+        }
+        // Refused after all (taken meanwhile): no need to wait for the collector.
+        self.discard(slice::from_ref(&object)).await;
+        Err(CustodyError::NotFound)
+    }
+
+    /// Delete objects whose chunks are gone from the store now, and forget
+    /// them once it did. If the store fails they stay in the garbage, for
+    /// the collector.
+    async fn discard(&self, objects: &[ObjectName]) {
+        if self.store.delete(objects).await.is_ok() {
+            let _ = self.vault.forget_garbage(objects).await;
+        }
     }
 
     /// Hand the payload to whoever holds the link. Burn-after-reading
@@ -105,7 +118,10 @@ impl<V: Vault, S: ChunkStore, D: TokenDigest, I: IdSource> Custodian<V, S, D, I>
     }
 
     /// Hand out one chunk of an opened file. A burn-after-reading file's
-    /// chunks need the claim from [`Custodian::open`] and are destroyed as they go.
+    /// chunks need the claim from [`Custodian::open`] and are destroyed as
+    /// they go: burned in the vault only once the store has delivered the
+    /// bytes, so a failing store loses nothing, and handed out only by the
+    /// call whose burn counted, so never twice.
     pub async fn open_chunk(
         &self,
         id: &DropId,
@@ -114,31 +130,47 @@ impl<V: Vault, S: ChunkStore, D: TokenDigest, I: IdSource> Custodian<V, S, D, I>
     ) -> Result<SealedChunk, CustodyError> {
         let digest = claim.map(|claim| self.digest.digest_claim(claim));
         let found = self.vault.open_chunk(id, index, digest.as_ref()).await?.ok_or(CustodyError::NotFound)?;
-        let chunk = self.store.get(&found.object).await?;
-        if found.burned {
-            // It is in the garbage already; this only makes it go sooner.
-            let _ = self.store.delete(slice::from_ref(&found.object)).await;
+        let chunk = self.store.get(&found.object).await?.ok_or(CustodyError::NotFound)?;
+        if found.burns {
+            let digest = digest.ok_or(CustodyError::NotFound)?;
+            if !self.vault.burn_chunk(id, index, &digest).await? {
+                return Err(CustodyError::NotFound);
+            }
+            self.discard(slice::from_ref(&found.object)).await;
         }
-        chunk.ok_or(CustodyError::NotFound)
+        Ok(chunk)
     }
 
     /// Delete from the store the objects whose chunks are gone (burned,
-    /// revoked, expired). They leave the garbage only once the store has
-    /// deleted them, so a failing store loses track of nothing.
-    pub async fn collect_garbage(&self) -> Result<usize, CustodyError> {
-        let objects = self.vault.garbage(GARBAGE_BATCH).await?;
-        if objects.is_empty() {
-            return Ok(0);
+    /// revoked, expired) and whose wait is over, batch after batch while
+    /// `more()` says there is time and a full batch suggests there is more.
+    /// They leave the garbage only once the store has deleted them, so a
+    /// failing store loses track of nothing.
+    pub async fn collect_garbage(&self, mut more: impl FnMut() -> bool) -> Result<usize, CustodyError> {
+        let mut collected = 0;
+        loop {
+            let objects = self.vault.garbage(GARBAGE_BATCH).await?;
+            if objects.is_empty() {
+                return Ok(collected);
+            }
+            self.store.delete(&objects).await?;
+            self.vault.forget_garbage(&objects).await?;
+            collected += objects.len();
+            if objects.len() < usize::from(GARBAGE_BATCH) || !more() {
+                return Ok(collected);
+            }
         }
-        self.store.delete(&objects).await?;
-        self.vault.forget_garbage(&objects).await?;
-        Ok(objects.len())
     }
 
-    /// Destroy a deposit before anyone reads it.
+    /// Destroy a deposit before anyone reads it. A file's chunks leave the
+    /// store at once.
     pub async fn revoke(&self, id: &DropId, token: &RevocationToken) -> Result<(), CustodyError> {
         let digest = self.digest.digest(token);
-        if self.vault.revoke(id, &digest).await? { Ok(()) } else { Err(CustodyError::NotFound) }
+        let objects = self.vault.revoke(id, &digest).await?.ok_or(CustodyError::NotFound)?;
+        if !objects.is_empty() {
+            self.discard(&objects).await;
+        }
+        Ok(())
     }
 
     /// Publish a recipient's public key under a fresh id, with a second fresh

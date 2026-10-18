@@ -21,7 +21,14 @@ begin
         'select custody.lifetime(300)',
         'select custody.complete(''\x00''::bytea, 0::smallint)',
         'select custody.used_bytes()',
-        'select custody.ensure_room(0)'
+        'select custody.ensure_room(0)',
+        'select * from custody.usage',
+        'update custody.usage set used_bytes = 0, chunk_bytes = 0',
+        'delete from custody.usage',
+        'update custody.garbage set not_before = now()',
+        'select custody.chunk_fits(0::smallint, 1::smallint, 272)',
+        'select custody.takes_chunk(''\x00''::bytea, 0::smallint, 272)',
+        'select custody.ensure_chunk_room(0)'
     ] loop
         begin
             execute attempt;

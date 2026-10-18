@@ -17,7 +17,7 @@ pub mod api;
 #[cfg(target_arch = "wasm32")]
 mod runtime {
     use access::{AccessError, AccountId, Gatekeeper, Throttle};
-    use access_adapters::{OpaqueKeys, PostgresAccounts, RandomTokens, Sha256SessionDigest};
+    use access_adapters::{OpaqueKeys, PostgresAccounts, PostgresThrottle, RandomTokens};
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     use custody::Custodian;
     use custody_adapters::{PostgresVault, R2ChunkStore, RandomIds, Sha256TokenDigest};
@@ -109,9 +109,15 @@ mod runtime {
         limiter.limit(api::limiter_key(&address)).await.map(|o| !o.success).unwrap_or(false)
     }
 
-    /// Login and registration attempts per account, wherever they come from
-    /// (kept in memory by Cloudflare, keyed by a prefix of the account's
-    /// keyed hash). Fails closed: without a working limiter, no guessing.
+    /// Login and registration attempts per account and per minute, counted
+    /// in the database for the whole world (`access.admit`), behind the
+    /// same limit in `LOGIN_LIMITER` (wrangler.toml).
+    const LOGIN_ATTEMPTS_PER_MINUTE: u16 = 10;
+
+    /// Login and registration attempts per account in Cloudflare's memory,
+    /// keyed by a prefix of the account's keyed hash. Its count is per
+    /// Cloudflare location, so it only spares the database the obvious
+    /// floods. Fails closed: without a working limiter, no guessing.
     struct LoginLimiter<'a>(&'a Env);
 
     impl Throttle for LoginLimiter<'_> {
@@ -131,8 +137,10 @@ mod runtime {
     async fn account(command: AccountCommand, env: &Env) -> std::result::Result<Reply, ApiError> {
         let keys = opaque_keys(env)?;
         let client = connect(env).await.map_err(|_| AccessError::StoreUnavailable)?;
-        let gatekeeper =
-            Gatekeeper::new(keys, PostgresAccounts::new(&client), RandomTokens, Sha256SessionDigest, LoginLimiter(env));
+        let digest = keys.session_digest();
+        // The binding is a cheap first filter; the database holds the one global count.
+        let throttle = (LoginLimiter(env), PostgresThrottle::new(&client, LOGIN_ATTEMPTS_PER_MINUTE));
+        let gatekeeper = Gatekeeper::new(keys, PostgresAccounts::new(&client), RandomTokens, digest, throttle);
         Ok(match command {
             AccountCommand::RegisterStart(username, request) => Reply::Json(
                 200,
@@ -229,7 +237,9 @@ mod runtime {
         if rate_limited(&env, &req).await {
             return respond(429, r#"{"error":"RateLimited"}"#.into());
         }
-        let body = if req.method() == Method::Post {
+        // A body is read only where the route takes one, and only once its
+        // declared length fits.
+        let body = if route.takes_body() {
             if let Err(error) = api::check_declared_length(&route, req.headers().get("Content-Length")?.as_deref()) {
                 return fail(error);
             }
@@ -257,10 +267,21 @@ mod runtime {
         if let (Ok(client), Ok(store)) = (connect(&env).await, chunk_store(&env)) {
             let custodian = Custodian::new(PostgresVault::new(&client), store, Sha256TokenDigest, RandomIds);
             let _ = custodian.purge_expired().await;
-            let _ = custodian.collect_garbage().await;
+            // Batch after batch, within a few rounds and seconds: the work is
+            // waiting on the database and R2, and stays inside the free
+            // plan's CPU allowance.
+            let deadline = worker::Date::now().as_millis() + api::GARBAGE_MILLIS;
+            let mut rounds = 1;
+            let _ = custodian
+                .collect_garbage(|| {
+                    rounds += 1;
+                    rounds <= api::GARBAGE_ROUNDS && worker::Date::now().as_millis() < deadline
+                })
+                .await;
             if let Ok(keys) = opaque_keys(&env) {
                 let store = PostgresAccounts::new(&client);
-                let gatekeeper = Gatekeeper::new(keys, store, RandomTokens, Sha256SessionDigest, LoginLimiter(&env));
+                let digest = keys.session_digest();
+                let gatekeeper = Gatekeeper::new(keys, store, RandomTokens, digest, LoginLimiter(&env));
                 let _ = gatekeeper.purge_expired().await;
             }
         }

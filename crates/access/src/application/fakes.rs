@@ -103,11 +103,16 @@ impl OpaqueServer for ToyOpaque {
     fn finish_login(
         &self,
         account: &AccountId,
+        record: Option<&RegistrationRecord>,
         state: &LoginState,
         finalization: &CredentialFinalization,
     ) -> Result<(), AccessError> {
+        let record = match record {
+            Some(r) => r.as_bytes().to_vec(),
+            None => fnv(&[b"fake", account.as_bytes()], RegistrationRecord::LEN),
+        };
         let (mac, bound) = state.expose().split_at(64);
-        if mac == finalization.as_bytes() && bound[..32] == *account.as_bytes() {
+        if mac == finalization.as_bytes() && mac == Self::mac(&record) && bound[..32] == *account.as_bytes() {
             Ok(())
         } else {
             Err(AccessError::NotAuthentic)
