@@ -559,3 +559,44 @@ test('account: sign up, keep seals across devices, destroy one, close the accoun
   }
   expect(wire.some((l) => l.includes('/api/account/login/finish'))).toBe(true);
 });
+
+test('account: a relay serving an older copy of the keyring is caught, and nothing is overwritten', async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.goto('/#/account');
+  await page.getByTestId('tab-sign-up').click();
+  await page.getByTestId('username').fill(`e2e-rb-${Date.now().toString(36)}`);
+  await page.getByTestId('password').fill('una password lunga e mia 🔑');
+  await page.getByTestId('account-submit').click();
+  await expect(page.getByTestId('no-seals')).toBeVisible(ARGON);
+
+  // Two seals: the keyring read before the second one is the older copy.
+  const reads: string[] = [];
+  page.on('response', async (r) => {
+    if (r.url().endsWith('/api/account/keyring') && r.request().method() === 'GET') reads.push(await r.text());
+  });
+  for (let i = 0; i < 2; i++) {
+    if (i === 0) await page.locator('.brand').click();
+    else await page.getByRole('button', { name: catalogs.it.another }).click();
+    await page.getByTestId('secret').fill(SECRET);
+    await page.getByTestId('seal').click();
+    await expect(page.getByTestId('saved-to-account')).toBeVisible(ARGON);
+  }
+  const older = reads.at(-1)!;
+  expect(JSON.parse(older).version).toBe(1);
+
+  // From now on the relay hands back that older copy; no write may reach it.
+  const writes: string[] = [];
+  await page.route('**/api/account/keyring', (route) => {
+    if (route.request().method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: older });
+    writes.push(route.request().method());
+    return route.abort();
+  });
+  await page.getByTestId('account-link').click();
+  await expect(page.getByRole('alert')).toHaveText(catalogs.it.errKeyringRolledBack);
+  await page.locator('.brand').click();
+  await page.getByTestId('secret').fill(SECRET);
+  await page.getByTestId('seal').click();
+  await expect(page.getByTestId('sent')).toBeVisible();
+  await expect(page.getByText(catalogs.it.notSaved)).toBeVisible();
+  expect(writes).toEqual([]);
+});
