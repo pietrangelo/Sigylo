@@ -591,6 +591,7 @@ test('account: signing out everywhere ends every device, and the next login show
   await expect(laptop.getByTestId('username')).toBeVisible();
 
   // Signing in again from the first device shows the pass its last login received.
+  await page.getByTestId('tab-sign-in').click();
   await page.getByTestId('username').fill(name);
   await page.getByTestId('password').fill(password);
   await page.getByTestId('account-submit').click();
