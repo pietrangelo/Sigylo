@@ -8,9 +8,22 @@ import wasmIntegrity from 'virtual:wasm-integrity';
 
 let ready: Promise<void> | null = null;
 
-export function loadEngine(): Promise<void> {
-  ready ??= init({ module_or_path: fetch(wasmUrl, { integrity: wasmIntegrity, credentials: 'omit' }) }).then(() => undefined);
-  return ready;
+export async function loadEngine(): Promise<void> {
+  ready ??= init({ module_or_path: fetch(wasmUrl, { integrity: wasmIntegrity, credentials: 'omit' }) }).then(
+    () => undefined,
+    (e: unknown) => {
+      // A failed download is not remembered: the next call tries again.
+      ready = null;
+      throw e;
+    },
+  );
+  await ready;
+  // Let the browser paint the busy state before Argon2id holds the thread for
+  // seconds; a hidden tab gets no frames, hence the timer.
+  await new Promise((resolve) => {
+    requestAnimationFrame(() => setTimeout(resolve));
+    setTimeout(resolve, 100);
+  });
 }
 
 /** Stable error codes thrown by the engine (names of the Rust `SealError` variants). */
