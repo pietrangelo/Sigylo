@@ -38,21 +38,24 @@ impl<K: KeyValue, P: PayloadStore, I: IdSource, C: Clock> LedgerVault<K, P, I, C
         self.clock.now()
     }
 
-    /// Stores the payload under a fresh name, then has `record` file it.
-    /// Unless it is filed (`Ok(Some(_))`), the payload leaves the store again.
+    /// Reserves a fresh name, stores the payload under it, then has `record`
+    /// file it. Unless it is filed (`Ok(Some(_))`), the payload leaves the
+    /// store again; if even that fails, the collector takes it later.
     async fn store_then<T>(
         &self,
         deposit: &Deposit,
         record: impl FnOnce(&Entry) -> Result<Option<T>, CustodyError>,
     ) -> Result<Option<T>, CustodyError> {
         let len = deposit.payload.as_bytes().len() as u32;
-        // Refuse before a byte is written when there is no room.
-        self.ledger.check_room(self.now(), u64::from(len), 1)?;
         let object = self.ids.fresh_object()?;
+        let stored = Stored { object, len };
+        // Refuses before a byte is written when there is no room.
+        self.ledger.reserve_payload(self.now(), stored)?;
+        // If this fails it may still have been written: the reservation has it collected.
         self.payloads.put(&object, &deposit.payload).await?;
         let entry = Entry {
             id: deposit.id,
-            payload: Stored { object, len },
+            payload: stored,
             retention: deposit.retention,
             lifetime: deposit.lifetime,
             revocation: deposit.revocation,
@@ -60,9 +63,8 @@ impl<K: KeyValue, P: PayloadStore, I: IdSource, C: Clock> LedgerVault<K, P, I, C
         };
         let recorded = record(&entry);
         if !matches!(recorded, Ok(Some(_))) {
-            // Never filed: nothing will ever look for it. A failed delete
-            // leaves it to the bucket's lifecycle rule.
-            let _ = self.payloads.delete(slice::from_ref(&object)).await;
+            // Never filed: nothing will ever look for it.
+            self.discard(slice::from_ref(&object)).await;
         }
         recorded
     }

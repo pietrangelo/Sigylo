@@ -74,15 +74,18 @@ impl<N: Vault, O: Vault> Vault for Draining<N, O> {
         let mut objects = self.new.garbage(limit).await?;
         let room = limit.min(GARBAGE_BATCH).saturating_sub(objects.len() as u16);
         if room > 0 {
-            objects.extend(self.old.garbage(room).await?);
+            // The old vault never holds up the new one's cleaning.
+            objects.extend(self.old.garbage(room).await.unwrap_or_default());
         }
         Ok(objects)
     }
 
     async fn forget_garbage(&self, objects: &[ObjectName]) -> Result<(), CustodyError> {
         // Each vault forgets the names it knows and ignores the rest.
+        // An object the old vault fails to forget is deleted again later, harmlessly.
         self.new.forget_garbage(objects).await?;
-        self.old.forget_garbage(objects).await
+        let _ = self.old.forget_garbage(objects).await;
+        Ok(())
     }
 
     async fn revoke(&self, id: &DropId, digest: &RevocationDigest) -> Result<Option<Vec<ObjectName>>, CustodyError> {
@@ -112,6 +115,6 @@ impl<N: Vault, O: Vault> Vault for Draining<N, O> {
     }
 
     async fn purge_expired(&self) -> Result<u64, CustodyError> {
-        Ok(self.new.purge_expired().await? + self.old.purge_expired().await?)
+        Ok(self.new.purge_expired().await? + self.old.purge_expired().await.unwrap_or(0))
     }
 }

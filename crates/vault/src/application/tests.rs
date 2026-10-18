@@ -12,7 +12,8 @@ use super::Clock;
 use super::fakes::{Loopback, ManualClock, MemoryBucket, MemoryKv, SequentialIds, ToyDigest, block_on};
 use super::{Draining, LedgerVault, RemoteVault};
 use crate::core::{
-    INCOMPLETE_FILE_SECONDS, OBJECT_BYTES_CEILING, PURGE_BATCH, RECORD_CEILING, STORING_WRITES_PER_DAY, Usage, keys,
+    INCOMPLETE_FILE_SECONDS, OBJECT_BYTES_CEILING, PURGE_BATCH, RECORD_CEILING, STORING_WRITES_PER_DAY,
+    TEARDOWN_WRITES_PER_DAY, Usage, keys,
 };
 
 #[derive(Debug, Default)]
@@ -487,6 +488,41 @@ mod ceilings {
         block_on(relay.open(&id)).unwrap();
         assert_eq!(u64::from(w.usage().writes), w.kv.writes.get() - start);
     }
+
+    #[test]
+    fn past_the_teardown_budget_cleaning_waits_for_tomorrow_and_opening_still_works() {
+        let w = World::default();
+        let relay = w.relay();
+        let id = block_on(relay.deposit(sealed(1), BURN, Lifetime::ONE_DAY, None)).unwrap().id;
+        block_on(relay.deposit(sealed(2), KEEP, Lifetime::MIN, None)).unwrap();
+        w.advance(Lifetime::MIN.seconds());
+        pretend(&w, Usage { writes: TEARDOWN_WRITES_PER_DAY, ..w.usage() });
+        let before = w.kv.writes.get();
+        assert_eq!(block_on(relay.purge_expired()).unwrap(), 0);
+        w.advance(GARBAGE_GRACE_SECONDS);
+        block_on(relay.collect_garbage(|| true)).unwrap();
+        assert_eq!(w.kv.writes.get(), before, "a flood of expiries must not eat the writes opening needs");
+        assert_eq!(block_on(relay.open(&id)).unwrap().payload, sealed(1));
+        w.clock.advance(86_400 - w.clock.0.get().rem_euclid(86_400));
+        w.assert_empty();
+    }
+
+    #[test]
+    fn a_payload_that_was_never_filed_still_counts_and_is_collected() {
+        let w = World::default();
+        let relay = w.relay();
+        // The reservation's three writes pass; the step that files the deposit fails.
+        w.kv.fail_write.set(4);
+        w.bucket.fail_deletes.set(true);
+        assert_eq!(
+            block_on(relay.deposit(sealed(1), BURN, Lifetime::ONE_HOUR, None)),
+            Err(CustodyError::VaultUnavailable)
+        );
+        assert_eq!(w.bucket.len(), 1);
+        assert!(w.usage().object_bytes > 0, "its bytes count against the ceiling while it waits");
+        w.bucket.fail_deletes.set(false);
+        w.assert_empty();
+    }
 }
 
 mod adversary {
@@ -725,6 +761,21 @@ mod draining {
         assert!(two.old_kv.keys().is_empty());
         assert!(block_on(two.new.vault().open(&id, &custody::ClaimDigest::from_array([0; 32]))).unwrap().is_some());
         assert!(block_on(two.new.vault().fetch_request(&posted.id)).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_failing_old_vault_does_not_stop_the_new_one_from_cleaning_up() {
+        let two = Two::new();
+        let relay = two.relay();
+        let id = block_on(relay.deposit(sealed(1), KEEP, Lifetime::MIN, None)).unwrap().id;
+        two.old_kv.down.set(true);
+        two.new.advance(Lifetime::MIN.seconds());
+        assert_eq!(block_on(relay.purge_expired()).unwrap(), 1);
+        two.new.advance(GARBAGE_GRACE_SECONDS);
+        block_on(relay.collect_garbage(|| true)).unwrap();
+        assert_eq!(two.new.bucket.len(), 0);
+        // A miss still says the old vault could not be asked: what it holds is not gone.
+        assert_eq!(block_on(relay.open(&id)), Err(CustodyError::VaultUnavailable));
     }
 
     #[test]
