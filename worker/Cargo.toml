@@ -1,6 +1,6 @@
 [package]
 name = "sigylo-relay"
-description = "Cloudflare Worker shell: the blind relay. HTTP in, Custody use cases, PostgreSQL via Hyperdrive out"
+description = "Cloudflare Worker shell: the blind relay. HTTP in, Custody use cases, the vault in a Durable Object and R2 out (accounts, and custody while it drains, in PostgreSQL via Hyperdrive)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -17,6 +17,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 access.workspace = true
 custody.workspace = true
+vault.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
@@ -24,8 +25,10 @@ base64 = "0.22"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 access-adapters = { workspace = true, features = ["postgres"] }
 custody-adapters.workspace = true
+vault-adapters.workspace = true
 worker = { version = "0.8.7", features = ["tokio-postgres"] }
 tokio-postgres = { version = "0.7.18", default-features = false, features = ["js"] }
+wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
 zeroize.workspace = true
