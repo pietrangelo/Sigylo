@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 940" width="1100" height="940" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="14">
+  <title>Sigylo architecture</title>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#3a2f2a"/></marker>
+    <style>
+      .t{fill:#1f1a17}.s{fill:#5b4f47;font-size:12px}.h{font-size:20px;font-weight:700;fill:#8e1b1b}.b{font-weight:600}
+      .box{fill:#fffdf8;stroke:#3a2f2a;stroke-width:1.5}.red{fill:#f6e3df;stroke:#8e1b1b;stroke-width:1.5}
+      .zone{fill:none;stroke:#b8a99a;stroke-width:1.2;stroke-dasharray:6 4}.ln{stroke:#3a2f2a;stroke-width:1.5;fill:none}
+      .dom{fill:#f6e3df;stroke:#8e1b1b;stroke-width:1.5}.core{fill:#8e1b1b}.ad{fill:#e7efe6;stroke:#3f6b45;stroke-width:1.5}.sh{fill:#e6ebf3;stroke:#3d5a80;stroke-width:1.5}
+    </style>
+  </defs>
+  <rect width="1100" height="940" fill="#f7f1e3"/>
+
+  <!-- ===== System ===== -->
+  <text x="30" y="40" class="h">1 · System architecture</text>
+  <text x="30" y="62" class="s">Secrets are sealed and opened only on the device; the relay sees opaque bytes.</text>
+
+  <rect x="30" y="85" width="250" height="150" rx="10" class="box"/>
+  <text x="50" y="112" class="t b">Device</text>
+  <text x="50" y="135" class="t">Browser (Svelte 5) or Tauri app</text>
+  <text x="50" y="157" class="t">Rust → Wasm crypto engine</text>
+  <text x="50" y="183" class="s">keys and plaintext never leave it</text>
+  <text x="50" y="201" class="s">link key only in URL #fragment</text>
+  <text x="50" y="219" class="s">CSP + SRI, no runtime deps</text>
+
+  <rect x="320" y="80" width="750" height="330" rx="12" class="zone"/>
+  <text x="335" y="102" class="s">Cloudflare (EU jurisdiction for storage)</text>
+
+  <rect x="345" y="115" width="280" height="140" rx="10" class="red"/>
+  <text x="365" y="142" class="t b">Worker · sigylo.net</text>
+  <text x="365" y="165" class="t">static assets (same origin)</text>
+  <text x="365" y="187" class="t">blind relay /api (Rust)</text>
+  <text x="365" y="212" class="s">rate limits per address, Origin check</text>
+  <text x="365" y="230" class="s">cron every 15 min: purge + R2 GC</text>
+
+  <rect x="720" y="115" width="320" height="80" rx="10" class="box"/>
+  <text x="740" y="142" class="t b">Durable Object SigyloVault</text>
+  <text x="740" y="164" class="t">custody ledger, key-value, one tx per step</text>
+  <text x="740" y="183" class="s">ids, expiries, rules, digests; no payloads</text>
+
+  <rect x="720" y="215" width="320" height="80" rx="10" class="box"/>
+  <text x="740" y="242" class="t b">R2 bucket sigylo-chunks</text>
+  <text x="740" y="264" class="t">sealed envelopes and 1 MiB file chunks</text>
+  <text x="740" y="283" class="s">random 128-bit names, deleted on burn</text>
+
+  <rect x="345" y="300" width="280" height="90" rx="10" class="box"/>
+  <text x="365" y="327" class="t b">Hyperdrive</text>
+  <text x="365" y="349" class="t">TLS pool, caching disabled</text>
+  <text x="365" y="370" class="s">role sigylo_relay: EXECUTE only</text>
+
+  <rect x="720" y="430" width="320" height="95" rx="10" class="box" stroke-dasharray="6 4"/>
+  <text x="740" y="457" class="t b">PostgreSQL · being retired</text>
+  <text x="740" y="479" class="t">accounts until they move to the vault;</text>
+  <text x="740" y="499" class="t">old custody draining (max 7 days)</text>
+  <text x="740" y="517" class="s">SECURITY DEFINER functions, forced RLS</text>
+
+  <rect x="30" y="430" width="250" height="95" rx="10" class="box"/>
+  <text x="50" y="457" class="t b">GitHub Actions</text>
+  <text x="50" y="479" class="t">CI → Deploy (main only)</text>
+  <text x="50" y="499" class="s">actions pinned to SHAs; deploy checks</text>
+  <text x="50" y="515" class="s">served page = build, byte for byte</text>
+
+  <path d="M280 160H345" class="ln" marker-end="url(#a)" marker-start="url(#a)"/>
+  <text x="285" y="150" class="s">HTTPS</text>
+  <text x="285" y="180" class="s">sealed</text>
+  <path d="M625 155H720" class="ln" marker-end="url(#a)"/>
+  <path d="M625 235C670 235 680 255 720 255" class="ln" marker-end="url(#a)"/>
+  <path d="M485 255V300" class="ln" marker-end="url(#a)"/>
+  <path d="M625 345C690 345 680 477 720 477" class="ln" marker-end="url(#a)"/>
+  <path d="M280 470C318 470 305 232 345 232" class="ln" marker-end="url(#a)"/>
+  <text x="292" y="420" class="s">deploy</text>
+  <path d="M155 430V235" class="ln" stroke-dasharray="4 4"/>
+  <text x="165" y="335" class="s">web build</text>
+
+  <!-- ===== Application ===== -->
+  <text x="30" y="595" class="h">2 · Application architecture (rosette)</text>
+  <text x="30" y="617" class="s">Each bounded context is a pure domain crate: core (immutable values) inside application (use cases + ports). The world lives in adapters; shells only wire.</text>
+
+  <!-- shells -->
+  <rect x="30" y="640" width="1040" height="62" rx="10" class="sh"/>
+  <text x="50" y="664" class="t b">Shells</text>
+  <text x="50" y="686" class="s">wire only</text>
+  <text x="200" y="676" class="t">sigylo-wasm (browser engine)</text>
+  <text x="440" y="676" class="t">worker (Cloudflare relay)</text>
+  <text x="660" y="676" class="t">web (Svelte 5 client)</text>
+  <text x="860" y="676" class="t">app (Tauri 2)</text>
+
+  <!-- domains -->
+  <g>
+    <rect x="30" y="725" width="245" height="105" rx="10" class="dom"/>
+    <rect x="50" y="760" width="205" height="52" rx="8" class="core"/>
+    <text x="45" y="750" class="t b">sealing · application</text>
+    <text x="65" y="782" fill="#fff" class="b">core</text>
+    <text x="65" y="801" fill="#fff" font-size="12">envelope, file, signed answer</text>
+  </g>
+  <g>
+    <rect x="295" y="725" width="245" height="105" rx="10" class="dom"/>
+    <rect x="315" y="760" width="205" height="52" rx="8" class="core"/>
+    <text x="310" y="750" class="t b">custody · application</text>
+    <text x="330" y="782" fill="#fff" class="b">core</text>
+    <text x="330" y="801" fill="#fff" font-size="12">drop ids, rules, chunks</text>
+  </g>
+  <g>
+    <rect x="560" y="725" width="245" height="105" rx="10" class="dom"/>
+    <rect x="580" y="760" width="205" height="52" rx="8" class="core"/>
+    <text x="575" y="750" class="t b">vault · application</text>
+    <text x="595" y="782" fill="#fff" class="b">core</text>
+    <text x="595" y="801" fill="#fff" font-size="12">ledger records, wire calls</text>
+  </g>
+  <g>
+    <rect x="825" y="725" width="245" height="105" rx="10" class="dom"/>
+    <rect x="845" y="760" width="205" height="52" rx="8" class="core"/>
+    <text x="840" y="750" class="t b">access · application</text>
+    <text x="860" y="782" fill="#fff" class="b">core</text>
+    <text x="860" y="801" fill="#fff" font-size="12">usernames, sessions, keyring</text>
+  </g>
+
+  <!-- adapters -->
+  <rect x="30" y="850" width="245" height="62" rx="10" class="ad"/>
+  <text x="45" y="874" class="t b">sealing-adapters</text>
+  <text x="45" y="895" class="s">RustCrypto: ML-KEM, ML-DSA, Argon2id</text>
+  <rect x="295" y="850" width="245" height="62" rx="10" class="ad"/>
+  <text x="310" y="874" class="t b">custody-adapters</text>
+  <text x="310" y="895" class="s">PostgresVault, R2ChunkStore</text>
+  <rect x="560" y="850" width="245" height="62" rx="10" class="ad"/>
+  <text x="575" y="874" class="t b">vault-adapters</text>
+  <text x="575" y="895" class="s">Durable Object KV, R2, EU link</text>
+  <rect x="825" y="850" width="245" height="62" rx="10" class="ad"/>
+  <text x="840" y="874" class="t b">access-adapters</text>
+  <text x="840" y="895" class="s">opaque-ke, PostgresAccounts</text>
+
+  <text x="30" y="932" class="s">Enforced in CI by tools/architecture-guard: domains depend only on zeroize and other domains, no I/O, no unsafe; adapters never depend on each other.</text>
+</svg>
