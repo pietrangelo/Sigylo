@@ -15,9 +15,10 @@ pub use messages::{
     RegistrationResponse,
 };
 pub use secrets::{
-    ExportKey, KeyringKey, LoginHandle, LoginState, MAX_PASSWORD_LEN, MIN_PASSWORD_LEN, Password, SessionToken,
+    DevicePass, ExportKey, KeyringKey, LoginHandle, LoginState, MAX_PASSWORD_LEN, MIN_PASSWORD_LEN, Password,
+    SessionToken,
 };
 pub use values::{
-    AccountId, KEYRING_INFO, Keyring, KeyringSnapshot, KeyringVersion, LOGIN_WINDOW_SECONDS, MAX_KEYRING_LEN,
-    SESSION_SECONDS, Session, SessionDigest, UnixTime, Username,
+    AccountId, Budget, KEYRING_INFO, Keyring, KeyringSnapshot, KeyringVersion, LOGIN_WINDOW_SECONDS, MAX_KEYRING_LEN,
+    MAX_SESSIONS, PASS_SECONDS, SESSION_SECONDS, Session, SessionDigest, UnixTime, Username,
 };

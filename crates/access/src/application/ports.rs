@@ -1,9 +1,9 @@
 //! Ports of the Access context.
 
 use crate::core::{
-    AccessError, AccountId, CredentialFinalization, CredentialRequest, CredentialResponse, ExportKey, Keyring,
-    KeyringKey, KeyringSnapshot, KeyringVersion, LoginHandle, LoginState, Password, RegistrationRecord,
-    RegistrationRequest, RegistrationResponse, SessionDigest, SessionToken, UnixTime, Username,
+    AccessError, AccountId, Budget, CredentialFinalization, CredentialRequest, CredentialResponse, DevicePass,
+    ExportKey, Keyring, KeyringKey, KeyringSnapshot, KeyringVersion, LoginHandle, LoginState, Password,
+    RegistrationRecord, RegistrationRequest, RegistrationResponse, SessionDigest, SessionToken, UnixTime, Username,
 };
 
 /// The relay's side of OPAQUE, holding the relay's long-term secret (OPRF
@@ -94,6 +94,8 @@ pub enum KeyringWrite {
 /// * a session works only while it and its account live;
 /// * [`AccountStore::store_keyring`] writes only when the stored version is
 ///   `expected`, atomically, and then bumps it by one;
+/// * an account keeps at most [`crate::MAX_SESSIONS`] live sessions: opening
+///   one more ends the one that expires first;
 /// * closing an account removes its record, keyring and every session.
 // Workers run on one thread, so the futures need not be `Send`.
 #[allow(async_fn_in_trait)]
@@ -122,6 +124,10 @@ pub trait AccountStore {
     ) -> Result<Option<UnixTime>, AccessError>;
 
     async fn close_session(&self, digest: &SessionDigest) -> Result<(), AccessError>;
+
+    /// Ends every session of the account behind the digest, this one
+    /// included. False when there is no live session behind it.
+    async fn close_sessions(&self, digest: &SessionDigest) -> Result<bool, AccessError>;
 
     /// `None` when there is no live session behind the digest.
     async fn keyring(&self, digest: &SessionDigest) -> Result<Option<KeyringSnapshot>, AccessError>;
@@ -153,10 +159,20 @@ pub trait SessionDigester {
 
 /// Limits login attempts per account, wherever they come from: the per-address
 /// limit alone would let a botnet guess one account's password at leisure.
-/// The count must be one for the whole world, not one per data centre.
+/// The count must be one for the whole world, not one per data centre, and
+/// one per account and [`Budget`]: spending one never spends another.
 #[allow(async_fn_in_trait)]
 pub trait Throttle {
-    async fn admit(&self, account: &AccountId) -> bool;
+    async fn admit(&self, account: &AccountId, budget: &Budget) -> bool;
+}
+
+/// Issues and checks [`DevicePass`]es with a key only the relay holds.
+pub trait Passes {
+    fn issue(&self, account: &AccountId, record: &RegistrationRecord) -> Result<DevicePass, AccessError>;
+
+    /// True only for an unexpired pass this relay issued for this account
+    /// while it had this record: once a name changes hands, old passes are void.
+    fn admits(&self, pass: &DevicePass, account: &AccountId, record: &RegistrationRecord) -> bool;
 }
 
 // Borrowed ports work too, so one adapter can serve several use cases.
@@ -264,6 +280,10 @@ impl<T: AccountStore> AccountStore for &T {
         (**self).close_session(digest).await
     }
 
+    async fn close_sessions(&self, digest: &SessionDigest) -> Result<bool, AccessError> {
+        (**self).close_sessions(digest).await
+    }
+
     async fn keyring(&self, digest: &SessionDigest) -> Result<Option<KeyringSnapshot>, AccessError> {
         (**self).keyring(digest).await
     }
@@ -303,15 +323,25 @@ impl<T: SessionDigester> SessionDigester for &T {
 }
 
 impl<T: Throttle> Throttle for &T {
-    async fn admit(&self, account: &AccountId) -> bool {
-        (**self).admit(account).await
+    async fn admit(&self, account: &AccountId, budget: &Budget) -> bool {
+        (**self).admit(account, budget).await
+    }
+}
+
+impl<T: Passes> Passes for &T {
+    fn issue(&self, account: &AccountId, record: &RegistrationRecord) -> Result<DevicePass, AccessError> {
+        (**self).issue(account, record)
+    }
+
+    fn admits(&self, pass: &DevicePass, account: &AccountId, record: &RegistrationRecord) -> bool {
+        (**self).admits(pass, account, record)
     }
 }
 
 /// Both must admit; the second is asked only when the first did, so a cheap
 /// first filter spares the second its work.
 impl<A: Throttle, B: Throttle> Throttle for (A, B) {
-    async fn admit(&self, account: &AccountId) -> bool {
-        self.0.admit(account).await && self.1.admit(account).await
+    async fn admit(&self, account: &AccountId, budget: &Budget) -> bool {
+        self.0.admit(account, budget).await && self.1.admit(account, budget).await
     }
 }

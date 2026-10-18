@@ -119,6 +119,7 @@ fn every_account_route_is_allowed() {
     }
     for (method, path, body) in [
         ("POST", "/account/logout", None),
+        ("POST", "/account/logout/everywhere", None),
         ("GET", "/account/keyring", None),
         ("POST", "/account/keyring", body),
         ("POST", "/account/close", None),
@@ -356,6 +357,7 @@ mod adversary {
     fn a_session_goes_only_to_the_routes_that_need_one() {
         assert_eq!(call("GET", "/account/keyring", None).unwrap_err(), Refusal::MissingSession);
         assert_eq!(call("POST", "/account/close", None).unwrap_err(), Refusal::MissingSession);
+        assert_eq!(call("POST", "/account/logout/everywhere", None).unwrap_err(), Refusal::MissingSession);
         for path in ["/secrets", "/requests", "/account/login/start", "/account/register/finish"] {
             assert_eq!(signed_in("POST", path, Some("{}"), SESSION).unwrap_err(), Refusal::UnexpectedSession, "{path}");
         }
@@ -400,6 +402,7 @@ mod adversary {
         }
         assert_eq!(signed_in("PUT", "/account/keyring", Some("{}"), SESSION).unwrap_err(), Refusal::WrongMethod);
         assert_eq!(signed_in("GET", "/account/close", None, SESSION).unwrap_err(), Refusal::WrongMethod);
+        assert_eq!(signed_in("GET", "/account/logout/everywhere", None, SESSION).unwrap_err(), Refusal::WrongMethod);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use core::fmt;
 
 use super::AccessError;
-use super::secrets::SessionToken;
+use super::secrets::{DevicePass, SessionToken};
 
 /// Largest keyring the relay keeps: a sealed 64 KiB envelope with its header.
 pub const MAX_KEYRING_LEN: usize = 72 * 1024;
@@ -88,6 +88,26 @@ impl SessionDigest {
     }
 }
 
+/// Most live sessions one account keeps: opening one more ends the one
+/// that expires first, so a stolen password cannot pile up sessions and
+/// the person's own logins always get in.
+pub const MAX_SESSIONS: u32 = 16;
+
+/// How long a [`DevicePass`] lets a device skip the shared login budget.
+pub const PASS_SECONDS: u32 = 90 * 24 * 60 * 60;
+
+/// Which allowance a login or registration attempt spends. Each account has
+/// one per kind, so exhausting one never blocks another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Budget {
+    /// Logins without a valid pass: the one guessing spends.
+    Login,
+    /// Registrations of a name nobody holds.
+    Registration,
+    /// Logins from the device that holds this pass.
+    Device(DevicePass),
+}
+
 /// Seconds since the Unix epoch, as decided by the store's clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UnixTime(pub i64);
@@ -97,6 +117,8 @@ pub struct UnixTime(pub i64);
 pub struct Session {
     pub token: SessionToken,
     pub expires_at: UnixTime,
+    /// For this device's next logins.
+    pub pass: DevicePass,
 }
 
 /// The account's keyring: an envelope sealed on the device with the

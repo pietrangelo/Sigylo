@@ -14,8 +14,9 @@
 //! costs no base64 work in a Worker that has 10 ms of CPU per request.
 
 use access::{
-    AccessError, CredentialFinalization, CredentialRequest, Keyring, KeyringSnapshot, KeyringVersion, LoginChallenge,
-    LoginHandle, RegistrationRecord, RegistrationRequest, RegistrationResponse, Session, SessionToken, Username,
+    AccessError, CredentialFinalization, CredentialRequest, DevicePass, Keyring, KeyringSnapshot, KeyringVersion,
+    LoginChallenge, LoginHandle, RegistrationRecord, RegistrationRequest, RegistrationResponse, Session, SessionToken,
+    Username,
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use custody::{
@@ -53,6 +54,8 @@ pub enum Route {
     ReadKeyring,
     StoreKeyring,
     CloseAccount,
+    LogoutEverywhere,
+    Canary,
 }
 
 impl Route {
@@ -67,7 +70,16 @@ impl Route {
     /// Whether the route reads a request body at all. The others never read
     /// one, so nothing a client sends with them is buffered.
     pub fn takes_body(&self) -> bool {
-        !matches!(self, Self::Open(_) | Self::FetchRequest(_) | Self::Logout | Self::ReadKeyring | Self::CloseAccount)
+        !matches!(
+            self,
+            Self::Open(_)
+                | Self::FetchRequest(_)
+                | Self::Logout
+                | Self::LogoutEverywhere
+                | Self::ReadKeyring
+                | Self::CloseAccount
+                | Self::Canary
+        )
     }
 }
 
@@ -217,6 +229,8 @@ pub fn route(method: &str, path: &str) -> Result<Route, ApiError> {
         ["account", "keyring"] if method == "GET" => ("GET", Route::ReadKeyring),
         ["account", "keyring"] => ("POST", Route::StoreKeyring),
         ["account", "close"] => ("POST", Route::CloseAccount),
+        ["account", "logout", "everywhere"] => ("POST", Route::LogoutEverywhere),
+        ["account", "canary"] => ("GET", Route::Canary),
         _ => return Err(ApiError::NotFound),
     };
     if method == expected { Ok(route) } else { Err(ApiError::MethodNotAllowed) }
@@ -381,6 +395,15 @@ struct OpaqueStartDto {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct LoginStartDto {
+    username: String,
+    request: String,
+    /// The device pass of an earlier login, when the device has one.
+    pass: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RegisterFinishDto {
     username: String,
     record: String,
@@ -412,12 +435,15 @@ pub fn parse_bearer(header: Option<&str>) -> Result<SessionToken, ApiError> {
 pub enum AccountCommand {
     RegisterStart(Username, RegistrationRequest),
     RegisterFinish(Username, RegistrationRecord),
-    LoginStart(Username, CredentialRequest),
+    LoginStart(Username, CredentialRequest, Option<DevicePass>),
     LoginFinish(LoginHandle, CredentialFinalization),
     Logout(SessionToken),
+    LogoutEverywhere(SessionToken),
     ReadKeyring(SessionToken),
     StoreKeyring(SessionToken, Keyring, KeyringVersion),
     Close(SessionToken),
+    /// The public fingerprint of the relay's OPAQUE secret.
+    Canary,
 }
 
 fn parse_account(route: &Route, body: &[u8], bearer: Option<&str>) -> Result<AccountCommand, ApiError> {
@@ -437,8 +463,12 @@ fn parse_account(route: &Route, body: &[u8], bearer: Option<&str>) -> Result<Acc
             )
         }
         Route::LoginStart => {
-            let dto: OpaqueStartDto = parse(body)?;
-            AccountCommand::LoginStart(username(&dto.username)?, message(&dto.request, CredentialRequest::from_slice)?)
+            let dto: LoginStartDto = parse(body)?;
+            AccountCommand::LoginStart(
+                username(&dto.username)?,
+                message(&dto.request, CredentialRequest::from_slice)?,
+                dto.pass.as_deref().map(|p| message(p, DevicePass::from_slice)).transpose()?,
+            )
         }
         Route::LoginFinish => {
             let dto: LoginFinishDto = parse(body)?;
@@ -459,6 +489,8 @@ fn parse_account(route: &Route, body: &[u8], bearer: Option<&str>) -> Result<Acc
             )
         }
         Route::CloseAccount => AccountCommand::Close(parse_bearer(bearer)?),
+        Route::LogoutEverywhere => AccountCommand::LogoutEverywhere(parse_bearer(bearer)?),
+        Route::Canary => AccountCommand::Canary,
         _ => return Err(ApiError::NotFound),
     })
 }
@@ -586,11 +618,36 @@ pub fn login_challenge_body(challenge: &LoginChallenge) -> String {
 struct SessionDto {
     session: String,
     expires_at: i64,
+    pass: String,
 }
 
 pub fn session_body(session: &Session) -> String {
-    serde_json::to_string(&SessionDto { session: encode(session.token.expose()), expires_at: session.expires_at.0 })
-        .expect("serializable")
+    serde_json::to_string(&SessionDto {
+        session: encode(session.token.expose()),
+        expires_at: session.expires_at.0,
+        pass: encode(session.pass.expose()),
+    })
+    .expect("serializable")
+}
+
+#[derive(Debug, Serialize)]
+struct CanaryDto {
+    canary: String,
+}
+
+pub fn canary_body(canary: &[u8; 32]) -> String {
+    serde_json::to_string(&CanaryDto { canary: encode(canary) }).expect("serializable")
+}
+
+/// Accounts are served only under the secret they were made with: when
+/// `expected` (the `OPAQUE_CANARY` variable) names a canary, the live one
+/// must match it. Empty or unset means none was recorded yet.
+pub fn check_canary(expected: Option<&str>, live: &[u8; 32]) -> Result<(), ApiError> {
+    match expected.map(str::trim) {
+        None | Some("") => Ok(()),
+        Some(expected) if expected == encode(live) => Ok(()),
+        Some(_) => Err(ApiError::Access(AccessError::NotConfigured)),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -757,6 +814,10 @@ mod tests {
         assert_eq!(route("GET", "/api/account/keyring"), Ok(Route::ReadKeyring));
         assert_eq!(route("POST", "/api/account/keyring"), Ok(Route::StoreKeyring));
         assert_eq!(route("POST", "/api/account/close"), Ok(Route::CloseAccount));
+        assert_eq!(route("POST", "/api/account/logout/everywhere"), Ok(Route::LogoutEverywhere));
+        assert_eq!(route("GET", "/api/account/canary"), Ok(Route::Canary));
+        assert_eq!(route("POST", "/api/account/canary"), Err(ApiError::MethodNotAllowed));
+        assert_eq!(route("GET", "/api/account/logout/everywhere"), Err(ApiError::MethodNotAllowed));
     }
 
     fn bearer() -> String {
@@ -778,8 +839,19 @@ mod tests {
         let login = format!(r#"{{"username":"ada","request":"{}"}}"#, encode(&[1; CredentialRequest::LEN]));
         assert!(matches!(
             command(Route::LoginStart, login.as_bytes(), None),
-            Ok(Command::Account(AccountCommand::LoginStart(..)))
+            Ok(Command::Account(AccountCommand::LoginStart(_, _, None)))
         ));
+        let with_pass = format!(
+            r#"{{"username":"ada","request":"{}","pass":"{}"}}"#,
+            encode(&[1; CredentialRequest::LEN]),
+            encode(&[4; DevicePass::LEN])
+        );
+        assert!(matches!(
+            command(Route::LoginStart, with_pass.as_bytes(), None),
+            Ok(Command::Account(AccountCommand::LoginStart(_, _, Some(pass)))) if pass.expose() == &[4; DevicePass::LEN]
+        ));
+        let short_pass = with_pass.replace(&encode(&[4; DevicePass::LEN]), &encode(&[4; 8]));
+        assert!(command(Route::LoginStart, short_pass.as_bytes(), None).is_err());
         let finish = format!(
             r#"{{"handle":"{}","finalization":"{}"}}"#,
             encode(&[2; LoginHandle::LEN]),
@@ -794,9 +866,15 @@ mod tests {
             command(Route::StoreKeyring, store.as_bytes(), Some(&bearer())),
             Ok(Command::Account(AccountCommand::StoreKeyring(_, _, KeyringVersion(4))))
         ));
-        for route in [Route::Logout, Route::ReadKeyring, Route::CloseAccount] {
-            assert!(command(route, b"", Some(&bearer())).is_ok());
+        for route in [Route::Logout, Route::LogoutEverywhere, Route::ReadKeyring, Route::CloseAccount] {
+            assert!(command(route.clone(), b"", Some(&bearer())).is_ok());
+            assert_eq!(
+                command(route, b"", None).unwrap_err(),
+                ApiError::Access(AccessError::Unauthorized),
+                "a session route needs its bearer"
+            );
         }
+        assert!(matches!(command(Route::Canary, b"", None), Ok(Command::Account(AccountCommand::Canary))));
     }
 
     #[test]
@@ -807,8 +885,20 @@ mod tests {
         };
         let body = login_challenge_body(&challenge);
         assert!(body.starts_with(r#"{"handle":"AAAAAAAAAAAAAAAAAAAAAA","response":""#));
-        let session = Session { token: SessionToken::from_array([0; 32]), expires_at: access::UnixTime(7) };
-        assert_eq!(session_body(&session), format!(r#"{{"session":"{}","expires_at":7}}"#, encode(&[0; 32])));
+        let session = Session {
+            token: SessionToken::from_array([0; 32]),
+            expires_at: access::UnixTime(7),
+            pass: DevicePass::from_array([1; DevicePass::LEN]),
+        };
+        assert_eq!(
+            session_body(&session),
+            format!(
+                r#"{{"session":"{}","expires_at":7,"pass":"{}"}}"#,
+                encode(&[0; 32]),
+                encode(&[1; DevicePass::LEN])
+            )
+        );
+        assert_eq!(canary_body(&[0; 32]), format!(r#"{{"canary":"{}"}}"#, encode(&[0; 32])));
         let empty = KeyringSnapshot { keyring: None, version: KeyringVersion::NONE };
         assert_eq!(keyring_body(&empty), r#"{"keyring":null,"version":0}"#);
     }
@@ -960,6 +1050,22 @@ mod tests {
         }
 
         #[test]
+        fn accounts_answer_only_under_the_secret_they_were_made_with() {
+            // A lost or replaced OPAQUE_SERVER_SEED would lock every account
+            // out and quietly start new ones under the wrong key: with the
+            // canary of the old secret configured, the relay refuses instead.
+            let live = [3u8; 32];
+            assert_eq!(check_canary(None, &live), Ok(()));
+            assert_eq!(check_canary(Some(""), &live), Ok(()), "not recorded yet");
+            assert_eq!(check_canary(Some(&encode(&live)), &live), Ok(()));
+            assert_eq!(check_canary(Some(&format!(" {} ", encode(&live))), &live), Ok(()));
+            let other = encode(&[4u8; 32]);
+            assert_eq!(check_canary(Some(&other), &live), Err(ApiError::Access(AccessError::NotConfigured)));
+            assert_eq!(check_canary(Some("not base64!"), &live), Err(ApiError::Access(AccessError::NotConfigured)));
+            assert_eq!(ApiError::Access(AccessError::NotConfigured).status(), 503);
+        }
+
+        #[test]
         fn one_collection_outpaces_many_addresses_filling_the_garbage() {
             // 30 writes a minute per address, each at most one chunk, and a
             // cron run every 15 minutes.
@@ -971,9 +1077,15 @@ mod tests {
         #[test]
         fn routes_without_a_body_never_read_one() {
             let id = id_segment(ID).unwrap();
-            for route in
-                [Route::Open(id), Route::FetchRequest(id), Route::Logout, Route::ReadKeyring, Route::CloseAccount]
-            {
+            for route in [
+                Route::Open(id),
+                Route::FetchRequest(id),
+                Route::Logout,
+                Route::LogoutEverywhere,
+                Route::ReadKeyring,
+                Route::CloseAccount,
+                Route::Canary,
+            ] {
                 assert!(!route.takes_body(), "{route:?}");
             }
         }

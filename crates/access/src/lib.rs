@@ -23,12 +23,13 @@ pub mod application;
 pub mod core;
 
 pub use crate::core::{
-    AccessError, AccountId, CredentialFinalization, CredentialRequest, CredentialResponse, ExportKey, KEYRING_INFO,
-    Keyring, KeyringKey, KeyringSnapshot, KeyringVersion, LOGIN_WINDOW_SECONDS, LoginHandle, LoginState,
-    MAX_KEYRING_LEN, MAX_PASSWORD_LEN, MIN_PASSWORD_LEN, Password, RegistrationRecord, RegistrationRequest,
-    RegistrationResponse, SESSION_SECONDS, Session, SessionDigest, SessionToken, UnixTime, Username,
+    AccessError, AccountId, Budget, CredentialFinalization, CredentialRequest, CredentialResponse, DevicePass,
+    ExportKey, KEYRING_INFO, Keyring, KeyringKey, KeyringSnapshot, KeyringVersion, LOGIN_WINDOW_SECONDS, LoginHandle,
+    LoginState, MAX_KEYRING_LEN, MAX_PASSWORD_LEN, MAX_SESSIONS, MIN_PASSWORD_LEN, PASS_SECONDS, Password,
+    RegistrationRecord, RegistrationRequest, RegistrationResponse, SESSION_SECONDS, Session, SessionDigest,
+    SessionToken, UnixTime, Username,
 };
 pub use application::{
-    AccountStore, Gatekeeper, KeyringKdf, KeyringWrite, LoginChallenge, Member, OpaqueClient, OpaqueServer,
+    AccountStore, Gatekeeper, KeyringKdf, KeyringWrite, LoginChallenge, Member, OpaqueClient, OpaqueServer, Passes,
     PendingLogin, PendingRegistration, SessionDigester, Throttle, Tokens,
 };

@@ -10,6 +10,7 @@
 
 import { decode, decodeExact, encode } from './base64url';
 import { ID_LEN } from './links';
+import { PASS_LEN } from './passes';
 
 export type Retention = 'burn_after_reading' | 'until_expiry';
 
@@ -67,7 +68,8 @@ const KNOWN: ReadonlySet<string> = new Set([
 ]);
 
 /** A live session: the bearer token and when the relay ends it. */
-export type SessionGrant = { token: Uint8Array; expiresAt: number };
+/** A session, and the pass this device shows at its next login (none from an older relay). */
+export type SessionGrant = { token: Uint8Array; expiresAt: number; pass: Uint8Array | null };
 
 /** The account's keyring as stored: a sealed envelope (or none yet) and its version. */
 export type StoredKeyring = { keyring: Uint8Array | null; version: number };
@@ -193,8 +195,14 @@ export class Relay {
     return this.call('POST', '/account/register/finish', { username, record: encode(record) }, () => true as const);
   }
 
-  loginStart(username: string, request: Uint8Array): Promise<Result<{ handle: Uint8Array; response: Uint8Array }>> {
-    return this.call('POST', '/account/login/start', { username, request: encode(request) }, (json) => {
+  /** `pass` is this device's pass from its last login to the account, if it kept one. */
+  loginStart(
+    username: string,
+    request: Uint8Array,
+    pass: Uint8Array | null = null,
+  ): Promise<Result<{ handle: Uint8Array; response: Uint8Array }>> {
+    const body = { username, request: encode(request), ...(pass === null ? {} : { pass: encode(pass) }) };
+    return this.call('POST', '/account/login/start', body, (json) => {
       const handle = field(json, 'handle');
       const response = field(json, 'response');
       return handle !== null && response !== null ? { handle, response } : null;
@@ -203,14 +211,20 @@ export class Relay {
 
   loginFinish(handle: Uint8Array, finalization: Uint8Array): Promise<Result<SessionGrant>> {
     return this.call('POST', '/account/login/finish', { handle: encode(handle), finalization: encode(finalization) }, (json) => {
-      const j = json as { session?: unknown; expires_at?: unknown } | null;
+      const j = json as { session?: unknown; expires_at?: unknown; pass?: unknown } | null;
       const token = typeof j?.session === 'string' ? decodeExact(j.session, 32) : null;
-      return token !== null && typeof j?.expires_at === 'number' ? { token, expiresAt: j.expires_at } : null;
+      const pass = typeof j?.pass === 'string' ? decodeExact(j.pass, PASS_LEN) : null;
+      return token !== null && typeof j?.expires_at === 'number' ? { token, expiresAt: j.expires_at, pass } : null;
     });
   }
 
   logout(session: Uint8Array): Promise<Result<true>> {
     return this.call('POST', '/account/logout', undefined, () => true as const, session);
+  }
+
+  /** Ends every session of the account, on every device, this one included. */
+  logoutEverywhere(session: Uint8Array): Promise<Result<true>> {
+    return this.call('POST', '/account/logout/everywhere', undefined, () => true as const, session);
   }
 
   readKeyring(session: Uint8Array): Promise<Result<StoredKeyring>> {

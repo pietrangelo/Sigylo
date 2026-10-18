@@ -1,8 +1,8 @@
-use super::fakes::{CountingThrottle, FakeStore, SequentialTokens, ToyDigest, ToyKdf, ToyOpaque, block_on};
-use super::{AccountStore, Gatekeeper, Member, OpaqueServer, SessionDigester, Throttle, Tokens};
+use super::fakes::{CountingThrottle, FakeStore, SequentialTokens, ToyDigest, ToyKdf, ToyOpaque, ToyPasses, block_on};
+use super::{AccountStore, Gatekeeper, Member, OpaqueServer, Passes, SessionDigester, Throttle, Tokens};
 use crate::core::{
-    AccessError, AccountId, CredentialFinalization, Keyring, KeyringKey, KeyringVersion, LOGIN_WINDOW_SECONDS,
-    Password, SESSION_SECONDS, Session, Username,
+    AccessError, AccountId, Budget, CredentialFinalization, DevicePass, Keyring, KeyringKey, KeyringVersion,
+    LOGIN_WINDOW_SECONDS, MAX_SESSIONS, Password, SESSION_SECONDS, Session, Username,
 };
 
 struct World {
@@ -10,9 +10,11 @@ struct World {
     store: FakeStore,
     tokens: SequentialTokens,
     throttle: CountingThrottle,
+    passes: ToyPasses,
 }
 
-type Relay<'a> = Gatekeeper<&'a ToyOpaque, &'a FakeStore, &'a SequentialTokens, ToyDigest, &'a CountingThrottle>;
+type Relay<'a> =
+    Gatekeeper<&'a ToyOpaque, &'a FakeStore, &'a SequentialTokens, ToyDigest, &'a CountingThrottle, &'a ToyPasses>;
 
 impl World {
     fn new() -> Self {
@@ -21,11 +23,12 @@ impl World {
             store: FakeStore::default(),
             tokens: SequentialTokens::default(),
             throttle: CountingThrottle::default(),
+            passes: ToyPasses,
         }
     }
 
     fn relay(&self) -> Relay<'_> {
-        Gatekeeper::new(&self.opaque, &self.store, &self.tokens, ToyDigest, &self.throttle)
+        Gatekeeper::new(&self.opaque, &self.store, &self.tokens, ToyDigest, &self.throttle, &self.passes)
     }
 
     fn device(&self) -> Member<&ToyOpaque, ToyKdf> {
@@ -42,9 +45,19 @@ impl World {
     }
 
     fn login(&self, name: &str, password: &str) -> Result<(Session, KeyringKey), AccessError> {
+        self.login_with(name, password, None)
+    }
+
+    /// A login from a device that shows the pass of an earlier login.
+    fn login_with(
+        &self,
+        name: &str,
+        password: &str,
+        pass: Option<&DevicePass>,
+    ) -> Result<(Session, KeyringKey), AccessError> {
         let username = Username::new(name)?;
         let (request, pending) = self.device().begin_login(pw(password))?;
-        let challenge = block_on(self.relay().begin_login(&username, &request))?;
+        let challenge = block_on(self.relay().begin_login(&username, &request, pass))?;
         let (finalization, key) = self.device().finish_login(pending, &challenge.response)?;
         let session = block_on(self.relay().finish_login(&challenge.handle, &finalization))?;
         Ok((session, key))
@@ -90,7 +103,7 @@ fn an_unknown_user_gets_an_answer_and_then_the_same_failure() {
     let username = Username::new("nobody").unwrap();
     let (request, pending) = world.device().begin_login(pw("whatever123")).unwrap();
     // The relay answers as if the account existed...
-    let challenge = block_on(world.relay().begin_login(&username, &request)).unwrap();
+    let challenge = block_on(world.relay().begin_login(&username, &request, None)).unwrap();
     // ...and the failure is the one a wrong password gives.
     assert_eq!(world.device().finish_login(pending, &challenge.response).unwrap_err(), AccessError::NotAuthentic);
     let forged = CredentialFinalization::from_slice(&[0; CredentialFinalization::LEN]).unwrap();
@@ -115,7 +128,7 @@ fn a_login_must_finish_within_its_window() {
     world.register("ada", "correct horse battery").unwrap();
     let username = Username::new("ada").unwrap();
     let (request, pending) = world.device().begin_login(pw("correct horse battery")).unwrap();
-    let challenge = block_on(world.relay().begin_login(&username, &request)).unwrap();
+    let challenge = block_on(world.relay().begin_login(&username, &request, None)).unwrap();
     let (finalization, _) = world.device().finish_login(pending, &challenge.response).unwrap();
     world.store.advance(LOGIN_WINDOW_SECONDS);
     assert_eq!(
@@ -144,6 +157,51 @@ fn signing_out_ends_the_session_only() {
     block_on(world.relay().sign_out(&laptop.token)).unwrap();
     assert_eq!(block_on(world.relay().keyring(&laptop.token)).unwrap_err(), AccessError::Unauthorized);
     assert!(block_on(world.relay().keyring(&phone.token)).is_ok());
+}
+
+#[test]
+fn signing_out_everywhere_ends_every_session_of_the_account_only() {
+    let world = World::new();
+    world.register("ada", "correct horse battery").unwrap();
+    world.register("bob", "another long password").unwrap();
+    let (laptop, _) = world.login("ada", "correct horse battery").unwrap();
+    let (phone, _) = world.login("ada", "correct horse battery").unwrap();
+    let (bob, _) = world.login("bob", "another long password").unwrap();
+    block_on(world.relay().sign_out_everywhere(&phone.token)).unwrap();
+    for gone in [&laptop, &phone] {
+        assert_eq!(block_on(world.relay().keyring(&gone.token)).unwrap_err(), AccessError::Unauthorized);
+    }
+    assert!(block_on(world.relay().keyring(&bob.token)).is_ok());
+    // The account and its keyring stay; logging in again works.
+    assert!(world.login("ada", "correct horse battery").is_ok());
+}
+
+#[test]
+fn signing_out_everywhere_needs_a_live_session() {
+    let world = World::new();
+    world.register("ada", "correct horse battery").unwrap();
+    let (session, _) = world.login("ada", "correct horse battery").unwrap();
+    let (other, _) = world.login("ada", "correct horse battery").unwrap();
+    block_on(world.relay().sign_out(&session.token)).unwrap();
+    assert_eq!(block_on(world.relay().sign_out_everywhere(&session.token)).unwrap_err(), AccessError::Unauthorized);
+    assert!(block_on(world.relay().keyring(&other.token)).is_ok());
+}
+
+#[test]
+fn an_account_keeps_at_most_max_sessions_and_the_oldest_goes_first() {
+    let world = World::new();
+    world.register("ada", "correct horse battery").unwrap();
+    let sessions: Vec<Session> = (0..=MAX_SESSIONS)
+        .map(|_| {
+            world.store.advance(1);
+            world.login("ada", "correct horse battery").unwrap().0
+        })
+        .collect();
+    assert_eq!(world.store.sessions.borrow().len(), MAX_SESSIONS as usize);
+    assert_eq!(block_on(world.relay().keyring(&sessions[0].token)).unwrap_err(), AccessError::Unauthorized);
+    for live in &sessions[1..] {
+        assert!(block_on(world.relay().keyring(&live.token)).is_ok());
+    }
 }
 
 #[test]
@@ -194,7 +252,7 @@ fn purge_removes_expired_logins_and_sessions() {
     world.register("ada", "correct horse battery").unwrap();
     world.login("ada", "correct horse battery").unwrap();
     let (request, _) = world.device().begin_login(pw("correct horse battery")).unwrap();
-    block_on(world.relay().begin_login(&Username::new("ada").unwrap(), &request)).unwrap();
+    block_on(world.relay().begin_login(&Username::new("ada").unwrap(), &request, None)).unwrap();
     world.store.advance(SESSION_SECONDS);
     assert_eq!(block_on(world.relay().purge_expired()).unwrap(), 2);
     assert_eq!(world.store.account_count(), 1);
@@ -231,15 +289,106 @@ mod adversary {
     }
 
     #[test]
-    fn registrations_spend_the_same_budget_as_logins() {
+    fn a_taken_name_is_refused_before_any_budget_is_spent() {
+        // "Taken" is what register/start says anyway, so it costs nothing:
+        // otherwise anyone could lock the owner out by registering their name.
         let world = World::new();
-        world.throttle.budget.set(0);
+        world.register("ada", "correct horse battery").unwrap();
+        world.throttle.limit.set(0);
+        let before = world.throttle.spent_total();
+        let (request, _) = world.device().begin_registration(pw("guess number one")).unwrap();
         let username = Username::new("ada").unwrap();
+        for _ in 0..5 {
+            assert_eq!(
+                block_on(world.relay().registration_response(&username, &request)).unwrap_err(),
+                AccessError::AlreadyRegistered
+            );
+        }
+        assert_eq!(world.throttle.spent_total(), before);
+    }
+
+    #[test]
+    fn registrations_and_logins_have_budgets_of_their_own() {
+        let world = World::new();
+        world.throttle.limit.set(1);
+        let username = Username::new("eve").unwrap();
         let (request, _) = world.device().begin_registration(pw("correct horse battery")).unwrap();
+        block_on(world.relay().registration_response(&username, &request)).unwrap();
         assert_eq!(
             block_on(world.relay().registration_response(&username, &request)).unwrap_err(),
             AccessError::Throttled
         );
+        // A flood of registrations for a name leaves its logins alone, and back.
+        let (request, _) = world.device().begin_login(pw("correct horse battery")).unwrap();
+        block_on(world.relay().begin_login(&username, &request, None)).unwrap();
+        assert_eq!(block_on(world.relay().begin_login(&username, &request, None)).unwrap_err(), AccessError::Throttled);
+    }
+
+    #[test]
+    fn a_flood_of_guesses_cannot_lock_out_a_device_that_logged_in_before() {
+        let world = World::new();
+        world.register("ada", "correct horse battery").unwrap();
+        let (session, _) = world.login("ada", "correct horse battery").unwrap();
+        world.throttle.limit.set(3);
+        // The attacker spends the name's shared budget...
+        for _ in 0..3 {
+            let _ = world.login("ada", "guess guess guess");
+        }
+        assert_eq!(world.login("ada", "correct horse battery").unwrap_err(), AccessError::Throttled);
+        // ...but the owner's device has an allowance of its own.
+        assert!(world.login_with("ada", "correct horse battery", Some(&session.pass)).is_ok());
+    }
+
+    #[test]
+    fn a_pass_buys_nothing_for_another_account_or_a_forged_one() {
+        let world = World::new();
+        world.register("ada", "correct horse battery").unwrap();
+        world.register("bob", "another long password").unwrap();
+        let (ada, _) = world.login("ada", "correct horse battery").unwrap();
+        let forged = DevicePass::from_array([7; DevicePass::LEN]);
+        world.throttle.limit.set(1);
+        assert!(world.login_with("bob", "guess guess guess", Some(&ada.pass)).is_err());
+        assert_eq!(
+            world.login_with("bob", "another long password", Some(&ada.pass)).unwrap_err(),
+            AccessError::Throttled
+        );
+        assert_eq!(
+            world.login_with("bob", "another long password", Some(&forged)).unwrap_err(),
+            AccessError::Throttled
+        );
+    }
+
+    #[test]
+    fn a_pass_from_before_the_name_changed_hands_is_void() {
+        let world = World::new();
+        world.register("ada", "correct horse battery").unwrap();
+        let (old, _) = world.login("ada", "correct horse battery").unwrap();
+        block_on(world.relay().close_account(&old.token)).unwrap();
+        world.register("ada", "the new owner's password").unwrap();
+        world.throttle.limit.set(1);
+        let _ = world.login("ada", "guess guess guess");
+        assert_eq!(world.login_with("ada", "guess number two", Some(&old.pass)).unwrap_err(), AccessError::Throttled);
+    }
+
+    #[test]
+    fn a_pass_is_bound_to_its_account() {
+        let world = World::new();
+        world.register("ada", "correct horse battery").unwrap();
+        let (ada, _) = world.login("ada", "correct horse battery").unwrap();
+        let account = world.opaque.account_of(&Username::new("nobody").unwrap());
+        let record =
+            block_on(world.store.record(&world.opaque.account_of(&Username::new("ada").unwrap()))).unwrap().unwrap();
+        assert!(!world.passes.admits(&ada.pass, &account, &record));
+    }
+
+    #[test]
+    fn an_unknown_account_spends_the_shared_budget_whatever_pass_it_shows() {
+        let world = World::new();
+        world.register("ada", "correct horse battery").unwrap();
+        let (ada, _) = world.login("ada", "correct horse battery").unwrap();
+        world.throttle.limit.set(1);
+        assert!(world.login_with("nobody", "whatever123", Some(&ada.pass)).is_err());
+        assert_eq!(world.login("nobody", "whatever123").unwrap_err(), AccessError::Throttled);
     }
 
     #[test]
@@ -248,7 +397,7 @@ mod adversary {
         world.register("ada", "correct horse battery").unwrap();
         let username = Username::new("ada").unwrap();
         let (request, pending) = world.device().begin_login(pw("correct horse battery")).unwrap();
-        let challenge = block_on(world.relay().begin_login(&username, &request)).unwrap();
+        let challenge = block_on(world.relay().begin_login(&username, &request, None)).unwrap();
         let (finalization, _) = world.device().finish_login(pending, &challenge.response).unwrap();
         // An eavesdropper replays KE3 after the real client used it.
         assert!(block_on(world.relay().finish_login(&challenge.handle, &finalization)).is_ok());
@@ -264,7 +413,7 @@ mod adversary {
         world.register("ada", "correct horse battery").unwrap();
         let username = Username::new("ada").unwrap();
         let (request, pending) = world.device().begin_login(pw("correct horse battery")).unwrap();
-        let challenge = block_on(world.relay().begin_login(&username, &request)).unwrap();
+        let challenge = block_on(world.relay().begin_login(&username, &request, None)).unwrap();
         let (finalization, _) = world.device().finish_login(pending, &challenge.response).unwrap();
         let mut flipped = finalization.as_bytes().to_vec();
         flipped[0] ^= 1;
@@ -285,7 +434,7 @@ mod adversary {
     fn logins_beyond_the_throttle_cost_no_opaque_work_and_park_nothing() {
         let world = World::new();
         world.register("ada", "correct horse battery").unwrap();
-        world.throttle.budget.set(1);
+        world.throttle.limit.set(1);
         assert!(world.login("ada", "correct horse battery").is_ok());
         assert_eq!(world.login("ada", "correct horse battery").unwrap_err(), AccessError::Throttled);
         assert_eq!(world.store.parked_logins(), 0);
@@ -297,17 +446,18 @@ mod adversary {
         #[derive(Debug, Default)]
         struct Recorder(core::cell::RefCell<Vec<crate::core::AccountId>>);
         impl Throttle for Recorder {
-            async fn admit(&self, account: &crate::core::AccountId) -> bool {
+            async fn admit(&self, account: &crate::core::AccountId, budget: &Budget) -> bool {
+                assert_eq!(*budget, Budget::Login);
                 self.0.borrow_mut().push(*account);
                 true
             }
         }
         let world = World::new();
         let recorder = Recorder::default();
-        let relay = Gatekeeper::new(&world.opaque, &world.store, &world.tokens, ToyDigest, &recorder);
+        let relay = Gatekeeper::new(&world.opaque, &world.store, &world.tokens, ToyDigest, &recorder, &world.passes);
         let (request, _) = world.device().begin_login(pw("whatever123")).unwrap();
         for name in ["ada", "ADA", "Ada"] {
-            block_on(relay.begin_login(&Username::new(name).unwrap(), &request)).unwrap();
+            block_on(relay.begin_login(&Username::new(name).unwrap(), &request, None)).unwrap();
         }
         let seen = recorder.0.borrow();
         assert!(seen.iter().all(|a| *a == seen[0]));
@@ -342,16 +492,16 @@ mod adversary {
         // count: the second is not spent on what the first already refused.
         let first = CountingThrottle::default();
         let second = CountingThrottle::default();
-        first.budget.set(1);
-        second.budget.set(5);
+        first.limit.set(1);
+        second.limit.set(5);
         let both = (&first, &second);
         let account = AccountId::from_array([1; 32]);
-        assert!(block_on(both.admit(&account)));
-        assert!(!block_on(both.admit(&account)));
-        assert_eq!(second.budget.get(), 4);
-        first.budget.set(1);
-        second.budget.set(0);
-        assert!(!block_on(both.admit(&account)));
+        assert!(block_on(both.admit(&account, &Budget::Login)));
+        assert!(!block_on(both.admit(&account, &Budget::Login)));
+        assert_eq!(second.spent_total(), 1);
+        let other = AccountId::from_array([2; 32]);
+        second.limit.set(0);
+        assert!(!block_on(both.admit(&other, &Budget::Login)));
     }
 
     #[test]

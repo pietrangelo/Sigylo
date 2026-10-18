@@ -5,6 +5,8 @@
 
 import { bytesText, textBytes } from './crypto';
 import { EMPTY, parseKeyring, pruneExpired, serializeKeyring, type KeyringData } from './keyring';
+import { browserStore, type SeedStore } from './identity';
+import { dropPass, loadPass, passSlot, savePass } from './passes';
 import { Relay, type RelayError } from './relay';
 
 /** What a signed-in tab holds, in memory only: a reload signs out. */
@@ -72,6 +74,7 @@ export class Accounts {
   constructor(
     private readonly engine: AccountEngine,
     private readonly relay: Relay = new Relay(),
+    private readonly store: SeedStore | null = browserStore(),
   ) {}
 
   /** Creates the account, then signs in (a second OPAQUE run gives the session). */
@@ -91,12 +94,15 @@ export class Accounts {
     return this.signIn(name, password);
   }
 
+  /** Shows this device's pass, if it has one, and keeps the new one the relay hands back. */
   async signIn(username: string, password: string): Promise<Outcome<Session>> {
     const name = normalizeUsername(username);
+    const slot = await passSlot(name);
+    const pass = loadPass(this.store, slot);
     const login = await exchange(
       () => this.engine.beginLogin(passwordBytes(password)),
       async (request) => {
-        const r = await this.relay.loginStart(name, request);
+        const r = await this.relay.loginStart(name, request, pass);
         return r.ok ? { ok: true, value: { response: r.value.response, extra: r.value.handle } } : r;
       },
     );
@@ -106,7 +112,9 @@ export class Accounts {
       login.value.keyringKey.fill(0);
       return granted;
     }
-    return { ok: true, value: { username: name, ...granted.value, keyringKey: login.value.keyringKey } };
+    const { token, expiresAt, pass: next } = granted.value;
+    if (next !== null) savePass(this.store, slot, next);
+    return { ok: true, value: { username: name, token, expiresAt, keyringKey: login.value.keyringKey } };
   }
 
   /** The keyring as stored, opened on this device. */
@@ -150,10 +158,20 @@ export class Accounts {
     forget(session);
   }
 
+  /** Ends every session of the account, on every device: for a token that may have leaked. */
+  async signOutEverywhere(session: Session): Promise<Outcome<true>> {
+    const ended = await this.relay.logoutEverywhere(session.token);
+    if (ended.ok) forget(session);
+    return ended;
+  }
+
   /** Deletes the account and its keyring. Secrets already sent stay valid until they expire. */
   async close(session: Session): Promise<Outcome<true>> {
     const closed = await this.relay.closeAccount(session.token);
-    if (closed.ok) forget(session);
+    if (closed.ok) {
+      dropPass(this.store, await passSlot(session.username));
+      forget(session);
+    }
     return closed;
   }
 }

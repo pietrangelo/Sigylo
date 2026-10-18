@@ -88,6 +88,21 @@
     if (live !== null) await accounts.signOut(live);
   }
 
+  async function signOutEverywhere() {
+    const live = currentSession();
+    if (live === null) return;
+    busy = true;
+    const result = await accounts.signOutEverywhere(live);
+    busy = false;
+    if (result.ok) {
+      signedIn.session = null;
+      seals = [];
+      notice = t.signedOutEverywhere;
+    } else {
+      fail(result.error);
+    }
+  }
+
   async function close() {
     const live = currentSession();
     if (live === null) return;
@@ -148,6 +163,7 @@
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     <div class="row">
       <button class="secondary" onclick={signOut} data-testid="sign-out">{t.signOut}</button>
+      <button class="secondary" onclick={signOutEverywhere} disabled={busy} data-testid="sign-out-everywhere">{t.signOutEverywhere}</button>
       {#if !confirmingClose}
         <button class="secondary" onclick={() => (confirmingClose = true)} data-testid="close-account">{t.closeAccount}</button>
       {/if}
