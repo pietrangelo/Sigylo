@@ -8,9 +8,14 @@ import { legal } from '../src/lib/legal';
 
 const SECRET = 'password del DB: cavallo-corretto-batteria-graffetta 🔐';
 
+let freshClients = 0;
+
 async function freshPage(browser: Browser, address?: string): Promise<Page> {
   // Its own client address, so the per-address write limit of the rest of the suite does not apply.
-  const context = await browser.newContext(address === undefined ? {} : { extraHTTPHeaders: { 'CF-Connecting-IP': address } });
+  // Without one, every fresh page of the run would share a single allowance.
+  freshClients += 1;
+  const own = address ?? `172.${16 + (process.pid % 16)}.${freshClients >> 8}.${freshClients & 255}`;
+  const context = await browser.newContext({ extraHTTPHeaders: { 'CF-Connecting-IP': own } });
   return context.newPage();
 }
 
@@ -75,7 +80,12 @@ async function sealFile(page: Page, options: { retention?: 'burn' | 'expiry' } =
 async function openAndSave(reader: Page, link: string): Promise<{ name: string; contents: Buffer }> {
   await reader.goto(link);
   await reader.getByTestId('reveal').click();
-  await expect(reader.getByTestId('file-name')).toHaveText('Bilancio 2026 è pronto.xlsx');
+  const name = reader.getByTestId('file-name');
+  const error = reader.getByTestId('open-error');
+  await expect(name.or(error)).toBeVisible({ timeout: 15_000 });
+  // If the page said why it could not open the file, the report shows it.
+  expect(await error.allTextContents()).toEqual([]);
+  await expect(name).toHaveText('Bilancio 2026 è pronto.xlsx');
   const [download] = await Promise.all([reader.waitForEvent('download'), reader.getByTestId('save-file').click()]);
   return { name: download.suggestedFilename(), contents: await readFile((await download.path())!) };
 }
