@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { fileName } from '../src/lib/crypto';
-import { downloadChunks, uploadChunks } from '../src/lib/files';
-import { Relay } from '../src/lib/relay';
+import { downloadChunks, resumeUpload, startUpload } from '../src/lib/files';
+import { Relay, type RelayError } from '../src/lib/relay';
 
 const id = new Uint8Array(16).fill(1);
 const chunk = (n: number) => new Uint8Array(300).fill(n);
+const uploadChunks = (relay: Relay, id: Uint8Array, chunks: Uint8Array[]) => resumeUpload(relay, startUpload(id, chunks));
 
 /** A relay that keeps uploaded chunks and hands each one out once (burn after reading). */
 function burningRelay(failAt?: number) {
@@ -60,6 +61,123 @@ describe('files', () => {
       const have: Uint8Array[] = [];
       expect(await downloadChunks(relay, id, 3, undefined, have)).toEqual({ ok: false, error: 'NotFound' });
       expect(have).toEqual([chunk(1), chunk(2)]);
+    });
+  });
+});
+
+/** What goes wrong with one attempt to put a chunk. */
+type Fault = 'drop' | 'lost-reply' | RelayError;
+
+const STATUS: Partial<Record<RelayError, number>> = { RateLimited: 429, PayloadTooLarge: 413, StorageFull: 507, VaultUnavailable: 503, Unexpected: 500 };
+
+/**
+ * A relay like the real one: each index is taken once, then 404, and a gone
+ * deposit is 404 for every index. `faults` spoils the next attempts at an
+ * index: the connection drops before the chunk arrives, or after it was
+ * stored (the reply is lost), or the relay refuses.
+ */
+function flakyRelay(faults: Record<number, Fault[]> = {}) {
+  const stored = new Map<number, Uint8Array>();
+  const sent: number[] = [];
+  const deposit = { gone: false };
+  const relay = new Relay(async (url, init) => {
+    const index = Number(/\/chunks\/(\d)$/.exec(url)![1]);
+    sent.push(index);
+    const fault = faults[index]?.shift();
+    if (fault === 'drop') throw new TypeError('Failed to fetch');
+    if (fault !== undefined && fault !== 'lost-reply') return new Response(JSON.stringify({ error: fault }), { status: STATUS[fault] ?? 500 });
+    if (deposit.gone || stored.has(index)) return new Response('{"error":"NotFound"}', { status: 404 });
+    stored.set(index, (init.body as Uint8Array).slice());
+    if (fault === 'lost-reply') throw new TypeError('Failed to fetch');
+    return new Response('{}', { status: 201 });
+  });
+  return { relay, stored, sent, deposit };
+}
+
+describe('resumable upload', () => {
+  const three = () => [chunk(1), chunk(2), chunk(3)];
+
+  it('a retry sends only the chunks the relay does not have yet, byte for byte the same', async () => {
+    const { relay, stored, sent } = flakyRelay({ 1: ['RateLimited'] });
+    const upload = startUpload(id, three());
+    expect(await resumeUpload(relay, upload)).toEqual({ ok: false, error: 'RateLimited' });
+    expect(upload.state).toEqual(['stored', 'missing', 'missing']);
+    expect(await resumeUpload(relay, upload)).toEqual({ ok: true, value: true });
+    expect(sent).toEqual([0, 1, 1, 2]);
+    expect([...stored.entries()]).toEqual([
+      [0, chunk(1)],
+      [1, chunk(2)],
+      [2, chunk(3)],
+    ]);
+    expect(upload.state).toEqual(['stored', 'stored', 'stored']);
+  });
+
+  it('a connection dropped before the chunk arrived just sends it again', async () => {
+    const { relay, stored } = flakyRelay({ 1: ['drop'] });
+    const upload = startUpload(id, three());
+    expect(await resumeUpload(relay, upload)).toEqual({ ok: false, error: 'Network' });
+    expect(upload.state[1]).toBe('unsure');
+    expect(await resumeUpload(relay, upload)).toEqual({ ok: true, value: true });
+    expect(stored.size).toBe(3);
+  });
+
+  it('a finished upload sends nothing more', async () => {
+    const { relay, sent } = flakyRelay();
+    const upload = startUpload(id, three());
+    await resumeUpload(relay, upload);
+    sent.length = 0;
+    expect(await resumeUpload(relay, upload)).toEqual({ ok: true, value: true });
+    expect(sent).toEqual([]);
+  });
+
+  describe('adversary', () => {
+    it('a chunk stored before its reply was lost answers 404 on the retry: it is taken as in', async () => {
+      const { relay, stored, sent } = flakyRelay({ 1: ['lost-reply'] });
+      const upload = startUpload(id, three());
+      expect(await resumeUpload(relay, upload)).toEqual({ ok: false, error: 'Network' });
+      expect(await resumeUpload(relay, upload)).toEqual({ ok: true, value: true });
+      expect(sent).toEqual([0, 1, 1, 2]);
+      expect(stored.get(1)).toEqual(chunk(2));
+    });
+
+    it('a server error may come after the chunk was stored, so it counts as maybe in', async () => {
+      for (const error of ['VaultUnavailable', 'Unexpected'] as const) {
+        const upload = startUpload(id, three());
+        expect(await resumeUpload(flakyRelay({ 0: [error] }).relay, upload)).toEqual({ ok: false, error });
+        expect(upload.state[0], error).toBe('unsure');
+      }
+    });
+
+    it('a 404 for a chunk that never reached the relay means the upload is gone', async () => {
+      for (const error of ['RateLimited', 'StorageFull', 'PayloadTooLarge'] as const) {
+        const { relay, deposit, sent } = flakyRelay({ 1: [error] });
+        const upload = startUpload(id, three());
+        expect(await resumeUpload(relay, upload)).toEqual({ ok: false, error });
+        expect(upload.state[1], error).toBe('missing');
+        deposit.gone = true;
+        expect(await resumeUpload(relay, upload)).toEqual({ ok: false, error: 'NotFound' });
+        expect(sent).toEqual([0, 1, 1]);
+      }
+    });
+
+    it('a refusal after a lost reply does not make the chunk certainly missing', async () => {
+      const { relay, deposit } = flakyRelay({ 1: ['lost-reply', 'RateLimited'] });
+      const upload = startUpload(id, three());
+      await resumeUpload(relay, upload);
+      expect(await resumeUpload(relay, upload)).toEqual({ ok: false, error: 'RateLimited' });
+      expect(upload.state[1]).toBe('unsure');
+      // Expired meanwhile: the unsure chunk cannot tell, the next one can.
+      deposit.gone = true;
+      expect(await resumeUpload(relay, upload)).toEqual({ ok: false, error: 'NotFound' });
+      expect(upload.state).toEqual(['stored', 'stored', 'missing']);
+    });
+
+    it('the upload keeps its own copy of the list, not the caller\'s', async () => {
+      const chunks = three();
+      const upload = startUpload(id, chunks);
+      chunks.length = 0;
+      expect(upload.chunks.length).toBe(3);
+      expect(upload.state.length).toBe(3);
     });
   });
 });

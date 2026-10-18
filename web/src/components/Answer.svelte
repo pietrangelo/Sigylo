@@ -1,6 +1,6 @@
 <script lang="ts">
   import { engine, errorCode, fileName, loadEngine, passphraseBytes, randomBytes, textBytes } from '../lib/crypto';
-  import { MAX_FILE_LEN, uploadChunks } from '../lib/files';
+  import { MAX_FILE_LEN, resumeUpload, startUpload, type Upload } from '../lib/files';
   import { t } from '../lib/i18n';
   import { SEED_LEN, browserStore, loadOrCreateSeed } from '../lib/identity';
   import { relayMessage, sealMessage } from '../lib/messages';
@@ -20,6 +20,8 @@
   let secret = $state('');
   let file: File | null = $state(null);
   let uploading = $state(false);
+  // The answer used up the request: chunks that did not all go up wait here for a retry.
+  let pending: Upload | null = $state.raw(null);
   let retention: Retention = $state('burn_after_reading');
   let lifetime = $state(86400);
   let passphrase = $state('');
@@ -79,25 +81,48 @@
         error = result.error === 'NotFound' ? t.requestGone : relayMessage(result.error);
         return;
       }
-      if (chunks !== undefined) {
-        uploading = true;
-        // To the inbox the relay just named: the public request id takes no chunks.
-        const uploaded = await uploadChunks(relay, result.value.id, chunks);
-        if (!uploaded.ok) {
-          error = relayMessage(uploaded.error);
-          return;
-        }
-      }
-      done = true;
-      secret = '';
-      file = null;
-      passphrase = '';
+      // To the inbox the relay just named: the public request id takes no chunks.
+      if (chunks !== undefined && !(await push(startUpload(result.value.id, chunks)))) return;
+      finish();
     } catch (e) {
       error = sealMessage(errorCode(e));
     } finally {
       busy = false;
       uploading = false;
     }
+  }
+
+  /** Sends what the inbox still lacks; on failure the upload stays here for a retry. */
+  async function push(upload: Upload): Promise<boolean> {
+    uploading = true;
+    const result = await resumeUpload(relay, upload);
+    if (result.ok) {
+      pending = null;
+      return true;
+    }
+    // Gone (expired, most likely): the request is used up, only a new one helps.
+    pending = result.error === 'NotFound' ? null : upload;
+    error = result.error === 'NotFound' ? t.answerUploadGone : relayMessage(result.error);
+    return false;
+  }
+
+  async function retry() {
+    if (pending === null) return;
+    busy = true;
+    error = '';
+    try {
+      if (await push(pending)) finish();
+    } finally {
+      busy = false;
+      uploading = false;
+    }
+  }
+
+  function finish() {
+    done = true;
+    secret = '';
+    file = null;
+    passphrase = '';
   }
 </script>
 
@@ -112,6 +137,10 @@
   {/if}
   {#if done}
     <p class="success" data-testid="answered">{t.answered}</p>
+  {:else if pending}
+    <p class="error" role="alert" data-testid="answer-error">{error}</p>
+    <p class="muted small">{t.uploadStalled}</p>
+    <button class="primary" onclick={retry} disabled={busy} data-testid="retry-upload">{uploading ? t.uploading : t.retryUpload}</button>
   {:else if !expected}
     <p class="error" role="alert" data-testid="not-expected">{t.notExpectedSender}</p>
   {:else}
