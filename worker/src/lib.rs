@@ -115,10 +115,11 @@ mod runtime {
         // The client address is used in memory for throttling and never stored.
         // Writes and reads have their own allowance, so fetching a request does
         // not eat into the allowance for answering it.
-        let binding = if req.method() == Method::Post { "WRITE_LIMITER" } else { "READ_LIMITER" };
-        let Ok(limiter) = env.rate_limiter(binding) else { return false };
+        let write = req.method() == Method::Post;
+        let binding = if write { "WRITE_LIMITER" } else { "READ_LIMITER" };
+        let Ok(limiter) = env.rate_limiter(binding) else { return api::throttled(write, None) };
         let address = req.headers().get("CF-Connecting-IP").ok().flatten().unwrap_or_default();
-        limiter.limit(api::limiter_key(&address)).await.map(|o| !o.success).unwrap_or(false)
+        api::throttled(write, limiter.limit(api::limiter_key(&address)).await.ok().map(|o| o.success))
     }
 
     /// Login and registration attempts per account and per minute, counted
