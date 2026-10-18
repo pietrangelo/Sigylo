@@ -605,3 +605,88 @@ test('account: signing out everywhere ends every device, and the next login show
   expect(canary.status()).toBe(200);
   expect(await canary.json()).toEqual({ canary: 'voB1TN7wcGcZY8Ms-nY-RlT9xSOkkNM1KZPxcTdw61k' });
 });
+
+test('account: a relay serving an older copy of the keyring is caught, and nothing is overwritten', async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.goto('/#/account');
+  await page.getByTestId('tab-sign-up').click();
+  await page.getByTestId('username').fill(`e2e-rb-${Date.now().toString(36)}`);
+  await page.getByTestId('password').fill('una password lunga e mia 🔑');
+  await page.getByTestId('account-submit').click();
+  await expect(page.getByTestId('no-seals')).toBeVisible(ARGON);
+
+  // Two seals: the keyring read before the second one is the older copy.
+  const reads: string[] = [];
+  page.on('response', async (r) => {
+    if (r.url().endsWith('/api/account/keyring') && r.request().method() === 'GET') reads.push(await r.text());
+  });
+  for (let i = 0; i < 2; i++) {
+    if (i === 0) await page.locator('.brand').click();
+    else await page.getByRole('button', { name: catalogs.it.another }).click();
+    await page.getByTestId('secret').fill(SECRET);
+    await page.getByTestId('seal').click();
+    await expect(page.getByTestId('saved-to-account')).toBeVisible(ARGON);
+  }
+  const older = reads.at(-1)!;
+  expect(JSON.parse(older).version).toBe(1);
+
+  // From now on the relay hands back that older copy; no write may reach it.
+  const writes: string[] = [];
+  await page.route('**/api/account/keyring', (route) => {
+    if (route.request().method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: older });
+    writes.push(route.request().method());
+    return route.abort();
+  });
+  await page.getByTestId('account-link').click();
+  await expect(page.getByRole('alert')).toHaveText(catalogs.it.errKeyringRolledBack);
+  await page.locator('.brand').click();
+  await page.getByTestId('secret').fill(SECRET);
+  await page.getByTestId('seal').click();
+  await expect(page.getByTestId('sent')).toBeVisible();
+  await expect(page.getByText(catalogs.it.notSaved)).toBeVisible();
+  expect(writes).toEqual([]);
+});
+
+test('request mode: a file answer whose upload broke is finished by a retry, not lost', async ({ page, browser }) => {
+  const { requestLink, inboxLink } = await createRequest(page);
+  const sender = await freshPage(browser);
+  // Chunk 1 reaches the relay and is stored, but the reply is lost on the way back.
+  await sender.route(
+    '**/chunks/1',
+    async (route) => {
+      await route.fetch();
+      await route.abort('connectionreset');
+    },
+    { times: 1 },
+  );
+  await sender.goto(requestLink);
+  await sender.getByTestId('kind-file').check();
+  await sender.getByTestId('file').setInputFiles({ name: 'Bilancio 2026 è pronto.xlsx', mimeType: 'application/vnd.ms-excel', buffer: fileContents() });
+  await sender.getByTestId('answer').click();
+  await expect(sender.getByTestId('answer-error')).toHaveText(catalogs.it.errNetwork);
+  const sent: string[] = [];
+  sender.on('request', (r) => {
+    if (r.url().includes('/chunks/')) sent.push(r.url().replace(/.*\/chunks\//, ''));
+  });
+  await sender.getByTestId('retry-upload').click();
+  await expect(sender.getByTestId('answered')).toBeVisible();
+  // Chunk 0 is not sent again; chunk 1 answers 404 (already in), chunk 2 goes up.
+  expect(sent).toEqual(['1', '2']);
+
+  const saved = await openAndSave(await freshPage(browser), inboxLink);
+  expect(saved.contents.equals(fileContents())).toBe(true);
+});
+
+test('a file deposit whose upload broke is finished by a retry', async ({ page, browser }) => {
+  // The connection drops before chunk 2 reaches the relay.
+  await page.route('**/chunks/2', (route) => route.abort('connectionreset'), { times: 1 });
+  await page.goto('/');
+  await page.getByTestId('kind-file').check();
+  await page.getByTestId('file').setInputFiles({ name: 'Bilancio 2026 è pronto.xlsx', mimeType: 'text/html', buffer: fileContents() });
+  await page.getByTestId('seal').click();
+  await expect(page.getByTestId('seal-error')).toHaveText(catalogs.it.errNetwork);
+  await page.getByTestId('retry-upload').click();
+  await expect(page.getByTestId('sent')).toBeVisible();
+  const saved = await openAndSave(await freshPage(browser), await page.getByTestId('secret-link').inputValue());
+  expect(saved.contents.equals(fileContents())).toBe(true);
+});

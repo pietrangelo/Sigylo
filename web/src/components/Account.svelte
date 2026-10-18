@@ -126,7 +126,7 @@
     <p class="muted">{t.accountIntro}</p>
     {#if notice}<p class="success" data-testid="account-notice">{notice}</p>{/if}
     <div class="tabs" role="tablist">
-      <button role="tab" aria-selected={mode === 'signIn'} class:active={mode === 'signIn'} onclick={() => (mode = 'signIn')}>{t.signIn}</button>
+      <button role="tab" aria-selected={mode === 'signIn'} class:active={mode === 'signIn'} onclick={() => (mode = 'signIn')} data-testid="tab-sign-in">{t.signIn}</button>
       <button role="tab" aria-selected={mode === 'signUp'} class:active={mode === 'signUp'} onclick={() => (mode = 'signUp')} data-testid="tab-sign-up">{t.signUp}</button>
     </div>
     <form class="stack" onsubmit={submit}>
