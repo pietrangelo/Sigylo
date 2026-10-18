@@ -12,7 +12,7 @@ export const operator = {
 } as const;
 
 /** Date of the last change to any of these texts (ISO 8601). */
-export const LEGAL_UPDATED = '2026-10-17';
+export const LEGAL_UPDATED = '2026-10-18';
 
 export interface LegalSection {
   heading: string;
@@ -123,6 +123,7 @@ const it: LegalTexts = {
         heading: `Sul tuo dispositivo`,
         body: [
           `Quando rispondi a una richiesta, il browser crea la tua chiave di firma di mittente e la tiene nella memoria locale (localStorage) di sigylo.net, così il tuo codice mittente resta sempre lo stesso. Non ci viene mai inviata e non ti identifica presso di noi: in ogni risposta firmata viaggia solo la chiave pubblica, cifrata insieme al segreto, che soltanto il destinatario può leggere. Puoi cancellarla quando vuoi eliminando i dati del sito dal browser.`,
+          `Se accedi a un account, il browser annota nella stessa memoria locale il numero dell'ultima versione del tuo portachiavi che ha visto, sotto un nome ricavato dalla chiave del portachiavi e non dal tuo nome utente: così si accorge se il server gli restituisce una copia più vecchia. Non contiene sigilli e non ci viene mai inviato.`,
         ],
       },
       {
@@ -135,7 +136,7 @@ const it: LegalTexts = {
         heading: `Dati di rete`,
         body: [
           `Per consegnare la pagina e proteggere il servizio, Cloudflare tratta il tuo indirizzo IP e i dati tecnici della richiesta. Sigylo usa l'indirizzo IP solo per limitare le scritture (30 al minuto), in memoria presso Cloudflare, senza salvarlo; i log del Worker sono disattivati. Cloudflare può conservare dati di sicurezza secondo la propria informativa.`,
-          `Per gli account limitiamo anche i tentativi di accesso (10 al minuto per account), legati all'hash dell'account e non al tuo indirizzo: li contiamo in memoria presso Cloudflare e nel nostro database, dove restano solo l'inizio del minuto in corso e il numero di tentativi, cancellati entro circa 15 minuti.`,
+          `Per gli account limitiamo anche i tentativi di accesso (10 al minuto per account), legati all'hash dell'account e non al tuo indirizzo: li contiamo in memoria presso Cloudflare e nel nostro database, dove restano solo l'inizio del minuto in corso e il numero di tentativi, cancellati entro circa 15 minuti. Dopo ogni accesso il browser tiene nella memoria locale (localStorage) di sigylo.net un pass del dispositivo, sotto un hash del nome dell'account: ai prossimi accessi da questo dispositivo i tentativi si contano a parte, così chi prova password sul tuo nome non può chiuderti fuori. Da solo non apre nulla e sparisce quando cancelli i dati del sito.`,
         ],
       },
       {
@@ -255,6 +256,7 @@ const en: LegalTexts = {
         heading: `On your device`,
         body: [
           `When you answer a request, your browser creates your sender signing key and keeps it in the local storage (localStorage) of sigylo.net, so your sender code stays the same. It is never sent to us and does not identify you to us: each signed answer carries only the public key, encrypted together with the secret, which only the recipient can read. You can delete it at any time by clearing the site data in your browser.`,
+          `If you sign in to an account, your browser notes in the same local storage the number of the latest version of your keyring it has seen, under a name derived from the keyring key and not from your username, so it notices if the server hands back an older copy. It holds no seals and is never sent to us.`,
         ],
       },
       {
@@ -267,7 +269,7 @@ const en: LegalTexts = {
         heading: `Network data`,
         body: [
           `To deliver the page and protect the service, Cloudflare processes your IP address and the technical data of each request. Sigylo uses the IP address only to limit writes (30 per minute), in memory at Cloudflare, without storing it; Worker logs are switched off. Cloudflare may keep security data under its own privacy policy.`,
-          `For accounts we also limit sign-in attempts (10 per minute per account), tied to the account's hash rather than to your address: we count them in memory at Cloudflare and in our database, which keeps only the start of the current minute and the number of attempts, deleted within about 15 minutes.`,
+          `For accounts we also limit sign-in attempts (10 per minute per account), tied to the account's hash rather than to your address: we count them in memory at Cloudflare and in our database, which keeps only the start of the current minute and the number of attempts, deleted within about 15 minutes. After each sign-in your browser keeps a device pass in the local storage (localStorage) of sigylo.net, under a hash of the account name: later sign-ins from this device are counted separately, so someone guessing passwords for your name cannot lock you out. On its own it opens nothing, and it goes when you clear the site data.`,
         ],
       },
       {
@@ -387,6 +389,7 @@ const fr: LegalTexts = {
         heading: `Sur votre appareil`,
         body: [
           `Lorsque vous répondez à une demande, votre navigateur crée votre clé de signature d'expéditeur et la garde dans le stockage local (localStorage) de sigylo.net, afin que votre code d'expéditeur reste le même. Elle ne nous est jamais envoyée et ne vous identifie pas auprès de nous : chaque réponse signée ne transporte que la clé publique, chiffrée avec le secret, que seul le destinataire peut lire. Vous pouvez la supprimer à tout moment en effaçant les données du site dans votre navigateur.`,
+          `Si vous vous connectez à un compte, votre navigateur note dans le même stockage local le numéro de la dernière version de votre trousseau qu'il a vue, sous un nom dérivé de la clé du trousseau et non de votre nom d'utilisateur, afin de remarquer si le serveur lui renvoie une copie plus ancienne. Il ne contient aucun sceau et ne nous est jamais envoyé.`,
         ],
       },
       {
@@ -399,7 +402,7 @@ const fr: LegalTexts = {
         heading: `Données réseau`,
         body: [
           `Pour délivrer la page et protéger le service, Cloudflare traite votre adresse IP et les données techniques de chaque requête. Sigylo n'utilise l'adresse IP que pour limiter les écritures (30 par minute), en mémoire chez Cloudflare, sans la conserver ; les journaux du Worker sont désactivés. Cloudflare peut conserver des données de sécurité selon sa propre politique de confidentialité.`,
-          `Pour les comptes, nous limitons aussi les tentatives de connexion (10 par minute et par compte), liées au hachage du compte et non à votre adresse : nous les comptons en mémoire chez Cloudflare et dans notre base de données, qui ne garde que le début de la minute en cours et le nombre de tentatives, effacés en 15 minutes environ.`,
+          `Pour les comptes, nous limitons aussi les tentatives de connexion (10 par minute et par compte), liées au hachage du compte et non à votre adresse : nous les comptons en mémoire chez Cloudflare et dans notre base de données, qui ne garde que le début de la minute en cours et le nombre de tentatives, effacés en 15 minutes environ. Après chaque connexion, votre navigateur garde un laissez-passer de l'appareil dans le stockage local (localStorage) de sigylo.net, sous un hachage du nom du compte : les connexions suivantes depuis cet appareil sont comptées à part, si bien que quelqu'un qui essaie des mots de passe sur votre nom ne peut pas vous bloquer. Seul, il n'ouvre rien, et il disparaît quand vous effacez les données du site.`,
         ],
       },
       {
@@ -519,6 +522,7 @@ const es: LegalTexts = {
         heading: `En tu dispositivo`,
         body: [
           `Cuando respondes a una solicitud, tu navegador crea tu clave de firma de remitente y la guarda en el almacenamiento local (localStorage) de sigylo.net, para que tu código de remitente sea siempre el mismo. Nunca se nos envía y no te identifica ante nosotros: cada respuesta firmada lleva solo la clave pública, cifrada junto con el secreto, que solo el destinatario puede leer. Puedes borrarla cuando quieras eliminando los datos del sitio en tu navegador.`,
+          `Si inicias sesión en una cuenta, tu navegador anota en el mismo almacenamiento local el número de la última versión de tu llavero que ha visto, con un nombre derivado de la clave del llavero y no de tu nombre de usuario, para darse cuenta si el servidor le devuelve una copia más antigua. No contiene sellos y nunca se nos envía.`,
         ],
       },
       {
@@ -531,7 +535,7 @@ const es: LegalTexts = {
         heading: `Datos de red`,
         body: [
           `Para entregar la página y proteger el servicio, Cloudflare trata tu dirección IP y los datos técnicos de cada petición. Sigylo usa la dirección IP solo para limitar las escrituras (30 por minuto), en memoria en Cloudflare, sin guardarla; los registros del Worker están desactivados. Cloudflare puede conservar datos de seguridad según su propia política de privacidad.`,
-          `Para las cuentas limitamos también los intentos de inicio de sesión (10 por minuto y cuenta), ligados al hash de la cuenta y no a tu dirección: los contamos en memoria en Cloudflare y en nuestra base de datos, que solo guarda el inicio del minuto en curso y el número de intentos, borrados en unos 15 minutos.`,
+          `Para las cuentas limitamos también los intentos de inicio de sesión (10 por minuto y cuenta), ligados al hash de la cuenta y no a tu dirección: los contamos en memoria en Cloudflare y en nuestra base de datos, que solo guarda el inicio del minuto en curso y el número de intentos, borrados en unos 15 minutos. Después de cada inicio de sesión, tu navegador guarda un pase del dispositivo en el almacenamiento local (localStorage) de sigylo.net, bajo un hash del nombre de la cuenta: los siguientes inicios de sesión desde este dispositivo se cuentan aparte, así quien prueba contraseñas con tu nombre no puede dejarte fuera. Por sí solo no abre nada y desaparece cuando borras los datos del sitio.`,
         ],
       },
       {
@@ -651,6 +655,7 @@ const de: LegalTexts = {
         heading: `Auf deinem Gerät`,
         body: [
           `Wenn du eine Anfrage beantwortest, erzeugt dein Browser deinen Absender-Signaturschlüssel und bewahrt ihn im lokalen Speicher (localStorage) von sigylo.net auf, damit dein Absendercode gleich bleibt. Er wird nie an uns gesendet und identifiziert dich uns gegenüber nicht: Jede signierte Antwort enthält nur den öffentlichen Schlüssel, zusammen mit dem Geheimnis verschlüsselt, den nur die empfangende Person lesen kann. Du kannst ihn jederzeit löschen, indem du die Websitedaten in deinem Browser entfernst.`,
+          `Wenn du dich bei einem Konto anmeldest, notiert dein Browser im selben lokalen Speicher die Nummer der neuesten Version deines Schlüsselbunds, die er gesehen hat, unter einem Namen, der aus dem Schlüssel des Schlüsselbunds abgeleitet ist und nicht aus deinem Benutzernamen: So bemerkt er, wenn der Server ihm eine ältere Kopie liefert. Sie enthält keine Siegel und wird nie an uns gesendet.`,
         ],
       },
       {
@@ -663,7 +668,7 @@ const de: LegalTexts = {
         heading: `Netzwerkdaten`,
         body: [
           `Um die Seite auszuliefern und den Dienst zu schützen, verarbeitet Cloudflare deine IP-Adresse und die technischen Daten jeder Anfrage. Sigylo nutzt die IP-Adresse nur, um Schreibvorgänge zu begrenzen (30 pro Minute), im Speicher bei Cloudflare, ohne sie zu speichern; die Worker-Protokolle sind abgeschaltet. Cloudflare kann Sicherheitsdaten nach seiner eigenen Datenschutzerklärung aufbewahren.`,
-          `Bei Konten begrenzen wir außerdem Anmeldeversuche (10 pro Minute und Konto), gebunden an den Hash des Kontos statt an deine Adresse: Wir zählen sie im Speicher bei Cloudflare und in unserer Datenbank, die nur den Beginn der laufenden Minute und die Zahl der Versuche speichert und binnen etwa 15 Minuten löscht.`,
+          `Bei Konten begrenzen wir außerdem Anmeldeversuche (10 pro Minute und Konto), gebunden an den Hash des Kontos statt an deine Adresse: Wir zählen sie im Speicher bei Cloudflare und in unserer Datenbank, die nur den Beginn der laufenden Minute und die Zahl der Versuche speichert und binnen etwa 15 Minuten löscht. Nach jeder Anmeldung bewahrt dein Browser einen Gerätepass im lokalen Speicher (localStorage) von sigylo.net auf, unter einem Hash des Kontonamens: Spätere Anmeldungen von diesem Gerät werden getrennt gezählt, sodass niemand, der Passwörter für deinen Namen ausprobiert, dich aussperren kann. Allein öffnet er nichts, und er verschwindet, wenn du die Websitedaten löschst.`,
         ],
       },
       {

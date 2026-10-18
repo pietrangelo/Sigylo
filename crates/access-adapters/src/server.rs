@@ -2,7 +2,7 @@ use core::fmt;
 
 use access::{
     AccessError, AccountId, CredentialFinalization, CredentialRequest, CredentialResponse, LoginState, OpaqueServer,
-    RegistrationRecord, RegistrationRequest, RegistrationResponse, Username,
+    RegistrationRecord, RegistrationRequest, RegistrationResponse, UnixTime, Username,
 };
 use chacha20poly1305::aead::{Aead as _, Payload};
 use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce};
@@ -14,15 +14,17 @@ use rand_chacha::rand_core::SeedableRng;
 use sha2::{Sha256, Sha512};
 use zeroize::Zeroizing;
 
+use crate::passes::HmacPasses;
 use crate::rng;
 use crate::suite::Suite;
 use crate::tokens::HmacSessionDigest;
 
 /// The relay's OPAQUE keys, all derived from one 32-byte secret (the
 /// Worker secret `OPAQUE_SERVER_SEED`): the OPRF seed and the 3DH key pair,
-/// the key that files accounts under a hash of their name, and the key that
-/// seals a login in progress while it waits in the database, and the key of
-/// the session digests the database keeps instead of tokens. Losing or
+/// the key that files accounts under a hash of their name, the key that
+/// seals a login in progress while it waits in the database, the key of
+/// the session digests the database keeps instead of tokens, the key of
+/// device passes, and a public canary that names the secret. Losing or
 /// changing the secret locks every account out; leaking it together with the
 /// database lets an attacker test passwords offline, one Argon2id each.
 pub struct OpaqueKeys {
@@ -30,6 +32,8 @@ pub struct OpaqueKeys {
     account_key: Zeroizing<[u8; 32]>,
     state_key: Zeroizing<[u8; 32]>,
     session_key: Zeroizing<[u8; 32]>,
+    pass_key: Zeroizing<[u8; 32]>,
+    canary: [u8; 32],
 }
 
 /// Raw opaque-ke `ServerLogin` state; [`LoginState`] adds nonce and tag.
@@ -58,20 +62,38 @@ impl OpaqueKeys {
         let mut account_key = Zeroizing::new([0u8; 32]);
         let mut state_key = Zeroizing::new([0u8; 32]);
         let mut session_key = Zeroizing::new([0u8; 32]);
+        let mut pass_key = Zeroizing::new([0u8; 32]);
+        let mut canary = [0u8; 32];
         hkdf.expand(b"server-setup", &mut *setup_seed).map_err(|_| AccessError::NotConfigured)?;
         hkdf.expand(b"account-id", &mut *account_key).map_err(|_| AccessError::NotConfigured)?;
         hkdf.expand(b"login-state", &mut *state_key).map_err(|_| AccessError::NotConfigured)?;
         hkdf.expand(b"session-digest", &mut *session_key).map_err(|_| AccessError::NotConfigured)?;
+        hkdf.expand(b"device-pass", &mut *pass_key).map_err(|_| AccessError::NotConfigured)?;
+        hkdf.expand(b"canary", &mut canary).map_err(|_| AccessError::NotConfigured)?;
         // Deterministic: the same secret always yields the same keys
         // (pinned by tests/opaque_pin.rs, so a library upgrade cannot drift).
         let setup = ServerSetup::<Suite>::new(&mut ChaCha20Rng::from_seed(*setup_seed));
-        Ok(Self { setup, account_key, state_key, session_key })
+        Ok(Self { setup, account_key, state_key, session_key, pass_key, canary })
     }
 
     /// The digest the store keeps for a session token, keyed by this relay's
     /// secret: a database writer without it cannot mint a usable session.
     pub fn session_digest(&self) -> HmacSessionDigest {
         HmacSessionDigest::new(*self.session_key)
+    }
+
+    /// Device passes, dated by the relay's clock.
+    pub fn passes(&self, now: UnixTime) -> HmacPasses {
+        HmacPasses::new(*self.pass_key, now)
+    }
+
+    /// A public fingerprint of the secret: it reveals nothing of it, and it
+    /// changes whenever the secret does. The deploy compares it with the one
+    /// accounts were made under (`OPAQUE_CANARY` in wrangler.toml), so a
+    /// lost or replaced secret, which would lock every account out, stops
+    /// the deploy instead of passing unseen.
+    pub fn canary(&self) -> [u8; 32] {
+        self.canary
     }
 
     /// Seals a raw login state to its account. Whoever can write the

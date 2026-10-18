@@ -13,5 +13,5 @@ mod tests;
 pub use gatekeeper::{Gatekeeper, LoginChallenge};
 pub use member::{Member, PendingLogin, PendingRegistration};
 pub use ports::{
-    AccountStore, KeyringKdf, KeyringWrite, OpaqueClient, OpaqueServer, SessionDigester, Throttle, Tokens,
+    AccountStore, KeyringKdf, KeyringWrite, OpaqueClient, OpaqueServer, Passes, SessionDigester, Throttle, Tokens,
 };

@@ -134,7 +134,7 @@ fn route(method: Method, path: &str) -> Option<Expected> {
             expect(Method::Post, Shape::Json, true)
         }
         ["account", "register" | "login", "start" | "finish"] => expect(Method::Post, Shape::Json, false),
-        ["account", "logout" | "close"] => signed_in(Method::Post, Shape::None),
+        ["account", "logout" | "close"] | ["account", "logout", "everywhere"] => signed_in(Method::Post, Shape::None),
         ["account", "keyring"] if method == Method::Get => signed_in(Method::Get, Shape::None),
         ["account", "keyring"] => signed_in(Method::Post, Shape::Json),
         _ => None,

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { decode, encode } from '../src/lib/base64url';
 import { Accounts, normalizeUsername, type AccountEngine } from '../src/lib/account';
-import { EMPTY, addSeal, type Seal } from '../src/lib/keyring';
+import type { SeedStore } from '../src/lib/identity';
+import { EMPTY, addSeal, parseKeyring, readWatermark, watermarkSlot, type KeyringData, type Seal } from '../src/lib/keyring';
+import { loadPass, passSlot } from '../src/lib/passes';
 import { Relay } from '../src/lib/relay';
 
 // A toy engine and a toy relay: enough OPAQUE-shaped behaviour to test the
@@ -45,6 +47,7 @@ function toyRelay(calls: Call[]) {
   const state = { keyring: null as string | null, version: 0 };
   const session = encode(new Uint8Array(32).fill(9));
   let parked = '';
+  let passes = 0;
   const fetchImpl = async (url: string, init: RequestInit) => {
     calls.push({ url, init });
     const body = init.body ? JSON.parse(init.body as string) : {};
@@ -65,7 +68,9 @@ function toyRelay(calls: Call[]) {
         return reply(200, { handle: encode(new Uint8Array(16)), response: encode(response) });
       }
       case '/api/account/login/finish':
-        return records.has(parked) ? reply(200, { session, expires_at: 99 }) : reply(401, { error: 'NotAuthentic' });
+        if (!records.has(parked)) return reply(401, { error: 'NotAuthentic' });
+        passes += 1;
+        return reply(200, { session, expires_at: 99, pass: encode(new Uint8Array(56).fill(passes)) });
       case '/api/account/keyring':
         if (!authorized) return reply(401, { error: 'Unauthorized' });
         if (init.method === 'GET') return reply(200, state);
@@ -75,11 +80,29 @@ function toyRelay(calls: Call[]) {
         return reply(200, { version: state.version });
       case '/api/account/logout':
         return reply(200, {});
+      case '/api/account/logout/everywhere':
+      case '/api/account/close':
+        return authorized ? reply(200, {}) : reply(401, { error: 'Unauthorized' });
       default:
         return reply(404, { error: 'NotFound' });
     }
   };
   return { relay: new Relay(fetchImpl), state, fetchImpl };
+}
+
+class MemoryStore implements SeedStore {
+  items = new Map<string, string>();
+  getItem(key: string) {
+    return this.items.get(key) ?? null;
+  }
+  setItem(key: string, value: string) {
+    this.items.set(key, value);
+  }
+}
+
+/** What the relay holds, opened with the toy engine: the generation sealed inside. */
+function storedKeyring(state: { keyring: string | null }, keyringKey: Uint8Array): KeyringData | null {
+  return state.keyring === null ? null : parseKeyring(dec.decode(toyEngine().openLink(decode(state.keyring)!, keyringKey)));
 }
 
 function seal(n: number): Seal {
@@ -127,10 +150,55 @@ describe('accounts', () => {
     const session = await accounts.register('ada', 'correct horse battery');
     if (!session.ok) throw new Error('no session');
     const updated = await accounts.update(session.value, (k) => addSeal(k, seal(1)));
-    expect(updated).toEqual({ ok: true, value: addSeal(EMPTY, seal(1)) });
+    expect(updated).toEqual({ ok: true, value: { ...addSeal(EMPTY, seal(1)), gen: 1 } });
     expect(state.version).toBe(1);
     expect(dec.decode(decode(state.keyring!)!)).not.toContain('seals');
-    expect(await accounts.keyring(session.value)).toEqual({ ok: true, value: { data: addSeal(EMPTY, seal(1)), version: 1 } });
+    expect(await accounts.keyring(session.value)).toEqual({ ok: true, value: { data: { ...addSeal(EMPTY, seal(1)), gen: 1 }, version: 1 } });
+  });
+
+  it('every write bumps the generation sealed inside the keyring, and this device remembers it', async () => {
+    const { relay, state } = toyRelay([]);
+    const store = new MemoryStore();
+    const accounts = new Accounts(toyEngine(), relay, store);
+    const session = await accounts.register('ada', 'correct horse battery');
+    if (!session.ok) throw new Error('no session');
+    await accounts.update(session.value, (k) => addSeal(k, seal(1)));
+    await accounts.update(session.value, (k) => addSeal(k, seal(2)));
+    expect(storedKeyring(state, session.value.keyringKey)?.gen).toBe(2);
+    expect(readWatermark(store, await watermarkSlot(session.value.keyringKey))).toBe(2);
+  });
+
+  it('a keyring from before generations still opens, and its next write is generation 1', async () => {
+    const { relay, state } = toyRelay([]);
+    const accounts = new Accounts(toyEngine(), relay, new MemoryStore());
+    const session = await accounts.register('ada', 'correct horse battery');
+    if (!session.ok) throw new Error('no session');
+    state.keyring = encode(toyEngine().sealWithKey(enc.encode(JSON.stringify({ v: 1, seals: [seal(1)] })), session.value.keyringKey));
+    state.version = 4;
+    expect(await accounts.keyring(session.value)).toEqual({ ok: true, value: { data: { v: 1, gen: 0, seals: [seal(1)] }, version: 4 } });
+    await accounts.update(session.value, (k) => addSeal(k, seal(2)));
+    expect(storedKeyring(state, session.value.keyringKey)).toEqual({ v: 1, gen: 1, seals: [seal(2), seal(1)] });
+  });
+
+  it('no false alarm: on a fresh device, after another device wrote, or for another account', async () => {
+    const { relay, state } = toyRelay([]);
+    const laptop = new MemoryStore();
+    const accounts = new Accounts(toyEngine(), relay, laptop);
+    const session = await accounts.register('ada', 'correct horse battery');
+    if (!session.ok) throw new Error('no session');
+    await accounts.update(session.value, (k) => addSeal(k, seal(1)));
+    const phone = new Accounts(toyEngine(), relay, new MemoryStore());
+    expect((await phone.keyring(session.value)).ok).toBe(true);
+    await phone.update(session.value, (k) => addSeal(k, seal(2)));
+    await phone.update(session.value, (k) => addSeal(k, seal(3)));
+    expect(storedKeyring(state, session.value.keyringKey)?.gen).toBe(3);
+    expect((await accounts.keyring(session.value)).ok).toBe(true);
+    expect(readWatermark(laptop, await watermarkSlot(session.value.keyringKey))).toBe(3);
+    // Bob, on the same laptop, starts from his own generation 0.
+    const bobs = new Accounts(toyEngine(), toyRelay([]).relay, laptop);
+    const bob = await bobs.register('bob', 'another long password');
+    if (!bob.ok) throw new Error('no session');
+    expect(await bobs.keyring(bob.value)).toEqual({ ok: true, value: { data: EMPTY, version: 0 } });
   });
 
   it('when another device wrote meanwhile, re-applies the change on top of it', async () => {
@@ -165,6 +233,41 @@ describe('accounts', () => {
     expect(session.value.keyringKey.every((b) => b === 0)).toBe(true);
   });
 
+  it('shows the pass of the last login and keeps the new one', async () => {
+    const calls: Call[] = [];
+    const store = new MemoryStore();
+    const accounts = new Accounts(toyEngine(), toyRelay(calls).relay, store);
+    await accounts.register('ada', 'correct horse battery');
+    const first = JSON.parse(calls.find((c) => c.url === '/api/account/login/start')!.init.body as string);
+    expect(first.pass).toBeUndefined();
+    calls.length = 0;
+    await accounts.signIn('ADA', 'correct horse battery');
+    const second = JSON.parse(calls[0]!.init.body as string);
+    expect(second.pass).toBe(encode(new Uint8Array(56).fill(1)));
+    expect(loadPass(store, await passSlot('ada'))).toEqual(new Uint8Array(56).fill(2));
+  });
+
+  it('signing out everywhere ends the session here too', async () => {
+    const calls: Call[] = [];
+    const accounts = new Accounts(toyEngine(), toyRelay(calls).relay, new MemoryStore());
+    const session = await accounts.register('ada', 'correct horse battery');
+    if (!session.ok) throw new Error('no session');
+    expect(await accounts.signOutEverywhere(session.value)).toEqual({ ok: true, value: true });
+    expect(calls.at(-1)!.url).toBe('/api/account/logout/everywhere');
+    expect(session.value.token.every((b) => b === 0)).toBe(true);
+    expect(session.value.keyringKey.every((b) => b === 0)).toBe(true);
+  });
+
+  it('closing the account forgets its pass on this device', async () => {
+    const store = new MemoryStore();
+    const accounts = new Accounts(toyEngine(), toyRelay([]).relay, store);
+    const session = await accounts.register('ada', 'correct horse battery');
+    if (!session.ok) throw new Error('no session');
+    expect(loadPass(store, await passSlot('ada'))).not.toBeNull();
+    expect(await accounts.close(session.value)).toEqual({ ok: true, value: true });
+    expect(loadPass(store, await passSlot('ada'))).toBeNull();
+  });
+
   it('normalizes names the way the relay compares them', () => {
     expect(normalizeUsername(' Élodie ')).toBe('élodie');
     expect(normalizeUsername('ÉLODIE')).toBe('élodie');
@@ -197,6 +300,66 @@ describe('accounts', () => {
       const garbage = toyEngine().sealWithKey(enc.encode('{"v":1,"seals":[{"id":"x"}]}'), session.value.keyringKey);
       state.keyring = encode(garbage);
       expect(await accounts.keyring(session.value)).toEqual({ ok: false, error: 'KeyringUnreadable' });
+    });
+
+    it('a relay serving an older keyring is caught, and the newer one is never overwritten', async () => {
+      const calls: Call[] = [];
+      const { relay, state } = toyRelay(calls);
+      const store = new MemoryStore();
+      const accounts = new Accounts(toyEngine(), relay, store);
+      const session = await accounts.register('ada', 'correct horse battery');
+      if (!session.ok) throw new Error('no session');
+      await accounts.update(session.value, (k) => addSeal(k, seal(1)));
+      const old = state.keyring;
+      await accounts.update(session.value, (k) => addSeal(k, seal(2)));
+      // The relay hands back the copy without seal 2, under the current version.
+      state.keyring = old;
+      expect(await accounts.keyring(session.value)).toEqual({ ok: false, error: 'KeyringRolledBack' });
+      calls.length = 0;
+      expect(await accounts.update(session.value, (k) => addSeal(k, seal(3)))).toEqual({ ok: false, error: 'KeyringRolledBack' });
+      expect(calls.filter((c) => c.init.method === 'POST')).toEqual([]);
+      expect(state.keyring).toBe(old);
+      expect(readWatermark(store, await watermarkSlot(session.value.keyringKey))).toBe(2);
+    });
+
+    it('a relay claiming there is no keyring, once one was seen, is caught too', async () => {
+      const { relay, state } = toyRelay([]);
+      const accounts = new Accounts(toyEngine(), relay, new MemoryStore());
+      const session = await accounts.register('ada', 'correct horse battery');
+      if (!session.ok) throw new Error('no session');
+      await accounts.update(session.value, (k) => addSeal(k, seal(1)));
+      state.keyring = null;
+      expect(await accounts.keyring(session.value)).toEqual({ ok: false, error: 'KeyringRolledBack' });
+      // A keyring from before generations is generation 0: older than one already seen.
+      state.keyring = encode(toyEngine().sealWithKey(enc.encode('{"v":1,"seals":[]}'), session.value.keyringKey));
+      expect(await accounts.keyring(session.value)).toEqual({ ok: false, error: 'KeyringRolledBack' });
+    });
+
+    it('storage that throws turns the check off, never the keyring', async () => {
+      const hostile: SeedStore = {
+        getItem() {
+          throw new Error('SecurityError');
+        },
+        setItem() {
+          throw new Error('QuotaExceededError');
+        },
+      };
+      const { relay } = toyRelay([]);
+      const accounts = new Accounts(toyEngine(), relay, hostile);
+      const session = await accounts.register('ada', 'correct horse battery');
+      if (!session.ok) throw new Error('no session');
+      expect((await accounts.update(session.value, (k) => addSeal(k, seal(1)))).ok).toBe(true);
+      expect(await accounts.keyring(session.value)).toEqual({ ok: true, value: { data: { ...addSeal(EMPTY, seal(1)), gen: 1 }, version: 1 } });
+    });
+
+    it('the device keeps no trace of the name', async () => {
+      const store = new MemoryStore();
+      const accounts = new Accounts(toyEngine(), toyRelay([]).relay, store);
+      const session = await accounts.register('ada', 'correct horse battery');
+      if (!session.ok) throw new Error('no session');
+      await accounts.update(session.value, (k) => addSeal(k, seal(1)));
+      expect(store.items.size).toBe(2); // the device pass and the keyring watermark
+      for (const [key, value] of store.items) expect(`${key} ${value}`).not.toMatch(/ada|horse/);
     });
   });
 });

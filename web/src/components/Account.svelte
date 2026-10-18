@@ -88,6 +88,21 @@
     if (live !== null) await accounts.signOut(live);
   }
 
+  async function signOutEverywhere() {
+    const live = currentSession();
+    if (live === null) return;
+    busy = true;
+    const result = await accounts.signOutEverywhere(live);
+    busy = false;
+    if (result.ok) {
+      signedIn.session = null;
+      seals = [];
+      notice = t.signedOutEverywhere;
+    } else {
+      fail(result.error);
+    }
+  }
+
   async function close() {
     const live = currentSession();
     if (live === null) return;
@@ -111,7 +126,7 @@
     <p class="muted">{t.accountIntro}</p>
     {#if notice}<p class="success" data-testid="account-notice">{notice}</p>{/if}
     <div class="tabs" role="tablist">
-      <button role="tab" aria-selected={mode === 'signIn'} class:active={mode === 'signIn'} onclick={() => (mode = 'signIn')}>{t.signIn}</button>
+      <button role="tab" aria-selected={mode === 'signIn'} class:active={mode === 'signIn'} onclick={() => (mode = 'signIn')} data-testid="tab-sign-in">{t.signIn}</button>
       <button role="tab" aria-selected={mode === 'signUp'} class:active={mode === 'signUp'} onclick={() => (mode = 'signUp')} data-testid="tab-sign-up">{t.signUp}</button>
     </div>
     <form class="stack" onsubmit={submit}>
@@ -148,6 +163,7 @@
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     <div class="row">
       <button class="secondary" onclick={signOut} data-testid="sign-out">{t.signOut}</button>
+      <button class="secondary" onclick={signOutEverywhere} disabled={busy} data-testid="sign-out-everywhere">{t.signOutEverywhere}</button>
       {#if !confirmingClose}
         <button class="secondary" onclick={() => (confirmingClose = true)} data-testid="close-account">{t.closeAccount}</button>
       {/if}
