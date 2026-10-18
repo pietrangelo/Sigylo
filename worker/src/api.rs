@@ -194,6 +194,14 @@ pub fn limiter_key(address: &str) -> String {
     }
 }
 
+/// Whether a call waits, given the limiter's verdict (`None` when it did not
+/// answer). Writes fail closed: they fill the vault and spend its daily
+/// allowance of rows. Reads fail open, so a broken limiter never keeps a
+/// recipient from a secret.
+pub fn throttled(write: bool, allowed: Option<bool>) -> bool {
+    allowed.map_or(write, |ok| !ok)
+}
+
 fn id_segment(segment: &str) -> Result<DropId, ApiError> {
     let bytes = URL_SAFE_NO_PAD.decode(segment).map_err(|_| ApiError::NotFound)?;
     DropId::from_slice(&bytes).map_err(|_| ApiError::NotFound)
@@ -1149,6 +1157,18 @@ mod tests {
             assert_eq!(limiter_key("::ffff:203.0.113.7"), "203.0.113.7");
             // Missing or garbled headers share one bucket rather than escape it.
             assert_eq!(limiter_key(""), limiter_key("not an address"));
+        }
+
+        #[test]
+        fn a_broken_limiter_stops_writes_but_not_reads() {
+            // Writes fill the vault and spend its daily allowance: without a
+            // limiter they wait. Reads only hand out what is already there.
+            assert!(throttled(true, None));
+            assert!(!throttled(false, None));
+            for write in [true, false] {
+                assert!(throttled(write, Some(false)));
+                assert!(!throttled(write, Some(true)));
+            }
         }
 
         #[test]
