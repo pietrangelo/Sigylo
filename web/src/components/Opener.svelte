@@ -22,6 +22,9 @@
   } = $props();
 
   const relay = new Relay(relayFetch);
+  // A recipient usually comes without the engine cached: fetch it while they read the page.
+  // Nothing here touches the relay, so nothing burns before the click.
+  loadEngine().catch(() => {});
   let opened: Opened | null = null;
   const chunks: Uint8Array[] = [];
   let burned = $state(false);
