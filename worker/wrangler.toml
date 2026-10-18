@@ -37,6 +37,19 @@ binding = "CHUNKS"
 bucket_name = "sigylo-chunks"
 jurisdiction = "eu"
 
+# Sigylo's vault: one Durable Object, created by name in the EU jurisdiction
+# (vault_adapters::DurableLink), keeps every record of custody in its own
+# storage; the sealed bytes, payloads and chunks alike, stay in R2 above, so a
+# burned secret does not survive in the Durable Object's 30-day history. The
+# class runs in this same Worker; only this Worker reaches it.
+[[durable_objects.bindings]]
+name = "VAULT"
+class_name = "SigyloVault"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SigyloVault"]
+
 # Throttle every API call per client address, IPv6 by /64 (kept in memory by
 # Cloudflare, never stored by us): POSTs and GETs each have their own allowance.
 [[ratelimits]]
@@ -66,11 +79,16 @@ simple = { limit = 10, period = 60 }
 # and the deploy refuses to create a new one or to finish with a different one.
 # Recorded from the live relay on 2026-10-18. Empty would mean not recorded yet,
 # and the deploy would print the live value to paste here.
+#
+# LEGACY_VAULT = "drain": custody kept in the database before the vault is still
+# opened, revoked, answered and purged there (nothing new goes in), until the
+# last of it expires, at most 7 days after the vault went live.
 [vars]
+LEGACY_VAULT = "drain"
 OPAQUE_CANARY = "zZ3ImAHoqehSoothI6rrvwLTwKyYLznXA995E4QyYnU"
 
-# Physically delete expired rows (reads already ignore them), then the R2 objects
-# of every chunk that went.
+# Physically delete expired records (reads already ignore them), in the vault and,
+# while it drains, in the database, then the R2 objects of everything that went.
 [triggers]
 crons = ["*/15 * * * *"]
 
