@@ -1,8 +1,11 @@
 //! # Sigylo relay (Cloudflare Worker)
 //!
 //! A blind relay: it receives envelopes that were sealed in the browser and
-//! keeps them in PostgreSQL through Hyperdrive, and the chunks of files in
-//! Cloudflare R2, via the Custody use cases.
+//! hands them, via the Custody use cases, to Sigylo's own vault: one Durable
+//! Object in the EU ([`SigyloVault`](runtime::SigyloVault)) keeps the records,
+//! and R2 the sealed bytes, payloads and chunks of files alike. While the
+//! custody that used to live in PostgreSQL drains (`LEGACY_VAULT = "drain"`),
+//! whatever the vault does not know is looked for there too.
 //! It never sees a key or a plaintext and logs neither ids nor payloads.
 //! The static web client is served by Workers Static Assets on the same
 //! origin, so the browser never talks to a third party.
@@ -21,13 +24,20 @@ mod runtime {
     use access::{AccessError, AccountId, Budget, Gatekeeper, Throttle, UnixTime};
     use access_adapters::{OpaqueKeys, PostgresAccounts, PostgresThrottle, RandomTokens, throttle_bucket};
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-    use custody::Custodian;
+    use core::cell::OnceCell;
+
+    use custody::{
+        ChunkIndex, ChunkRef, ClaimDigest, Custodian, CustodyError, Deposit, DropId, ObjectName, Opened, PostedRequest,
+        Receipt, Request as Asked, RevocationDigest, Vault,
+    };
     use custody_adapters::{PostgresVault, R2ChunkStore, RandomIds, Sha256TokenDigest};
     use tokio_postgres::{Client, NoTls};
+    use vault::{Draining, LedgerVault, RemoteVault};
+    use vault_adapters::{DurableKv, DurableLink, Placement, R2Payloads, WorkerClock};
     use worker::postgres_tls::PassthroughTls;
     use worker::{
-        Context, Env, Method, Request, Response, Result, ScheduleContext, ScheduledEvent, SecureTransport, Socket,
-        event,
+        Context, DurableObject, Env, Method, Request, Response, Result, ScheduleContext, ScheduledEvent,
+        SecureTransport, Socket, State, durable_object, event,
     };
     use zeroize::Zeroizing;
 
@@ -201,10 +211,135 @@ mod runtime {
         }
     }
 
+    /// The vault in its Durable Object, in the EU. `VAULT_PLACEMENT = "local"`
+    /// exists only for `wrangler dev`, whose runtime has no jurisdictions.
+    fn remote_vault(env: &Env) -> std::result::Result<RemoteVault<DurableLink>, CustodyError> {
+        let local = env.var("VAULT_PLACEMENT").is_ok_and(|v| v.to_string() == "local");
+        let placement = if local { Placement::Local } else { Placement::Jurisdiction };
+        DurableLink::new(env, "VAULT", placement).map(RemoteVault::new).map_err(|_| CustodyError::VaultUnavailable)
+    }
+
+    /// Whether custody kept in PostgreSQL before the vault still drains.
+    fn draining(env: &Env) -> bool {
+        env.var("LEGACY_VAULT").is_ok_and(|v| v.to_string() == "drain")
+    }
+
+    /// The custody of PostgreSQL, connected only if the vault did not have
+    /// what was asked for, so new things never wait on the database.
+    struct Legacy<'e> {
+        env: &'e Env,
+        client: OnceCell<Client>,
+    }
+
+    impl<'e> Legacy<'e> {
+        fn new(env: &'e Env) -> Self {
+            Self { env, client: OnceCell::new() }
+        }
+
+        async fn vault(&self) -> std::result::Result<PostgresVault<'_>, CustodyError> {
+            if self.client.get().is_none() {
+                let client = connect(self.env).await.map_err(|_| CustodyError::VaultUnavailable)?;
+                let _ = self.client.set(client);
+            }
+            self.client.get().map(PostgresVault::new).ok_or(CustodyError::VaultUnavailable)
+        }
+    }
+
+    impl Vault for Legacy<'_> {
+        async fn deposit(&self, deposit: &Deposit) -> std::result::Result<custody::UnixTime, CustodyError> {
+            self.vault().await?.deposit(deposit).await
+        }
+
+        async fn open(&self, id: &DropId, claim: &ClaimDigest) -> std::result::Result<Option<Opened>, CustodyError> {
+            self.vault().await?.open(id, claim).await
+        }
+
+        async fn reserve_chunk(
+            &self,
+            id: &DropId,
+            index: ChunkIndex,
+            object: &ObjectName,
+            len: u32,
+        ) -> std::result::Result<bool, CustodyError> {
+            self.vault().await?.reserve_chunk(id, index, object, len).await
+        }
+
+        async fn put_chunk(
+            &self,
+            id: &DropId,
+            index: ChunkIndex,
+            object: &ObjectName,
+            len: u32,
+        ) -> std::result::Result<bool, CustodyError> {
+            self.vault().await?.put_chunk(id, index, object, len).await
+        }
+
+        async fn open_chunk(
+            &self,
+            id: &DropId,
+            index: ChunkIndex,
+            claim: Option<&ClaimDigest>,
+        ) -> std::result::Result<Option<ChunkRef>, CustodyError> {
+            self.vault().await?.open_chunk(id, index, claim).await
+        }
+
+        async fn burn_chunk(
+            &self,
+            id: &DropId,
+            index: ChunkIndex,
+            claim: &ClaimDigest,
+        ) -> std::result::Result<bool, CustodyError> {
+            self.vault().await?.burn_chunk(id, index, claim).await
+        }
+
+        async fn garbage(&self, limit: u16) -> std::result::Result<Vec<ObjectName>, CustodyError> {
+            self.vault().await?.garbage(limit).await
+        }
+
+        async fn forget_garbage(&self, objects: &[ObjectName]) -> std::result::Result<(), CustodyError> {
+            self.vault().await?.forget_garbage(objects).await
+        }
+
+        async fn revoke(
+            &self,
+            id: &DropId,
+            digest: &RevocationDigest,
+        ) -> std::result::Result<Option<Vec<ObjectName>>, CustodyError> {
+            self.vault().await?.revoke(id, digest).await
+        }
+
+        async fn post_request(&self, request: &Asked) -> std::result::Result<custody::UnixTime, CustodyError> {
+            self.vault().await?.post_request(request).await
+        }
+
+        async fn fetch_request(&self, id: &DropId) -> std::result::Result<Option<PostedRequest>, CustodyError> {
+            self.vault().await?.fetch_request(id).await
+        }
+
+        async fn answer_request(&self, answer: &Deposit) -> std::result::Result<Option<Receipt>, CustodyError> {
+            self.vault().await?.answer_request(answer).await
+        }
+
+        async fn purge_expired(&self) -> std::result::Result<u64, CustodyError> {
+            self.vault().await?.purge_expired().await
+        }
+    }
+
     async fn safekeeping(command: Command, env: &Env) -> std::result::Result<Reply, ApiError> {
-        let client = connect(env).await.map_err(|_| custody::CustodyError::VaultUnavailable)?;
-        let store = chunk_store(env).map_err(|_| custody::CustodyError::VaultUnavailable)?;
-        let custodian = Custodian::new(PostgresVault::new(&client), store, Sha256TokenDigest, RandomIds);
+        let store = chunk_store(env).map_err(|_| CustodyError::VaultUnavailable)?;
+        let vault = remote_vault(env)?;
+        if draining(env) {
+            let custodian = Custodian::new(Draining::new(vault, Legacy::new(env)), store, Sha256TokenDigest, RandomIds);
+            keep(command, &custodian).await
+        } else {
+            keep(command, &Custodian::new(vault, store, Sha256TokenDigest, RandomIds)).await
+        }
+    }
+
+    async fn keep<V: Vault>(
+        command: Command,
+        custodian: &Custodian<V, R2ChunkStore, Sha256TokenDigest, RandomIds>,
+    ) -> std::result::Result<Reply, ApiError> {
         Ok(match command {
             Command::Deposit(cmd) => {
                 let revocation = cmd.revocation.as_ref();
@@ -241,6 +376,38 @@ mod runtime {
             }
             Command::Account(_) => return Err(ApiError::NotFound),
         })
+    }
+
+    /// Sigylo's vault: one Durable Object (in the EU, by name, see
+    /// `vault_adapters::DurableLink`) that runs every [`vault::Call`] on its
+    /// own storage, one atomic step at a time, with the sealed bytes in R2.
+    /// Only this Worker can reach it, through its binding.
+    #[durable_object(fetch)]
+    pub struct SigyloVault {
+        state: State,
+        env: Env,
+    }
+
+    impl core::fmt::Debug for SigyloVault {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str("SigyloVault")
+        }
+    }
+
+    impl DurableObject for SigyloVault {
+        fn new(state: State, env: Env) -> Self {
+            Self { state, env }
+        }
+
+        async fn fetch(&self, mut req: Request) -> Result<Response> {
+            if req.method() != Method::Post {
+                return Response::error("", 405);
+            }
+            let call = req.bytes().await?;
+            let payloads = R2Payloads::new(self.env.bucket("CHUNKS")?);
+            let vault = LedgerVault::new(DurableKv::new(&self.state), payloads, RandomIds, WorkerClock);
+            Response::from_bytes(vault::serve(&vault, &call).await)
+        }
     }
 
     #[event(fetch)]
@@ -282,30 +449,38 @@ mod runtime {
         }
     }
 
+    /// Runs the vault's chores: expired records go first, so their objects
+    /// join this round's garbage, then the garbage leaves R2, batch after
+    /// batch, within a few rounds and seconds (the work waits on the vault
+    /// and R2, and stays inside the free plan's CPU allowance).
+    async fn chores<V: Vault>(custodian: &Custodian<V, R2ChunkStore, Sha256TokenDigest, RandomIds>) {
+        let _ = custodian.purge_expired().await;
+        let deadline = worker::Date::now().as_millis() + api::GARBAGE_MILLIS;
+        let mut rounds = 1;
+        let _ = custodian
+            .collect_garbage(|| {
+                rounds += 1;
+                rounds <= api::GARBAGE_ROUNDS && worker::Date::now().as_millis() < deadline
+            })
+            .await;
+    }
+
     #[event(scheduled)]
     async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
-        // Expired rows go first, so their chunks' objects join this round's garbage.
-        if let (Ok(client), Ok(store)) = (connect(&env).await, chunk_store(&env)) {
-            let custodian = Custodian::new(PostgresVault::new(&client), store, Sha256TokenDigest, RandomIds);
-            let _ = custodian.purge_expired().await;
-            // Batch after batch, within a few rounds and seconds: the work is
-            // waiting on the database and R2, and stays inside the free
-            // plan's CPU allowance.
-            let deadline = worker::Date::now().as_millis() + api::GARBAGE_MILLIS;
-            let mut rounds = 1;
-            let _ = custodian
-                .collect_garbage(|| {
-                    rounds += 1;
-                    rounds <= api::GARBAGE_ROUNDS && worker::Date::now().as_millis() < deadline
-                })
-                .await;
-            if let Ok(keys) = opaque_keys(&env) {
-                let store = PostgresAccounts::new(&client);
-                let digest = keys.session_digest();
-                let passes = keys.passes(now());
-                let gatekeeper = Gatekeeper::new(keys, store, RandomTokens, digest, LoginLimiter(&env), passes);
-                let _ = gatekeeper.purge_expired().await;
+        if let (Ok(vault), Ok(store)) = (remote_vault(&env), chunk_store(&env)) {
+            if draining(&env) {
+                chores(&Custodian::new(Draining::new(vault, Legacy::new(&env)), store, Sha256TokenDigest, RandomIds))
+                    .await;
+            } else {
+                chores(&Custodian::new(vault, store, Sha256TokenDigest, RandomIds)).await;
             }
+        }
+        if let (Ok(client), Ok(keys)) = (connect(&env).await, opaque_keys(&env)) {
+            let store = PostgresAccounts::new(&client);
+            let digest = keys.session_digest();
+            let passes = keys.passes(now());
+            let gatekeeper = Gatekeeper::new(keys, store, RandomTokens, digest, LoginLimiter(&env), passes);
+            let _ = gatekeeper.purge_expired().await;
         }
     }
 }

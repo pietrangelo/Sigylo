@@ -1,0 +1,17 @@
+[package]
+name = "vault"
+description = "Vault bounded context (pure domain): Sigylo's own custody store, the Custody rules on an ordered key-value store, sealed bytes kept apart in an object store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+custody.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.rosette]
+role = "domain"

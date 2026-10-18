@@ -35,7 +35,7 @@ psql "$admin" -q -X -c "alter role sigylo_relay login password 'relay-test-only'
 # Own process group, so cleanup stops npx, wrangler and workerd together.
 # R2 is simulated locally in "$tmp/state"; the suite runs the cron (purge and
 # garbage collection) through wrangler's local explorer API.
-(cd "$root/worker" && exec setsid npx --yes wrangler@4.151.1 dev --var DB_TLS:disable \
+(cd "$root/worker" && exec setsid npx --yes wrangler@4.151.1 dev --var DB_TLS:disable --var VAULT_PLACEMENT:local \
     --var OPAQUE_SERVER_SEED:e2e-only-not-a-secret-AAAAAAAAAAAAAAAAAAAAA \
     --var OPAQUE_CANARY:voB1TN7wcGcZY8Ms-nY-RlT9xSOkkNM1KZPxcTdw61k \
     --persist-to "$tmp/state" --ip 127.0.0.1 --port 8787 >"$tmp/wrangler.log" 2>&1) &
