@@ -14,7 +14,7 @@ Specifica, architettura e regole di sviluppo: [CLAUDE.md](CLAUDE.md).
 - **Richiesta, post-quantistica:** chi deve ricevere crea una coppia di chiavi ibrida X25519 + ML-KEM-768 sul proprio dispositivo; chi invia sigilla con quella chiave. Nessuna chiave di lettura viaggia mai.
 - **File fino a 10 MiB:** un manifest sigillato come qualsiasi segreto porta la chiave del file; il file viaggia in blocchi da 1 MiB autenticati con posizione e numero totale, e un file a lettura unica va solo a chi l'ha aperto, blocco per blocco. I blocchi stanno su Cloudflare R2 (UE) sotto nomi casuali, mai nel database.
 - **Relay cieco:** un Cloudflare Worker in Rust custodisce buste opache: il registro sta in un Durable Object nell'UE, le buste su R2. Burn-after-reading atomico, scadenza da 5 minuti a 7 giorni, revoca da parte del mittente.
-- **Account facoltativi:** login OPAQUE (la password non lascia mai il dispositivo), su PostgreSQL (Supabase, via Hyperdrive).
+- **Account facoltativi:** login OPAQUE (la password non lascia mai il dispositivo), su PostgreSQL via Hyperdrive finché gli account non passano al caveau.
 
 ![Architettura di sistema e applicativa di Sigylo](docs/architecture.svg)
 
