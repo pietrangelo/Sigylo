@@ -54,9 +54,11 @@ const FIXED_LEN: usize = MANIFEST_MAGIC.len() + 1 + FileKey::LEN + 8 + 1;
 /// to their browser, so it may not hide anything: no path separators, no
 /// control characters, no invisible or bidirectional formatting characters
 /// that could make `invoice\u{202E}fdp.exe` look like `invoiceexe.pdf`, no
-/// runs of spaces that push the real extension out of sight, and nothing
-/// Windows would refuse or rewrite on saving (`<>:"|?*`, a trailing dot or
-/// space, device names such as `CON` or `nul.txt`).
+/// characters that draw a blank (U+2800, private use…), runs of spaces or
+/// blanks that push the real extension out of sight, piles of combining
+/// marks that strike it through, and nothing Windows would refuse or rewrite
+/// on saving (`<>:"|?*`, a trailing dot or space, device names such as
+/// `CON`, `nul.txt`, `CON .txt` or `COM¹`).
 #[derive(Clone, PartialEq, Eq)]
 pub struct FileName(String);
 
@@ -68,7 +70,8 @@ impl FileName {
             && name != "."
             && name != ".."
             && !name.chars().any(forbidden)
-            && !name.contains("  ")
+            && !has_blank_run(&name)
+            && !has_mark_pile(&name)
             && !name.starts_with(' ')
             && !name.ends_with([' ', '.'])
             && !is_device_name(&name);
@@ -80,11 +83,16 @@ impl FileName {
     }
 }
 
+/// Most combining marks one character may carry: enough for the ordinary
+/// writing of any script, too few to stack an overlay across the name.
+const MAX_MARKS_PER_BASE: usize = 2;
+
 fn forbidden(c: char) -> bool {
     matches!(c, '/' | '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*')
         || c.is_control()
         || (c.is_whitespace() && c != ' ')
         || is_invisible(c)
+        || is_blank_glyph(c)
 }
 
 /// Format characters (Unicode category Cf), line and paragraph separators,
@@ -99,14 +107,67 @@ fn is_invisible(c: char) -> bool {
         | '\u{1D173}'..='\u{1D17A}' | '\u{E0000}'..='\u{E0FFF}')
 }
 
-/// `CON`, `nul.txt`, `Lpt1.pdf`…: Windows maps these to devices, whatever
-/// the extension.
+/// Visible characters by category that still draw a blank: the empty
+/// braille pattern, the null notehead, the object replacement character,
+/// and private-use characters, which most fonts leave empty.
+fn is_blank_glyph(c: char) -> bool {
+    matches!(c, '\u{2800}' | '\u{1D159}' | '\u{FFFC}' | '\u{E000}'..='\u{F8FF}'
+        | '\u{F0000}'..='\u{FFFFD}' | '\u{100000}'..='\u{10FFFD}')
+}
+
+/// Whitespace, or anything that draws nothing where a letter could be.
+fn is_blank(c: char) -> bool {
+    c.is_whitespace() || is_invisible(c) || is_blank_glyph(c)
+}
+
+/// Two blanks in a row, whatever their mix: a run pushes the real extension
+/// out of sight.
+fn has_blank_run(name: &str) -> bool {
+    let mut previous = false;
+    name.chars().any(|c| {
+        let blank = is_blank(c);
+        let run = blank && previous;
+        previous = blank;
+        run
+    })
+}
+
+/// More than [`MAX_MARKS_PER_BASE`] combining marks in a row.
+fn has_mark_pile(name: &str) -> bool {
+    let mut marks = 0;
+    name.chars().any(|c| {
+        marks = if is_combining_mark(c) { marks + 1 } else { 0 };
+        marks > MAX_MARKS_PER_BASE
+    })
+}
+
+/// Nonspacing and enclosing marks of the generic combining blocks (where
+/// overlays such as U+0336 live) and of the scripts that stack marks most:
+/// Cyrillic, Hebrew, Arabic, Devanagari and Thai.
+fn is_combining_mark(c: char) -> bool {
+    matches!(c, '\u{0300}'..='\u{036F}' | '\u{0483}'..='\u{0489}' | '\u{0591}'..='\u{05BD}' | '\u{05BF}'
+        | '\u{05C1}'..='\u{05C2}' | '\u{05C4}'..='\u{05C5}' | '\u{05C7}' | '\u{0610}'..='\u{061A}'
+        | '\u{064B}'..='\u{065F}' | '\u{0670}' | '\u{06D6}'..='\u{06DC}' | '\u{06DF}'..='\u{06E4}'
+        | '\u{06E7}'..='\u{06E8}' | '\u{06EA}'..='\u{06ED}' | '\u{0900}'..='\u{0902}' | '\u{093A}' | '\u{093C}'
+        | '\u{0941}'..='\u{0948}' | '\u{094D}' | '\u{0951}'..='\u{0957}' | '\u{0962}'..='\u{0963}' | '\u{0E31}'
+        | '\u{0E34}'..='\u{0E3A}' | '\u{0E47}'..='\u{0E4E}' | '\u{1AB0}'..='\u{1AFF}' | '\u{1DC0}'..='\u{1DFF}'
+        | '\u{20D0}'..='\u{20FF}' | '\u{2DE0}'..='\u{2DFF}' | '\u{A66F}'..='\u{A672}' | '\u{A674}'..='\u{A67D}'
+        | '\u{FE20}'..='\u{FE2F}')
+}
+
+/// `CON`, `nul.txt`, `Lpt1.pdf`, `CON .txt`, `COM¹`, `CONIN$`…: Windows maps
+/// these to devices whatever the extension, once the spaces and dots that
+/// end the stem are dropped. Microsoft lists `COM0`–`COM9` and `COM¹²³`, and
+/// the same for `LPT`.
 fn is_device_name(name: &str) -> bool {
-    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
-    match stem.as_bytes() {
-        b"CON" | b"PRN" | b"AUX" | b"NUL" => true,
-        [b'C', b'O', b'M', d] | [b'L', b'P', b'T', d] => d.is_ascii_digit() && *d != b'0',
-        _ => false,
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches([' ', '.']).to_ascii_uppercase();
+    match stem.as_str() {
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" => true,
+        _ => {
+            let port = stem.strip_prefix("COM").or_else(|| stem.strip_prefix("LPT")).unwrap_or_default();
+            let mut digits = port.chars();
+            matches!((digits.next(), digits.next()), (Some('0'..='9' | '\u{00B9}' | '\u{00B2}' | '\u{00B3}'), None))
+        }
     }
 }
 
@@ -464,6 +525,81 @@ mod tests {
             ] {
                 assert_eq!(FileName::new(bad.to_owned()), Err(SealError::InvalidFileName), "{bad:?}");
             }
+        }
+
+        #[test]
+        fn blank_glyphs_that_push_the_extension_away_are_refused() {
+            // Not format characters, so not invisible by category, but they
+            // draw nothing: a run of them hides `.exe` as well as spaces do.
+            let braille = "\u{2800}".repeat(60);
+            let alternating = " \u{2800}".repeat(40);
+            for bad in [
+                format!("report.pdf{braille}.exe"),
+                format!("report.pdf{alternating}.exe"),
+                "blank\u{2800}".to_owned(),
+                "null notehead\u{1D159}.exe".to_owned(),
+                "object\u{FFFC}.exe".to_owned(),
+                "private\u{E000}use.exe".to_owned(),
+                "private\u{F0000}use.exe".to_owned(),
+                "filler\u{115F}\u{1160}.exe".to_owned(),
+            ] {
+                assert_eq!(FileName::new(bad.clone()), Err(SealError::InvalidFileName), "{bad:?}");
+            }
+        }
+
+        #[test]
+        fn runs_of_blanks_are_refused_whatever_they_are_made_of() {
+            for run in ["  ", " \u{2800}", "\u{2800} ", "\u{3164} ", " \u{00A0}"] {
+                let bad = format!("report.pdf{run}x.exe");
+                assert_eq!(FileName::new(bad.clone()), Err(SealError::InvalidFileName), "{bad:?}");
+            }
+        }
+
+        #[test]
+        fn combining_marks_cannot_pile_up_over_the_name() {
+            let overlays = "\u{0336}".repeat(30);
+            for bad in [
+                format!("report.pdf{overlays}.exe"),
+                "a\u{0301}\u{0302}\u{0303}.txt".to_owned(),
+                "x\u{20D2}\u{20D2}\u{20D2}.txt".to_owned(),
+                "\u{0336}\u{0336}\u{0336}lead.txt".to_owned(),
+            ] {
+                assert_eq!(FileName::new(bad.clone()), Err(SealError::InvalidFileName), "{bad:?}");
+            }
+            // One or two marks on a letter are ordinary writing.
+            for good in ["e\u{0301}te\u{0301}.txt", "a\u{0323}\u{0302}.txt", "ไม้.txt", "شَدَّة.txt"] {
+                assert!(FileName::new(good.to_owned()).is_ok(), "{good:?}");
+            }
+        }
+
+        #[test]
+        fn every_spelling_of_a_windows_device_is_refused() {
+            for bad in [
+                "CON .txt",
+                "con  ",
+                "NUL .tar.gz",
+                "aux .",
+                "COM\u{00B9}.txt",
+                "com\u{00B2}",
+                "LPT\u{00B3}.pdf",
+                "COM0.txt",
+                "lpt0",
+                "CONIN$",
+                "conout$.log",
+                "CONIN$ .txt",
+            ] {
+                assert_eq!(FileName::new(bad.to_owned()), Err(SealError::InvalidFileName), "{bad:?}");
+            }
+            for good in ["CONSOLE.txt", "COM10.txt", "LPT\u{00B9}0.txt", "conin.txt", "NULL.txt", "a CON.txt"] {
+                assert!(FileName::new(good.to_owned()).is_ok(), "{good:?}");
+            }
+        }
+
+        #[test]
+        fn a_double_extension_is_shown_whole_and_kept() {
+            // Not hidden: the name is shown in full. Telling the real extension
+            // apart is the page's job, not the sealer's.
+            assert!(FileName::new("invoice.pdf.exe".to_owned()).is_ok());
         }
 
         #[test]

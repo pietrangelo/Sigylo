@@ -28,6 +28,13 @@ use std::net::IpAddr;
 /// Largest JSON request body accepted (a maximal payload in base64 plus JSON).
 pub const MAX_BODY_LEN: usize = 100 * 1024;
 
+/// Most garbage batches one cron run deletes from R2 ([`custody::GARBAGE_BATCH`]
+/// objects each): the run waits on the database and R2 and stays within the
+/// free plan's 10 ms of CPU.
+pub const GARBAGE_ROUNDS: u32 = 5;
+/// Wall time after which a cron run starts no new garbage batch.
+pub const GARBAGE_MILLIS: u64 = 10_000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Route {
     Deposit,
@@ -56,6 +63,12 @@ impl Route {
             _ => MAX_BODY_LEN,
         }
     }
+
+    /// Whether the route reads a request body at all. The others never read
+    /// one, so nothing a client sends with them is buffered.
+    pub fn takes_body(&self) -> bool {
+        !matches!(self, Self::Open(_) | Self::FetchRequest(_) | Self::Logout | Self::ReadKeyring | Self::CloseAccount)
+    }
 }
 
 /// Why a request was refused before reaching the domain.
@@ -65,6 +78,8 @@ pub enum ApiError {
     MethodNotAllowed,
     /// A browser page of another origin tried to call the relay.
     CrossOrigin,
+    /// A body came without a `Content-Length` to check before reading it.
+    LengthRequired,
     BodyTooLarge,
     InvalidJson,
     InvalidEncoding,
@@ -90,6 +105,7 @@ impl ApiError {
             Self::NotFound | Self::Custody(CustodyError::NotFound) => 404,
             Self::MethodNotAllowed => 405,
             Self::CrossOrigin => 403,
+            Self::LengthRequired => 411,
             Self::BodyTooLarge | Self::Custody(CustodyError::PayloadTooLarge) => 413,
             Self::Custody(CustodyError::AlreadyExists) => 409,
             Self::Custody(CustodyError::VaultUnavailable | CustodyError::RandomnessUnavailable) => 503,
@@ -100,6 +116,7 @@ impl ApiError {
                 AccessError::AlreadyRegistered | AccessError::Conflict => 409,
                 AccessError::KeyringTooLarge => 413,
                 AccessError::Throttled => 429,
+                AccessError::StorageFull => 507,
                 AccessError::StoreUnavailable | AccessError::NotConfigured | AccessError::RandomnessUnavailable => 503,
                 AccessError::InvalidUsername
                 | AccessError::InvalidPassword
@@ -123,12 +140,16 @@ impl ApiError {
     }
 }
 
-/// Refuse a body whose declared length is already too large for its route,
-/// before reading it.
+/// Refuse a body before reading it unless it declares its length, in plain
+/// decimal, and that length fits its route. Without the header (chunked
+/// encoding) the Worker would buffer whatever came, up to Cloudflare's 100 MB.
 pub fn check_declared_length(route: &Route, content_length: Option<&str>) -> Result<(), ApiError> {
-    match content_length.map(|v| v.trim().parse::<u64>()) {
-        Some(Ok(n)) if n > route.max_body_len() as u64 => Err(ApiError::BodyTooLarge),
-        _ => Ok(()),
+    let declared = content_length.map(str::trim).filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()));
+    match declared.map(str::parse::<u64>) {
+        Some(Ok(n)) if n <= route.max_body_len() as u64 => Ok(()),
+        // All digits but past u64: too large in any case.
+        Some(_) => Err(ApiError::BodyTooLarge),
+        None => Err(ApiError::LengthRequired),
     }
 }
 
@@ -602,8 +623,25 @@ mod tests {
 
     const ID: &str = "AAECAwQFBgcICQoLDA0ODw"; // bytes 0..16
 
+    /// The smallest envelope a sealer makes.
+    fn envelope() -> Vec<u8> {
+        let mut bytes = b"SGY\x01".to_vec();
+        bytes.resize(custody::MIN_PAYLOAD_LEN, 0x5A);
+        bytes
+    }
+
+    fn payload64() -> String {
+        encode(&envelope())
+    }
+
     fn deposit_json(extra: &str) -> String {
-        format!(r#"{{"payload":"U0dZAQ","retention":"burn_after_reading","lifetime_seconds":3600{extra}}}"#)
+        let payload = payload64();
+        format!(r#"{{"payload":"{payload}","retention":"burn_after_reading","lifetime_seconds":3600{extra}}}"#)
+    }
+
+    fn answer_json(extra: &str) -> String {
+        let payload = payload64();
+        format!(r#"{{"payload":"{payload}","retention":"until_expiry","lifetime_seconds":300{extra}}}"#)
     }
 
     fn request_json(extra: &str) -> String {
@@ -630,7 +668,7 @@ mod tests {
         let cmd = parse_deposit(deposit_json(r#","chunks":10"#).as_bytes()).unwrap();
         assert_eq!(cmd.chunks, Some(ChunkCount::new(10).unwrap()));
         assert!(parse_deposit(deposit_json("").as_bytes()).unwrap().chunks.is_none());
-        let answer = r#"{"payload":"U0dZAQ","retention":"until_expiry","lifetime_seconds":300,"chunks":2}"#;
+        let answer = answer_json(r#","chunks":2"#);
         assert_eq!(parse_answer(answer.as_bytes()).unwrap().chunks, Some(ChunkCount::new(2).unwrap()));
     }
 
@@ -648,9 +686,10 @@ mod tests {
 
     #[test]
     fn opened_bodies_add_chunks_and_claim_only_for_files() {
-        let payload = SealedPayload::new(b"SGY\x01".to_vec()).unwrap();
+        let payload = SealedPayload::new(envelope()).unwrap();
         let text = custody::Opened { payload: payload.clone(), burned: true, chunks: None, claim: None };
-        assert_eq!(opened_body(text), r#"{"payload":"U0dZAQ","burned":true}"#);
+        let b64 = payload64();
+        assert_eq!(opened_body(text), format!(r#"{{"payload":"{b64}","burned":true}}"#));
         let file = custody::Opened {
             payload,
             burned: true,
@@ -658,7 +697,7 @@ mod tests {
             claim: Some(ClaimToken::from_array([0; 32])),
         };
         let claim = encode(&[0; 32]);
-        assert_eq!(opened_body(file), format!(r#"{{"payload":"U0dZAQ","burned":true,"chunks":3,"claim":"{claim}"}}"#));
+        assert_eq!(opened_body(file), format!(r#"{{"payload":"{b64}","burned":true,"chunks":3,"claim":"{claim}"}}"#));
     }
 
     #[test]
@@ -666,7 +705,7 @@ mod tests {
         let cmd = parse_deposit(deposit_json("").as_bytes()).unwrap();
         assert_eq!(cmd.retention, Retention::BurnAfterReading);
         assert_eq!(cmd.lifetime.seconds(), 3600);
-        assert_eq!(cmd.payload.as_bytes(), b"SGY\x01");
+        assert_eq!(cmd.payload.as_bytes(), envelope());
         assert!(cmd.revocation.is_none());
     }
 
@@ -697,7 +736,7 @@ mod tests {
     fn every_route_becomes_a_command() {
         let id = id_segment(ID).unwrap();
         let token = format!(r#"{{"token":"{}"}}"#, encode(&[1; 32]));
-        let answer = r#"{"payload":"U0dZAQ","retention":"until_expiry","lifetime_seconds":300}"#;
+        let answer = answer_json("");
         assert!(matches!(command(Route::Deposit, deposit_json("").as_bytes(), None), Ok(Command::Deposit(_))));
         assert!(matches!(command(Route::Open(id), b"", None), Ok(Command::Open(i)) if i == id));
         assert!(matches!(command(Route::Revoke(id), token.as_bytes(), None), Ok(Command::Revoke(i, _)) if i == id));
@@ -784,6 +823,12 @@ mod tests {
         assert_eq!(ApiError::Access(AccessError::NotConfigured).status(), 503);
         assert_eq!(ApiError::Access(AccessError::KeyringTooLarge).status(), 413);
         assert_eq!(ApiError::Access(AccessError::Conflict).body(), r#"{"error":"Conflict"}"#);
+        // Full account storage reads like full custody, so the client shows one message for both.
+        assert_eq!(ApiError::Access(AccessError::StorageFull).status(), 507);
+        assert_eq!(
+            ApiError::Access(AccessError::StorageFull).body(),
+            ApiError::Custody(CustodyError::StorageFull).body()
+        );
     }
 
     #[test]
@@ -845,7 +890,7 @@ mod tests {
             assert_eq!(parse_deposit(unknown.as_bytes()).unwrap_err(), ApiError::InvalidJson);
             let bad_retention = deposit_json("").replace("burn_after_reading", "forever");
             assert_eq!(parse_deposit(bad_retention.as_bytes()).unwrap_err(), ApiError::InvalidJson);
-            let padded = deposit_json("").replace("U0dZAQ", "U0dZAQ==");
+            let padded = deposit_json("").replace(&payload64(), &format!("{}=", payload64()));
             assert_eq!(parse_deposit(padded.as_bytes()).unwrap_err(), ApiError::InvalidEncoding);
             let forever = deposit_json("").replace("3600", "31536000");
             assert_eq!(
@@ -891,14 +936,62 @@ mod tests {
             let over = (MAX_BODY_LEN + 1).to_string();
             assert_eq!(check_declared_length(&json, Some(&over)), Err(ApiError::BodyTooLarge));
             assert_eq!(check_declared_length(&json, Some(&MAX_BODY_LEN.to_string())), Ok(()));
-            // Missing or odd headers fall through to the check on the bytes actually read.
-            assert_eq!(check_declared_length(&json, None), Ok(()));
-            assert_eq!(check_declared_length(&json, Some("lots")), Ok(()));
             // A chunk may be larger than a JSON body, but no larger than a chunk.
             let chunk = Route::PutChunk(id_segment(ID).unwrap(), ChunkIndex::new(0).unwrap());
             assert_eq!(check_declared_length(&chunk, Some(&MAX_CHUNK_LEN.to_string())), Ok(()));
             let over = (MAX_CHUNK_LEN + 1).to_string();
             assert_eq!(check_declared_length(&chunk, Some(&over)), Err(ApiError::BodyTooLarge));
+        }
+
+        #[test]
+        fn a_body_of_undeclared_length_is_refused_before_it_is_read() {
+            // Chunked encoding would otherwise have the Worker buffer up to
+            // Cloudflare's 100 MB limit before any size check.
+            let id = id_segment(ID).unwrap();
+            let chunk = Route::PutChunk(id, ChunkIndex::new(0).unwrap());
+            for route in [Route::Deposit, chunk, Route::OpenChunk(id, ChunkIndex::new(0).unwrap()), Route::LoginStart] {
+                assert!(route.takes_body(), "{route:?}");
+                for header in [None, Some(""), Some("lots"), Some("-1"), Some("1e3")] {
+                    assert_eq!(check_declared_length(&route, header), Err(ApiError::LengthRequired), "{header:?}");
+                }
+            }
+            assert_eq!(ApiError::LengthRequired.status(), 411);
+            assert_eq!(ApiError::LengthRequired.body(), r#"{"error":"LengthRequired"}"#);
+        }
+
+        #[test]
+        fn one_collection_outpaces_many_addresses_filling_the_garbage() {
+            // 30 writes a minute per address, each at most one chunk, and a
+            // cron run every 15 minutes.
+            let per_address_per_run = 30 * 15;
+            let per_run = GARBAGE_ROUNDS as usize * usize::from(custody::GARBAGE_BATCH);
+            assert!(per_run >= 10 * per_address_per_run, "{per_run}");
+        }
+
+        #[test]
+        fn routes_without_a_body_never_read_one() {
+            let id = id_segment(ID).unwrap();
+            for route in
+                [Route::Open(id), Route::FetchRequest(id), Route::Logout, Route::ReadKeyring, Route::CloseAccount]
+            {
+                assert!(!route.takes_body(), "{route:?}");
+            }
+        }
+
+        #[test]
+        fn payloads_and_chunks_smaller_than_the_sealer_makes_are_refused() {
+            // Each costs a database row: a flood of tiny ones would fill it
+            // while the ceiling counted almost nothing.
+            let tiny = deposit_json("").replace(&payload64(), "U0dZAQ");
+            let too_small = ApiError::Custody(CustodyError::PayloadTooSmall);
+            assert_eq!(parse_deposit(tiny.as_bytes()).unwrap_err(), too_small);
+            let tiny = answer_json("").replace(&payload64(), "U0dZAQ");
+            assert_eq!(parse_answer(tiny.as_bytes()).unwrap_err(), too_small);
+            assert_eq!(too_small.status(), 400);
+            for len in [1, 271, 300, 4096, custody::MAX_CHUNK_LEN - 1] {
+                assert_eq!(parse_chunk(&vec![0; len]).unwrap_err(), ApiError::Custody(CustodyError::InvalidChunk));
+            }
+            assert!(parse_chunk(&[0; custody::MIN_CHUNK_LEN]).is_ok());
         }
 
         #[test]

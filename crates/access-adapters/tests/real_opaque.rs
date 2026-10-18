@@ -38,7 +38,7 @@ fn login(
     tamper(&mut bytes);
     let response = CredentialResponse::from_slice(&bytes).unwrap();
     let (finalization, export) = OpaqueDevice.finish_login(state, &pw(password), &response)?;
-    keys.finish_login(account, &server_state, &finalization)?;
+    keys.finish_login(account, record, &server_state, &finalization)?;
     Ok(export)
 }
 
@@ -128,23 +128,35 @@ mod adversary {
         );
     }
 
-    /// The parked state, KE3 and the account of a genuine login in progress.
-    fn parked(keys: &OpaqueKeys, name: &str) -> (AccountId, LoginState, CredentialFinalization) {
+    /// The account, record, parked state and KE3 of a genuine login in progress.
+    fn parked(keys: &OpaqueKeys, name: &str) -> (AccountId, RegistrationRecord, LoginState, CredentialFinalization) {
         let ada = account(keys, name);
         let (record, _) = register(keys, &ada, "correct horse battery");
         let (request, state) = OpaqueDevice.begin_login(&pw("correct horse battery")).unwrap();
         let (response, server_state) = keys.begin_login(&ada, Some(&record), &request).unwrap();
         let (finalization, _) = OpaqueDevice.finish_login(state, &pw("correct horse battery"), &response).unwrap();
-        (ada, server_state, finalization)
+        (ada, record, server_state, finalization)
     }
 
     #[test]
     fn a_parked_state_only_finishes_the_login_of_its_own_account() {
         let keys = keys();
-        let (ada, state, finalization) = parked(&keys, "ada");
+        let (ada, record, state, finalization) = parked(&keys, "ada");
         let bob = account(&keys, "bob");
-        assert_eq!(keys.finish_login(&bob, &state, &finalization), Err(AccessError::NotAuthentic));
-        assert_eq!(keys.finish_login(&ada, &state, &finalization), Ok(()));
+        assert_eq!(keys.finish_login(&bob, Some(&record), &state, &finalization), Err(AccessError::NotAuthentic));
+        assert_eq!(keys.finish_login(&ada, Some(&record), &state, &finalization), Ok(()));
+    }
+
+    #[test]
+    fn a_parked_state_only_finishes_against_the_record_it_began_on() {
+        // The name was closed and registered again by someone else while the
+        // previous owner's login was in flight: that login must not finish
+        // into a session on the new account.
+        let keys = keys();
+        let (ada, _, state, finalization) = parked(&keys, "ada");
+        let (new_record, _) = register(&keys, &ada, "a different owner's password");
+        assert_eq!(keys.finish_login(&ada, Some(&new_record), &state, &finalization), Err(AccessError::NotAuthentic));
+        assert_eq!(keys.finish_login(&ada, None, &state, &finalization), Err(AccessError::NotAuthentic));
     }
 
     #[test]
@@ -152,27 +164,31 @@ mod adversary {
         // Whoever can write access.logins (a stolen relay credential) must not
         // be able to plant a state of their own and finish it into a session.
         let keys = keys();
-        let (ada, state, finalization) = parked(&keys, "ada");
+        let (ada, record, state, finalization) = parked(&keys, "ada");
         for i in 0..LoginState::LEN {
             let mut bytes = state.expose().to_vec();
             bytes[i] ^= 1;
             let flipped = LoginState::from_slice(&bytes).unwrap();
-            assert_eq!(keys.finish_login(&ada, &flipped, &finalization), Err(AccessError::NotAuthentic), "byte {i}");
+            assert_eq!(
+                keys.finish_login(&ada, Some(&record), &flipped, &finalization),
+                Err(AccessError::NotAuthentic),
+                "byte {i}"
+            );
         }
     }
 
     #[test]
     fn a_state_sealed_by_another_relay_secret_does_not_open() {
-        let (ada, state, finalization) = parked(&keys(), "ada");
+        let (ada, record, state, finalization) = parked(&keys(), "ada");
         let other = OpaqueKeys::from_seed(&[43; 32]).unwrap();
-        assert_eq!(other.finish_login(&ada, &state, &finalization), Err(AccessError::NotAuthentic));
+        assert_eq!(other.finish_login(&ada, Some(&record), &state, &finalization), Err(AccessError::NotAuthentic));
     }
 
     #[test]
     fn the_same_login_never_parks_the_same_bytes_twice() {
         let keys = keys();
-        let (_, first, _) = parked(&keys, "ada");
-        let (_, second, _) = parked(&keys, "bob");
+        let (_, _, first, _) = parked(&keys, "ada");
+        let (_, _, second, _) = parked(&keys, "bob");
         assert_ne!(first.expose(), second.expose());
     }
 
@@ -189,11 +205,11 @@ mod adversary {
         };
         let (first, _) = run();
         let (_, second_state) = run();
-        assert_eq!(keys.finish_login(&ada, &second_state, &first), Err(AccessError::NotAuthentic));
+        assert_eq!(keys.finish_login(&ada, Some(&record), &second_state, &first), Err(AccessError::NotAuthentic));
         let mut flipped = first.as_bytes().to_vec();
         flipped[10] ^= 0x80;
         let flipped = CredentialFinalization::from_slice(&flipped).unwrap();
-        assert_eq!(keys.finish_login(&ada, &second_state, &flipped), Err(AccessError::NotAuthentic));
+        assert_eq!(keys.finish_login(&ada, Some(&record), &second_state, &flipped), Err(AccessError::NotAuthentic));
     }
 
     #[test]
@@ -232,5 +248,20 @@ mod adversary {
     #[test]
     fn debug_never_prints_the_relay_keys() {
         assert_eq!(format!("{:?}", keys()), "OpaqueKeys(redacted)");
+    }
+}
+
+mod session_digest {
+    use access::{SessionDigester, Tokens};
+    use access_adapters::RandomTokens;
+
+    use super::*;
+
+    #[test]
+    fn the_session_digest_is_keyed_by_the_relay_secret() {
+        let token = RandomTokens.session().unwrap();
+        assert_eq!(keys().session_digest().digest(&token), keys().session_digest().digest(&token));
+        let other = OpaqueKeys::from_seed(&[43; 32]).unwrap();
+        assert_ne!(keys().session_digest().digest(&token), other.session_digest().digest(&token));
     }
 }

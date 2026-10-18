@@ -1,8 +1,9 @@
 use access::{
     AccessError, AccountId, AccountStore, Keyring, KeyringSnapshot, KeyringVersion, KeyringWrite, LoginHandle,
-    LoginState, RegistrationRecord, SessionDigest, UnixTime,
+    LoginState, RegistrationRecord, SessionDigest, Throttle, UnixTime,
 };
 use tokio_postgres::Client;
+use tokio_postgres::error::SqlState;
 
 /// The account store on PostgreSQL. Every operation is one call to an
 /// `access.*` function, so atomicity and expiry are decided inside the database.
@@ -32,9 +33,10 @@ mod sql {
     pub const STORE_KEYRING: &str = "select access.store_keyring($1, $2, $3), now()";
     pub const CLOSE_ACCOUNT: &str = "select access.close_account($1), now()";
     pub const PURGE_EXPIRED: &str = "select access.purge_expired(), now()";
+    pub const ADMIT: &str = "select access.admit($1, $2), now()";
 
     #[cfg(test)]
-    pub const ALL: [&str; 10] = [
+    pub const ALL: [&str; 11] = [
         ENROLL,
         REGISTRATION,
         PARK_LOGIN,
@@ -45,11 +47,14 @@ mod sql {
         STORE_KEYRING,
         CLOSE_ACCOUNT,
         PURGE_EXPIRED,
+        ADMIT,
     ];
 }
 
-fn unavailable(_: tokio_postgres::Error) -> AccessError {
-    AccessError::StoreUnavailable
+/// A full account store (SQLSTATE 53100, raised by `access.ensure_room`)
+/// is reported as such; anything else means the store could not be used.
+fn unavailable(e: tokio_postgres::Error) -> AccessError {
+    if e.code() == Some(&SqlState::DISK_FULL) { AccessError::StorageFull } else { AccessError::StoreUnavailable }
 }
 
 /// Rows read back are re-validated; the table constraints match the domain,
@@ -163,6 +168,30 @@ impl AccountStore for PostgresAccounts<'_> {
     async fn purge_expired(&self) -> Result<u64, AccessError> {
         let row = self.client.query_one(sql::PURGE_EXPIRED, &[]).await.map_err(unavailable)?;
         Ok(row.get::<_, i64>(0).max(0) as u64)
+    }
+}
+
+/// The login budget per account, counted in the database: one count for the
+/// whole world, however many Cloudflare locations the attempts come through.
+/// Fails closed: if the count cannot be taken, the attempt is refused.
+#[derive(Debug)]
+pub struct PostgresThrottle<'a> {
+    client: &'a Client,
+    per_minute: i32,
+}
+
+impl<'a> PostgresThrottle<'a> {
+    pub fn new(client: &'a Client, per_minute: u16) -> Self {
+        Self { client, per_minute: i32::from(per_minute) }
+    }
+}
+
+impl Throttle for PostgresThrottle<'_> {
+    async fn admit(&self, account: &AccountId) -> bool {
+        match self.client.query_one(sql::ADMIT, &[&account.as_bytes().as_slice(), &self.per_minute]).await {
+            Ok(row) => row.get(0),
+            Err(_) => false,
+        }
     }
 }
 
