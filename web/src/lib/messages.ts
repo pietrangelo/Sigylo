@@ -65,6 +65,8 @@ export function accountMessage(error: AccountError): string {
       return t.errAccountsOff;
     case 'KeyringUnreadable':
       return t.errKeyring;
+    case 'KeyringRolledBack':
+      return t.errKeyringRolledBack;
     case 'StoreUnavailable':
       return t.errNetwork;
     default:

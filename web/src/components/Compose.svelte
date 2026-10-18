@@ -1,6 +1,6 @@
 <script lang="ts">
   import { engine, errorCode, fileName, loadEngine, passphraseBytes, randomBytes, textBytes } from '../lib/crypto';
-  import { MAX_FILE_LEN, uploadChunks } from '../lib/files';
+  import { MAX_FILE_LEN, resumeUpload, startUpload, type Upload } from '../lib/files';
   import { t } from '../lib/i18n';
   import { inboxLink, requestLink, revokeLink, secretLink } from '../lib/links';
   import { formatExpiry, relayMessage, sealMessage } from '../lib/messages';
@@ -20,6 +20,9 @@
   let secret = $state('');
   let file: File | null = $state(null);
   let uploading = $state(false);
+  // A file whose chunks did not all go up waits here for a retry; `done` shows its links.
+  type Stalled = { upload: Upload; token: Uint8Array; done: () => Promise<void> };
+  let pending: Stalled | null = $state.raw(null);
   let retention: Retention = $state('burn_after_reading');
   let lifetime = $state(86400);
   let passphrase = $state('');
@@ -31,6 +34,7 @@
 
   async function seal(event: SubmitEvent) {
     event.preventDefault();
+    abandon();
     busy = true;
     error = '';
     try {
@@ -65,32 +69,64 @@
         error = relayMessage(result.error);
         return;
       }
-      if (chunks !== undefined) {
-        uploading = true;
-        const uploaded = await uploadChunks(relay, result.value.id, chunks);
-        if (!uploaded.ok) {
-          // Nobody can open a file with missing chunks; take the manifest back too.
-          await relay.revoke(result.value.id, token);
-          error = relayMessage(uploaded.error);
-          return;
-        }
-      }
-      sent = {
-        link: secretLink(linkOrigin, result.value.id, key, pass !== undefined),
-        revoke: revokeLink(linkOrigin, result.value.id, token),
-        expires: result.value.expiresAt,
-        saved: null,
+      const receipt = result.value;
+      const withPass = pass !== undefined;
+      const done = async () => {
+        sent = {
+          link: secretLink(linkOrigin, receipt.id, key, withPass),
+          revoke: revokeLink(linkOrigin, receipt.id, token),
+          expires: receipt.expiresAt,
+          saved: null,
+        };
+        secret = '';
+        file = null;
+        passphrase = '';
+        await remember(receipt.id, token, receipt.expiresAt);
       };
-      secret = '';
-      file = null;
-      passphrase = '';
-      await remember(result.value.id, token, result.value.expiresAt);
+      if (chunks !== undefined && !(await push({ upload: startUpload(receipt.id, chunks), token, done }))) return;
+      await done();
     } catch (e) {
       error = sealMessage(errorCode(e));
     } finally {
       busy = false;
       uploading = false;
     }
+  }
+
+  /** Sends what the deposit still lacks; on failure it stays here for a retry. */
+  async function push(stalled: Stalled): Promise<boolean> {
+    uploading = true;
+    const result = await resumeUpload(relay, stalled.upload);
+    if (result.ok) {
+      pending = null;
+      return true;
+    }
+    // Gone (expired, most likely): only sealing it again helps.
+    pending = result.error === 'NotFound' ? null : stalled;
+    error = result.error === 'NotFound' ? t.uploadGone : relayMessage(result.error);
+    return false;
+  }
+
+  async function retry() {
+    const stalled = pending;
+    if (stalled === null) return;
+    busy = true;
+    error = '';
+    try {
+      if (await push(stalled)) await stalled.done();
+    } catch (e) {
+      error = sealMessage(errorCode(e));
+    } finally {
+      busy = false;
+      uploading = false;
+    }
+  }
+
+  /** Gives up on a stalled file: nobody can open it, so take the manifest back too. */
+  function abandon() {
+    if (pending !== null) void relay.revoke(pending.upload.id, pending.token);
+    pending = null;
+    error = '';
   }
 
   /** Signed in: keep the revocation token in the account's sealed keyring. */
@@ -134,6 +170,7 @@
   }
 
   function reset() {
+    abandon();
     sent = null;
     requested = null;
   }
@@ -153,6 +190,13 @@
       {#if sent.saved === true}<p class="success small" data-testid="saved-to-account">{t.savedToAccount}</p>{/if}
       {#if sent.saved === false}<p class="error small">{t.notSaved}</p>{/if}
       <button class="secondary" onclick={reset}>{t.another}</button>
+    </div>
+  {:else if tab === 'send' && pending}
+    <div class="stack">
+      <p class="error" role="alert" data-testid="seal-error">{error}</p>
+      <p class="muted small">{t.uploadStalled}</p>
+      <button class="primary" onclick={retry} disabled={busy} data-testid="retry-upload">{uploading ? t.uploading : t.retryUpload}</button>
+      <button class="secondary" onclick={abandon} disabled={busy}>{t.another}</button>
     </div>
   {:else if tab === 'send'}
     <form class="stack" onsubmit={seal}>

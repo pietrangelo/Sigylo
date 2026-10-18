@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { encode } from '../src/lib/base64url';
-import { EMPTY, MAX_SEALS, addSeal, parseKeyring, pruneExpired, removeSeal, serializeKeyring, type Seal } from '../src/lib/keyring';
+import type { SeedStore } from '../src/lib/identity';
+import {
+  EMPTY,
+  MAX_SEALS,
+  addSeal,
+  parseKeyring,
+  pruneExpired,
+  raiseWatermark,
+  readWatermark,
+  removeSeal,
+  serializeKeyring,
+  watermarkSlot,
+  type Seal,
+} from '../src/lib/keyring';
 
 function seal(n: number, expires = 2_000_000_000): Seal {
   const id = new Uint8Array(16).fill(7);
@@ -34,6 +47,15 @@ describe('keyring', () => {
     expect(new TextEncoder().encode(serializeKeyring(keyring)).length).toBeLessThan(60 * 1024);
   });
 
+  it('carries its generation through every change; a keyring from before generations reads as 0', () => {
+    const keyring = { ...addSeal(EMPTY, seal(1)), gen: 7 };
+    expect(parseKeyring(serializeKeyring(keyring))).toEqual(keyring);
+    expect(addSeal(keyring, seal(2)).gen).toBe(7);
+    expect(removeSeal(keyring, seal(1).id).gen).toBe(7);
+    expect(pruneExpired(keyring, 0).gen).toBe(7);
+    expect(parseKeyring(JSON.stringify({ v: 1, seals: [seal(1)] }))).toEqual({ v: 1, gen: 0, seals: [seal(1)] });
+  });
+
   it('never mutates the keyring it was given', () => {
     const keyring = addSeal(EMPTY, seal(1));
     addSeal(keyring, seal(2));
@@ -57,6 +79,13 @@ describe('keyring', () => {
         JSON.stringify({ v: 1, seals: [{ ...seal(1), expires: '2030' }] }),
         JSON.stringify({ v: 1, seals: [{ ...seal(1), link: 'https://example.org' }] }),
         JSON.stringify({ v: 1, seals: [null] }),
+        '{"v":1,"gen":-1,"seals":[]}',
+        '{"v":1,"gen":1.5,"seals":[]}',
+        '{"v":1,"gen":"9","seals":[]}',
+        '{"v":1,"gen":null,"seals":[]}',
+        '{"v":1,"gen":9007199254740992,"seals":[]}',
+        '{"v":1,"gen":1,"seals":[],"extra":1}',
+        '{"v":1,"gen":1}',
       ]) {
         expect(parseKeyring(text), text).toBeNull();
       }
@@ -66,6 +95,75 @@ describe('keyring', () => {
       const parsed = parseKeyring(serializeKeyring(addSeal(EMPTY, seal(1))))!;
       expect(Object.getPrototypeOf(parsed.seals[0])).toBe(Object.prototype);
       expect(parseKeyring('{"v":1,"seals":[],"__proto__":{"x":1}}')).toBeNull();
+      expect(parseKeyring('{"v":1,"seals":[],"__proto__":{"gen":1}}')).toBeNull();
+    });
+  });
+});
+
+class MemoryStore implements SeedStore {
+  items = new Map<string, string>();
+  getItem(key: string) {
+    return this.items.get(key) ?? null;
+  }
+  setItem(key: string, value: string) {
+    this.items.set(key, value);
+  }
+}
+
+describe('keyring watermark', () => {
+  const key = new Uint8Array(32).fill(5);
+
+  it('has one slot per keyring key, derived from it', async () => {
+    const slot = await watermarkSlot(key);
+    expect(slot).toMatch(/^sigylo\.keyring\.v1\.[A-Za-z0-9_-]{22}$/);
+    expect(await watermarkSlot(key.slice())).toBe(slot);
+    expect(await watermarkSlot(new Uint8Array(32).fill(6))).not.toBe(slot);
+  });
+
+  it('starts at 0 on a fresh device and only ever rises', async () => {
+    const store = new MemoryStore();
+    const slot = await watermarkSlot(key);
+    expect(readWatermark(store, slot)).toBe(0);
+    raiseWatermark(store, slot, 3);
+    expect(readWatermark(store, slot)).toBe(3);
+    raiseWatermark(store, slot, 2);
+    expect(readWatermark(store, slot)).toBe(3);
+    raiseWatermark(store, slot, 4);
+    expect(store.items.get(slot)).toBe('4');
+  });
+
+  describe('adversary', () => {
+    it('the slot reveals neither the key nor anything typed by the person', async () => {
+      const slot = await watermarkSlot(key);
+      expect(slot).not.toContain(encode(key).slice(0, 8));
+      expect(slot).not.toContain('ada');
+    });
+
+    it('a mangled stored value reads as 0 and is replaced on the next write', async () => {
+      const slot = await watermarkSlot(key);
+      for (const junk of ['', '-1', '1e3', '0x10', ' 5', '5abc', '05', '1.5', '9007199254740993', 'NaN']) {
+        const store = new MemoryStore();
+        store.setItem(slot, junk);
+        expect(readWatermark(store, slot), junk).toBe(0);
+        raiseWatermark(store, slot, 2);
+        expect(readWatermark(store, slot)).toBe(2);
+      }
+    });
+
+    it('works without storage, or with storage that throws, without remembering anything', async () => {
+      const slot = await watermarkSlot(key);
+      const hostile: SeedStore = {
+        getItem() {
+          throw new Error('SecurityError');
+        },
+        setItem() {
+          throw new Error('QuotaExceededError');
+        },
+      };
+      expect(readWatermark(hostile, slot)).toBe(0);
+      expect(() => raiseWatermark(hostile, slot, 5)).not.toThrow();
+      expect(readWatermark(null, slot)).toBe(0);
+      expect(() => raiseWatermark(null, slot, 5)).not.toThrow();
     });
   });
 });

@@ -4,15 +4,15 @@
 // never leaves this device); the keyring is sealed with it before upload.
 
 import { bytesText, textBytes } from './crypto';
-import { EMPTY, parseKeyring, pruneExpired, serializeKeyring, type KeyringData } from './keyring';
 import { browserStore, type SeedStore } from './identity';
+import { EMPTY, parseKeyring, pruneExpired, raiseWatermark, readWatermark, serializeKeyring, watermarkSlot, type KeyringData } from './keyring';
 import { dropPass, loadPass, passSlot, savePass } from './passes';
 import { Relay, type RelayError } from './relay';
 
 /** What a signed-in tab holds, in memory only: a reload signs out. */
 export type Session = { username: string; token: Uint8Array; expiresAt: number; keyringKey: Uint8Array };
 
-export type AccountError = RelayError | 'InvalidPassword' | 'KeyringUnreadable';
+export type AccountError = RelayError | 'InvalidPassword' | 'KeyringUnreadable' | 'KeyringRolledBack';
 
 export type Outcome<T> = { ok: true; value: T } | { ok: false; error: AccountError };
 
@@ -74,6 +74,7 @@ export class Accounts {
   constructor(
     private readonly engine: AccountEngine,
     private readonly relay: Relay = new Relay(),
+    /** Where this device keeps its passes and each keyring's highest generation. */
     private readonly store: SeedStore | null = browserStore(),
   ) {}
 
@@ -121,25 +122,37 @@ export class Accounts {
   async keyring(session: Session): Promise<Outcome<{ data: KeyringData; version: number }>> {
     const stored = await this.relay.readKeyring(session.token);
     if (!stored.ok) return stored;
-    if (stored.value.keyring === null) return { ok: true, value: { data: EMPTY, version: stored.value.version } };
+    let data: KeyringData | null = EMPTY;
     try {
-      const data = parseKeyring(bytesText(this.engine.openLink(stored.value.keyring, session.keyringKey)));
-      return data === null ? { ok: false, error: 'KeyringUnreadable' } : { ok: true, value: { data, version: stored.value.version } };
+      if (stored.value.keyring !== null) data = parseKeyring(bytesText(this.engine.openLink(stored.value.keyring, session.keyringKey)));
     } catch {
-      return { ok: false, error: 'KeyringUnreadable' };
+      data = null;
     }
+    if (data === null) return { ok: false, error: 'KeyringUnreadable' };
+    const slot = await this.watermark(session);
+    if (slot !== null) {
+      // Older than a copy this device has seen: the relay rolled it back.
+      if (data.gen < readWatermark(this.store, slot)) return { ok: false, error: 'KeyringRolledBack' };
+      raiseWatermark(this.store, slot, data.gen);
+    }
+    return { ok: true, value: { data, version: stored.value.version } };
+  }
+
+  /** This device's watermark slot for the account, or null where it cannot keep one. */
+  private watermark(session: Session): Promise<string | null> {
+    return watermarkSlot(session.keyringKey).catch(() => null);
   }
 
   /**
    * Applies `change` to the latest keyring and stores it. When another device
    * wrote in between, it reads again and re-applies the change, so neither
-   * device's change is lost.
+   * device's change is lost. Every write bumps the sealed generation.
    */
   async update(session: Session, change: (keyring: KeyringData) => KeyringData): Promise<Outcome<KeyringData>> {
     for (let attempt = 0; attempt < 4; attempt++) {
       const current = await this.keyring(session);
       if (!current.ok) return current;
-      const next = change(pruneExpired(current.value.data, Math.floor(Date.now() / 1000)));
+      const next = { ...change(pruneExpired(current.value.data, Math.floor(Date.now() / 1000))), gen: current.value.data.gen + 1 };
       let sealed: Uint8Array;
       try {
         sealed = this.engine.sealWithKey(textBytes(serializeKeyring(next)), session.keyringKey);
@@ -147,7 +160,11 @@ export class Accounts {
         return { ok: false, error: 'Unexpected' };
       }
       const stored = await this.relay.storeKeyring(session.token, sealed, current.value.version);
-      if (stored.ok) return { ok: true, value: next };
+      if (stored.ok) {
+        const slot = await this.watermark(session);
+        if (slot !== null) raiseWatermark(this.store, slot, next.gen);
+        return { ok: true, value: next };
+      }
       if (stored.error !== 'Conflict') return stored;
     }
     return { ok: false, error: 'Conflict' };
