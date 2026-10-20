@@ -28,6 +28,6 @@ bash supabase/tests/run.sh
 bash scripts/e2e.sh
 ```
 
-App installabile (Tauri, desktop e predisposta per mobile): vedi [app/README.md](app/README.md).
+App installabile (Tauri, desktop e predisposta per mobile): vedi [app/README.it.md](app/README.it.md).
 
 Licenza del codice: Apache-2.0 (vedi [LICENSE](LICENSE) e [NOTICE](NOTICE)). L'uso del servizio su sigylo.net è regolato dai termini di servizio e dall'informativa sulla privacy, raggiungibili dal piè di pagina del sito.
