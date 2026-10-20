@@ -39,6 +39,12 @@
     {#if route.kind === 'compose'}
       {#if isApp}<PasteLink />{/if}
       <Compose />
+      <ul class="trust" aria-label={t.trustLabel}>
+        <li><strong>{t.trustDeviceTitle}</strong>{t.trustDevice}</li>
+        <li><strong>{t.trustQuantumTitle}</strong>{t.trustQuantum}</li>
+        <li><strong>{t.trustBurnTitle}</strong>{t.trustBurn}</li>
+        <li><strong>{t.trustOpenTitle}</strong>{t.trustOpen}</li>
+      </ul>
     {:else if route.kind === 'secret'}
       <Opener mode="link" id={route.id} secret={route.key} expectsPassphrase={route.passphrase} />
     {:else if route.kind === 'inbox'}
@@ -71,6 +77,7 @@
         <a href="#/terms" target="_blank" rel="noopener noreferrer" data-testid="terms-link">{t.termsLink}</a>
         <a href="#/privacy" target="_blank" rel="noopener noreferrer" data-testid="privacy-link">{t.privacyLink}</a>
         <a href="#/me" target="_blank" rel="noopener noreferrer" data-testid="me-link">{t.myCodeLink}</a>
+        <a href="https://github.com/pietrangelo/Sigylo" target="_blank" rel="noopener noreferrer">{t.sourceLink}</a>
       {/if}
     </nav>
   </footer>
@@ -126,6 +133,29 @@
     stroke-linecap: round;
   }
 
+  /* Two columns of 3 × s8 fit the column; a phone gets one. */
+  .trust {
+    list-style: none;
+    margin: var(--s6) 0 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(calc(var(--s8) * 3), 1fr));
+    gap: var(--s5);
+    color: var(--muted);
+    font-size: var(--t-small);
+  }
+
+  .trust li {
+    border-left: var(--s1) solid var(--wax);
+    padding-left: var(--s4);
+  }
+
+  .trust strong {
+    display: block;
+    color: var(--text);
+    font-size: var(--t-body);
+  }
+
   footer {
     margin-top: var(--s6);
   }
@@ -136,6 +166,7 @@
 
   footer nav {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--s4);
   }
 
