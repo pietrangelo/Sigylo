@@ -1,9 +1,10 @@
 //! What the vault may hold and write, so that neither the object store nor
 //! the Durable Object's daily allowance can be run out by a flood.
 
-/// Bytes in the object store, payloads, chunks and garbage together: half of
-/// R2's free 10 GB.
-pub const OBJECT_BYTES_CEILING: u64 = 5 * 1024 * 1024 * 1024;
+/// Bytes in the object store, payloads, chunks and garbage together. Past
+/// R2's free 10 GB each GB costs $0.015 a month, so a full store adds about
+/// $0.60 a month, while filling it takes ten times the addresses 5 GiB did.
+pub const OBJECT_BYTES_CEILING: u64 = 50 * 1024 * 1024 * 1024;
 
 /// Records in the key-value store: deposits, requests and garbage entries.
 /// The largest, a request, is under 1.3 KiB, so this stays near 1 GiB at most.
