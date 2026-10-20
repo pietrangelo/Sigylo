@@ -57,6 +57,13 @@ name = "WRITE_LIMITER"
 namespace_id = "7301"
 simple = { limit = 30, period = 60 }
 
+# IPv6 POSTs also count per /48, ten clients' worth: a free tunnel gives anyone
+# a /48, that is 65 536 /64s with an allowance each.
+[[ratelimits]]
+name = "NETWORK_WRITE_LIMITER"
+namespace_id = "7304"
+simple = { limit = 300, period = 60 }
+
 [[ratelimits]]
 name = "READ_LIMITER"
 namespace_id = "7303"

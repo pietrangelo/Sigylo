@@ -222,7 +222,8 @@ impl Relay {
             .redirect(reqwest::redirect::Policy::none())
             .referer(false)
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
+            // Idle, not total: a burned chunk on a slow line must arrive whole.
+            .read_timeout(Duration::from_secs(30))
             .user_agent(concat!("Sigylo-App/", env!("CARGO_PKG_VERSION")))
             .build()
             .expect("the HTTP client configuration is static");

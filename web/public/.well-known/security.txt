@@ -1,0 +1,5 @@
+Contact: mailto:privacy@sigylo.net
+Expires: 2027-10-01T00:00:00Z
+Preferred-Languages: it, en
+Canonical: https://sigylo.net/.well-known/security.txt
+Policy: https://github.com/pietrangelo/Sigylo/blob/main/SECURITY.md

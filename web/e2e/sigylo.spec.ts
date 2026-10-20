@@ -499,6 +499,19 @@ test.describe('adversary', () => {
     expect(next.status()).toBe(429);
   });
 
+  test('one IPv6 /48 gets 300 writes a minute, however many /64s it rotates through', async ({ request }) => {
+    const data = { payload: 'U0dZAQEA' + 'A'.repeat(400), retention: 'burn_after_reading', lifetime_seconds: 300 };
+    // 20 writes per /64 stay under its own 30, so only the /48 can stop them.
+    const from = (n: number) => ({ 'CF-Connecting-IP': `2001:db8:48:${Math.floor(n / 20).toString(16)}::1` });
+    let allowed = 0;
+    while (allowed <= 600 && (await request.post('/api/secrets', { data, headers: from(allowed) })).status() === 201) allowed++;
+    expect(allowed).toBeGreaterThanOrEqual(300);
+    expect(allowed).toBeLessThanOrEqual(600);
+    // Another /48 is another site.
+    const other = await request.post('/api/secrets', { data, headers: { 'CF-Connecting-IP': '2001:db8:49::1' } });
+    expect(other.status()).toBe(201);
+  });
+
   test('a link preview bot (GET) cannot burn a secret', async ({ page, request, browser }) => {
     const { link } = await sealSecret(page);
     const id = link.split('/').at(-2)!;
