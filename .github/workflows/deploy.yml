@@ -124,3 +124,19 @@ jobs:
             echo "::error file=worker/wrangler.toml::the live OPAQUE secret is not the one accounts were made with (canary $live, expected $expected)"
             exit 1
           fi
+      # Backstop for the cron (CLAUDE.md §3): nothing sealed outlives 7 days, so
+      # R2 drops any object older than 8, even one the cron lost track of. Added
+      # once; later runs only check that it is still there.
+      - name: R2 keeps nothing older than 8 days
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          r2() { npx --yes wrangler@${{ env.WRANGLER_VERSION }} r2 bucket lifecycle "$@" --jurisdiction eu; }
+          rules="$(r2 list sigylo-chunks)"
+          if ! grep -qw backstop <<<"$rules"; then
+            r2 add sigylo-chunks backstop --expire-days 8 --force
+          fi
+          r2 list sigylo-chunks | grep -qw backstop
