@@ -125,7 +125,13 @@ begin
         'PUBLIC must not execute access.close_sessions';
     assert has_function_privilege('sigylo_relay', 'access.admit(bytea, integer)', 'execute'),
         'relay must count login attempts';
+    assert has_function_privilege('sigylo_relay', 'access.admit(bytea, integer, boolean)', 'execute'),
+        'relay must count registration attempts';
     assert not has_function_privilege('sigylo_relay', 'access.ensure_room(bigint, boolean)', 'execute'),
+        'relay must not call the ceiling helper directly';
+    assert not has_function_privilege('sigylo_relay', 'access.ensure_room(bigint, boolean, bigint)', 'execute'),
+        'relay must not call the ceiling helper directly';
+    assert not has_function_privilege('sigylo_relay', 'access.registration_reserve_bytes()', 'execute'),
         'relay must not call the ceiling helper directly';
     assert not has_function_privilege('sigylo_relay', 'access.capacity_bytes()', 'execute'),
         'relay must not call the ceiling helper directly';

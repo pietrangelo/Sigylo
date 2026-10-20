@@ -162,6 +162,12 @@ impl OpaqueServer for OpaqueKeys {
         RegistrationResponse::from_slice(&started.message.serialize())
     }
 
+    /// The record parses as one the login would start from: a valid client
+    /// public key, masking key and envelope.
+    fn check_record(&self, record: &RegistrationRecord) -> Result<(), AccessError> {
+        ServerRegistration::<Suite>::deserialize(record.as_bytes()).map(drop).map_err(|_| AccessError::MalformedMessage)
+    }
+
     fn begin_login(
         &self,
         account: &AccountId,

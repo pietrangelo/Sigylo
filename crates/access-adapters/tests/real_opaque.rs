@@ -236,6 +236,19 @@ mod adversary {
     }
 
     #[test]
+    fn a_record_no_login_could_use_is_refused_before_it_is_filed() {
+        // Otherwise register/finish files 192 bytes of anything: the name is
+        // taken for good, every login answers 503 and nobody can close it.
+        let keys = keys();
+        let (record, _) = register(&keys, &account(&keys, "ada"), "correct horse battery");
+        assert_eq!(keys.check_record(&record), Ok(()));
+        for garbage in [[0xFF; RegistrationRecord::LEN], [0; RegistrationRecord::LEN]] {
+            let garbage = RegistrationRecord::from_slice(&garbage).unwrap();
+            assert_eq!(keys.check_record(&garbage), Err(AccessError::MalformedMessage));
+        }
+    }
+
+    #[test]
     fn invalid_points_from_a_client_are_refused_by_the_relay() {
         let keys = keys();
         let ada = account(&keys, "ada");
