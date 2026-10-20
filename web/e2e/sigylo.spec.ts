@@ -233,6 +233,31 @@ test('the sender can destroy a secret before it is read', async ({ page, browser
   await expect(reader.getByTestId('open-error')).toBeVisible();
 });
 
+test('switching tabs keeps the links just made, and a request keeps its own lifetime', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('lifetime').selectOption('300');
+  await page.getByTestId('secret').fill(SECRET);
+  await page.getByTestId('seal').click();
+  const link = await page.getByTestId('secret-link').inputValue();
+  // A click on the tab already open, by habit, must not throw the only copy away.
+  await page.getByTestId('tab-send').click();
+  await expect(page.getByTestId('secret-link')).toHaveValue(link);
+
+  await page.getByTestId('tab-receive').click();
+  // The five minutes chosen for the secret are not a request lifetime.
+  await expect(page.locator('#request-lifetime')).toHaveValue('86400');
+  await page.getByTestId('create-request').click();
+  const inbox = await page.getByTestId('inbox-link').inputValue();
+  await page.getByTestId('tab-receive').click();
+  await page.getByTestId('tab-send').click();
+  await expect(page.getByTestId('secret-link')).toHaveValue(link);
+  await page.getByTestId('tab-receive').click();
+  await expect(page.getByTestId('inbox-link')).toHaveValue(inbox);
+
+  await page.getByTestId('another-request').click();
+  await expect(page.getByTestId('create-request')).toBeVisible();
+});
+
 async function createRequest(page: Page, expectedSender?: string): Promise<{ requestLink: string; inboxLink: string }> {
   await page.goto('/');
   await page.getByTestId('tab-receive').click();

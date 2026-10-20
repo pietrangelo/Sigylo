@@ -519,6 +519,34 @@ mod adversary {
     }
 
     #[tokio::test]
+    async fn a_flood_of_logins_does_not_stop_registrations_through_the_real_throttle() {
+        // Registering a free name spends its own budget, whose counter is a
+        // transient row too: it draws on a reserve the logins cannot reach.
+        databases!(client, admin);
+        let relay = relay_with(&client, PostgresThrottle::new(&client, 10));
+        let name = fresh_name();
+        register(&relay, &name).await;
+        with_capacity(&admin, true, 0, async {
+            let (request, _) = device().begin_login(pw()).unwrap();
+            assert_eq!(relay.begin_login(&name, &request, None).await.unwrap_err(), AccessError::Throttled);
+            register(&relay, &fresh_name()).await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn the_registration_reserve_has_its_own_end() {
+        databases!(client, admin);
+        let relay = relay_with(&client, PostgresThrottle::new(&client, 10));
+        let reserve: i64 = admin.query_one("select access.registration_reserve_bytes()", &[]).await.unwrap().get(0);
+        with_capacity(&admin, true, -reserve, async {
+            let (request, _) = device().begin_registration(pw()).unwrap();
+            assert_eq!(relay.registration_response(&fresh_name(), &request).await.unwrap_err(), AccessError::Throttled);
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn the_usage_counter_is_what_the_tables_weigh() {
         databases!(client, admin);
         let relay = relay(&client);

@@ -2,7 +2,7 @@ use super::fakes::{CountingThrottle, FakeStore, SequentialTokens, ToyDigest, Toy
 use super::{AccountStore, Gatekeeper, Member, OpaqueServer, Passes, SessionDigester, Throttle, Tokens};
 use crate::core::{
     AccessError, AccountId, Budget, CredentialFinalization, DevicePass, Keyring, KeyringKey, KeyringVersion,
-    LOGIN_WINDOW_SECONDS, MAX_SESSIONS, Password, SESSION_SECONDS, Session, Username,
+    LOGIN_WINDOW_SECONDS, MAX_SESSIONS, Password, RegistrationRecord, SESSION_SECONDS, Session, Username,
 };
 
 struct World {
@@ -271,6 +271,18 @@ fn failures_of_the_world_surface_as_such() {
 
 mod adversary {
     use super::*;
+
+    #[test]
+    fn a_record_no_login_could_use_is_never_filed() {
+        // register/finish needs no register/start: a forged record would
+        // take the name for good, with no login that could ever close it.
+        let world = World::new();
+        let username = Username::new("ada").unwrap();
+        let forged = RegistrationRecord::from_slice(&[0xFF; RegistrationRecord::LEN]).unwrap();
+        assert_eq!(block_on(world.relay().register(&username, &forged)), Err(AccessError::MalformedMessage));
+        let account = world.opaque.account_of(&username);
+        assert_eq!(block_on(world.store.record(&account)), Ok(None), "the name stays free");
+    }
 
     #[test]
     fn a_taken_name_gets_no_oprf_evaluation() {

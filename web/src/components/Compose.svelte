@@ -25,6 +25,8 @@
   let pending: Stalled | null = $state.raw(null);
   let retention: Retention = $state('burn_after_reading');
   let lifetime = $state(86400);
+  // Its own: a request has no five-minute choice.
+  let requestLifetime = $state(86400);
   let passphrase = $state('');
   let busy = $state(false);
   let error = $state('');
@@ -83,7 +85,7 @@
         passphrase = '';
         await remember(receipt.id, token, receipt.expiresAt);
       };
-      if (chunks !== undefined && !(await push({ upload: startUpload(receipt.id, chunks), token, done }))) return;
+      if (chunks !== undefined && !(await push({ upload: startUpload(receipt.id, chunks, lifetime), token, done }))) return;
       await done();
     } catch (e) {
       error = sealMessage(errorCode(e));
@@ -151,7 +153,7 @@
       recipient.free();
       // Throws InvalidSenderCode before anything reaches the relay.
       const pin = expectedCode.trim() === '' ? undefined : engine.senderPin(fingerprint, expectedCode);
-      const result = await relay.postRequest(publicKey, lifetime);
+      const result = await relay.postRequest(publicKey, requestLifetime);
       if (!result.ok) {
         error = relayMessage(result.error);
         return;
@@ -172,14 +174,23 @@
   function reset() {
     abandon();
     sent = null;
-    requested = null;
+  }
+
+  /**
+   * Each tab keeps what it made: the links on screen are the only copy of the
+   * key (or of the request's seed), so only an explicit "another" drops them.
+   */
+  function show(next: typeof tab) {
+    if (tab === next) return;
+    tab = next;
+    error = '';
   }
 </script>
 
 <section class="card stack">
   <div class="tabs" role="tablist">
-    <button role="tab" aria-selected={tab === 'send'} class:active={tab === 'send'} onclick={() => ((tab = 'send'), reset())}>{t.tabSend}</button>
-    <button role="tab" aria-selected={tab === 'receive'} class:active={tab === 'receive'} onclick={() => ((tab = 'receive'), reset())} data-testid="tab-receive">{t.tabReceive}</button>
+    <button role="tab" aria-selected={tab === 'send'} class:active={tab === 'send'} onclick={() => show('send')} data-testid="tab-send">{t.tabSend}</button>
+    <button role="tab" aria-selected={tab === 'receive'} class:active={tab === 'receive'} onclick={() => show('receive')} data-testid="tab-receive">{t.tabReceive}</button>
   </div>
 
   {#if tab === 'send' && sent}
@@ -210,13 +221,14 @@
       <LinkBox label={t.requestLink} value={requested.request} testid="request-link" />
       <LinkBox label={t.inboxLink} value={requested.inbox} testid="inbox-link" />
       <p class="muted small">{t.expiresAt} {formatExpiry(requested.expires)}</p>
+      <button class="secondary" onclick={() => (requested = null)} data-testid="another-request">{t.anotherRequest}</button>
     </div>
   {:else}
     <form class="stack" onsubmit={createRequest}>
       <p>{t.receiveIntro}</p>
       <div>
         <label for="request-lifetime">{t.lifetime}</label>
-        <select id="request-lifetime" bind:value={lifetime}>
+        <select id="request-lifetime" bind:value={requestLifetime}>
           <option value={3600}>{t.life1h}</option>
           <option value={86400}>{t.life1d}</option>
           <option value={604800}>{t.life7d}</option>
