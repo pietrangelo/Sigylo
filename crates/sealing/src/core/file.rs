@@ -83,9 +83,14 @@ impl FileName {
     }
 }
 
-/// Most combining marks one character may carry: enough for the ordinary
-/// writing of any script, too few to stack an overlay across the name.
+/// Most combining marks of the generic blocks (and of the scripts listed in
+/// [`is_combining_mark`]) one character may carry: enough for the ordinary
+/// writing of those scripts, too few to stack an overlay across the name.
 const MAX_MARKS_PER_BASE: usize = 2;
+
+/// Most nonspacing or enclosing marks of any script one character may
+/// carry: a Tibetan stack such as སྒྲུ takes three.
+const MAX_ANY_MARKS_PER_BASE: usize = 4;
 
 fn forbidden(c: char) -> bool {
     matches!(c, '/' | '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*')
@@ -132,12 +137,20 @@ fn has_blank_run(name: &str) -> bool {
     })
 }
 
-/// More than [`MAX_MARKS_PER_BASE`] combining marks in a row.
+/// On one character, more than [`MAX_MARKS_PER_BASE`] marks of the listed
+/// blocks or more than [`MAX_ANY_MARKS_PER_BASE`] marks of any script. Only
+/// a character that is not a mark starts the count again, so marks of one
+/// kind cannot reset the count of the other.
 fn has_mark_pile(name: &str) -> bool {
-    let mut marks = 0;
+    let (mut listed, mut any) = (0, 0);
     name.chars().any(|c| {
-        marks = if is_combining_mark(c) { marks + 1 } else { 0 };
-        marks > MAX_MARKS_PER_BASE
+        if is_combining_mark(c) || super::marks::is_mark(c) {
+            any += 1;
+            listed += usize::from(is_combining_mark(c));
+        } else {
+            (listed, any) = (0, 0);
+        }
+        listed > MAX_MARKS_PER_BASE || any > MAX_ANY_MARKS_PER_BASE
     })
 }
 
@@ -568,6 +581,27 @@ mod tests {
             }
             // One or two marks on a letter are ordinary writing.
             for good in ["e\u{0301}te\u{0301}.txt", "a\u{0323}\u{0302}.txt", "ไม้.txt", "شَدَّة.txt"] {
+                assert!(FileName::new(good.to_owned()).is_ok(), "{good:?}");
+            }
+        }
+
+        #[test]
+        fn marks_from_any_script_cannot_reset_the_count_or_pile_up() {
+            // Found by the 2026-10-20 bug hunt: an unlisted mark between two
+            // overlays reset the count, and some scripts' marks were not counted.
+            let interleaved = "\u{0336}\u{0336}\u{09BC}".repeat(20);
+            for bad in [
+                format!("report.pdf{interleaved}.exe"),
+                "a\u{0336}\u{0F71}\u{0336}\u{0F72}\u{0336}.txt".to_owned(),
+                format!("a{}.txt", "\u{08F0}".repeat(6)),
+                format!("x{}.txt", "\u{0F71}\u{0F72}\u{0F74}\u{0F7A}\u{0F7C}\u{0F80}\u{0F7B}"),
+                format!("x{}.txt", "\u{1D167}".repeat(5)),
+            ] {
+                assert_eq!(FileName::new(bad.clone()), Err(SealError::InvalidFileName), "{bad:?}");
+            }
+            // Tibetan stacks and Myanmar medials are ordinary writing.
+            for good in ["བསྒྲུབས.txt", "སྒྲིག.pdf", "ကျွန်ုပ်.txt", "নুক্তা.txt"]
+            {
                 assert!(FileName::new(good.to_owned()).is_ok(), "{good:?}");
             }
         }

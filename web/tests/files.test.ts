@@ -1,11 +1,14 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { fileName } from '../src/lib/crypto';
 import { downloadChunks, resumeUpload, startUpload } from '../src/lib/files';
 import { Relay, type RelayError } from '../src/lib/relay';
+import * as engine from '../src/lib/wasm/sigylo_wasm.js';
 
 const id = new Uint8Array(16).fill(1);
 const chunk = (n: number) => new Uint8Array(300).fill(n);
-const uploadChunks = (relay: Relay, id: Uint8Array, chunks: Uint8Array[]) => resumeUpload(relay, startUpload(id, chunks));
+const DAY = 86400;
+const uploadChunks = (relay: Relay, id: Uint8Array, chunks: Uint8Array[]) => resumeUpload(relay, startUpload(id, chunks, DAY));
 
 /** A relay that keeps uploaded chunks and hands each one out once (burn after reading). */
 function burningRelay(failAt?: number) {
@@ -99,7 +102,7 @@ describe('resumable upload', () => {
 
   it('a retry sends only the chunks the relay does not have yet, byte for byte the same', async () => {
     const { relay, stored, sent } = flakyRelay({ 1: ['RateLimited'] });
-    const upload = startUpload(id, three());
+    const upload = startUpload(id, three(), DAY);
     expect(await resumeUpload(relay, upload)).toEqual({ ok: false, error: 'RateLimited' });
     expect(upload.state).toEqual(['stored', 'missing', 'missing']);
     expect(await resumeUpload(relay, upload)).toEqual({ ok: true, value: true });
@@ -114,7 +117,7 @@ describe('resumable upload', () => {
 
   it('a connection dropped before the chunk arrived just sends it again', async () => {
     const { relay, stored } = flakyRelay({ 1: ['drop'] });
-    const upload = startUpload(id, three());
+    const upload = startUpload(id, three(), DAY);
     expect(await resumeUpload(relay, upload)).toEqual({ ok: false, error: 'Network' });
     expect(upload.state[1]).toBe('unsure');
     expect(await resumeUpload(relay, upload)).toEqual({ ok: true, value: true });
@@ -123,7 +126,7 @@ describe('resumable upload', () => {
 
   it('a finished upload sends nothing more', async () => {
     const { relay, sent } = flakyRelay();
-    const upload = startUpload(id, three());
+    const upload = startUpload(id, three(), DAY);
     await resumeUpload(relay, upload);
     sent.length = 0;
     expect(await resumeUpload(relay, upload)).toEqual({ ok: true, value: true });
@@ -133,7 +136,7 @@ describe('resumable upload', () => {
   describe('adversary', () => {
     it('a chunk stored before its reply was lost answers 404 on the retry: it is taken as in', async () => {
       const { relay, stored, sent } = flakyRelay({ 1: ['lost-reply'] });
-      const upload = startUpload(id, three());
+      const upload = startUpload(id, three(), DAY);
       expect(await resumeUpload(relay, upload)).toEqual({ ok: false, error: 'Network' });
       expect(await resumeUpload(relay, upload)).toEqual({ ok: true, value: true });
       expect(sent).toEqual([0, 1, 1, 2]);
@@ -142,7 +145,7 @@ describe('resumable upload', () => {
 
     it('a server error may come after the chunk was stored, so it counts as maybe in', async () => {
       for (const error of ['VaultUnavailable', 'Unexpected'] as const) {
-        const upload = startUpload(id, three());
+        const upload = startUpload(id, three(), DAY);
         expect(await resumeUpload(flakyRelay({ 0: [error] }).relay, upload)).toEqual({ ok: false, error });
         expect(upload.state[0], error).toBe('unsure');
       }
@@ -151,7 +154,7 @@ describe('resumable upload', () => {
     it('a 404 for a chunk that never reached the relay means the upload is gone', async () => {
       for (const error of ['RateLimited', 'StorageFull', 'PayloadTooLarge'] as const) {
         const { relay, deposit, sent } = flakyRelay({ 1: [error] });
-        const upload = startUpload(id, three());
+        const upload = startUpload(id, three(), DAY);
         expect(await resumeUpload(relay, upload)).toEqual({ ok: false, error });
         expect(upload.state[1], error).toBe('missing');
         deposit.gone = true;
@@ -162,7 +165,7 @@ describe('resumable upload', () => {
 
     it('a refusal after a lost reply does not make the chunk certainly missing', async () => {
       const { relay, deposit } = flakyRelay({ 1: ['lost-reply', 'RateLimited'] });
-      const upload = startUpload(id, three());
+      const upload = startUpload(id, three(), DAY);
       await resumeUpload(relay, upload);
       expect(await resumeUpload(relay, upload)).toEqual({ ok: false, error: 'RateLimited' });
       expect(upload.state[1]).toBe('unsure');
@@ -172,9 +175,38 @@ describe('resumable upload', () => {
       expect(upload.state).toEqual(['stored', 'stored', 'missing']);
     });
 
+    it('past the incomplete-file window, a 404 on an unsure chunk means the deposit is gone', async () => {
+      // The relay drops an incomplete file 10 minutes after the deposit: a later 404 no longer says "already in".
+      const start = 1_000_000;
+      const { relay, deposit } = flakyRelay({ 1: ['drop'] });
+      const upload = startUpload(id, three(), DAY, start);
+      expect(await resumeUpload(relay, upload, start)).toEqual({ ok: false, error: 'Network' });
+      deposit.gone = true;
+      expect(await resumeUpload(relay, upload, start + 10 * 60 * 1000)).toEqual({ ok: false, error: 'NotFound' });
+      expect(upload.state).toEqual(['stored', 'unsure', 'missing']);
+    });
+
+    it('a lifetime shorter than the window ends it sooner', async () => {
+      const start = 1_000_000;
+      const { relay, deposit } = flakyRelay({ 0: ['drop'] });
+      const upload = startUpload(id, three(), 300, start);
+      await resumeUpload(relay, upload, start);
+      deposit.gone = true;
+      expect(await resumeUpload(relay, upload, start + 290 * 1000)).toEqual({ ok: false, error: 'NotFound' });
+      expect(upload.state[0]).toBe('unsure');
+    });
+
+    it('inside the window, an unsure chunk the relay already has still counts as in', async () => {
+      const start = 1_000_000;
+      const { relay } = flakyRelay({ 1: ['lost-reply'] });
+      const upload = startUpload(id, three(), DAY, start);
+      await resumeUpload(relay, upload, start);
+      expect(await resumeUpload(relay, upload, start + 9 * 60 * 1000)).toEqual({ ok: true, value: true });
+    });
+
     it('the upload keeps its own copy of the list, not the caller\'s', async () => {
       const chunks = three();
-      const upload = startUpload(id, chunks);
+      const upload = startUpload(id, chunks, DAY);
       chunks.length = 0;
       expect(upload.chunks.length).toBe(3);
       expect(upload.state.length).toBe(3);
@@ -194,6 +226,23 @@ describe('fileName', () => {
 
   it('drops emoji presentation selectors, which draw nothing', () => {
     expect(fileName('❤️ foto.png')).toBe('❤ foto.png');
+  });
+
+  it('turns a no-break space into a plain one, as in macOS screenshot names', () => {
+    expect(fileName('Screenshot 2026-10-20 at 6.04.55\u202FPM.png')).toBe('Screenshot 2026-10-20 at 6.04.55 PM.png');
+    expect(fileName('Rapporto\u00A0finale.pdf')).toBe('Rapporto finale.pdf');
+    expect(fileName('a\u2007b\u3000c.txt')).toBe('a b c.txt');
+  });
+
+  it('a macOS screenshot name seals once cleaned, and only then', () => {
+    engine.initSync({ module: readFileSync(new URL('../src/lib/wasm/sigylo_wasm_bg.wasm', import.meta.url)) });
+    const name = 'Screenshot 2026-10-20 at 6.04.55\u202FPM.png';
+    expect(() => engine.sealFileForLink(name, new Uint8Array(10).fill(7), undefined)).toThrow('InvalidFileName');
+    expect(() => engine.sealFileForLink(fileName(name), new Uint8Array(10).fill(7), undefined).free()).not.toThrow();
+  });
+
+  it('leaves a run of spaces a run, for the engine to refuse', () => {
+    expect(fileName('a\u00A0\u202Fb.txt')).toBe('a  b.txt');
   });
 
   it('leaves anything that hides to the engine, which refuses it', () => {

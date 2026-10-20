@@ -124,6 +124,14 @@ mod adversary {
     use super::*;
 
     #[test]
+    fn the_expanded_ml_kem_key_wipes_itself_when_dropped() {
+        // Every open in request mode expands the recipient seed into this key
+        // (about 2.4 KiB of secret polynomials): it must not linger once freed.
+        fn wipes_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+        wipes_on_drop::<ml_kem::DecapsulationKey768>();
+    }
+
+    #[test]
     fn every_single_bit_flip_is_detected() {
         let recipient = sealer().new_recipient().unwrap();
         let envelope = sealer()

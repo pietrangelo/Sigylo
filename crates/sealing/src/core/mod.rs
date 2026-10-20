@@ -5,6 +5,7 @@ mod envelope;
 mod error;
 mod file;
 mod kdf;
+mod marks;
 pub mod padding;
 mod recipient;
 mod secrets;

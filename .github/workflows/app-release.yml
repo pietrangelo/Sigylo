@@ -1,8 +1,9 @@
 name: App release
 
 # Builds the installable app for Linux, macOS and Windows and attaches the
-# installers to a draft GitHub release. Runs only for a tag `app-v*` or by
-# hand, never for a pull request. The builds are not signed yet: signing
+# installers to a draft GitHub release. Runs only for a tag `app-v*` that
+# matches the version in app/tauri.conf.json, or by hand from main, never for
+# a pull request. The builds are not signed yet: signing
 # (Apple Developer ID, Windows code signing) needs the owner's accounts and
 # goes in through repository secrets.
 
@@ -19,8 +20,28 @@ env:
   TAURI_CLI_VERSION: 2.12.3
 
 jobs:
+  check:
+    name: Tag and version
+    runs-on: ubuntu-24.04
+    # By hand only from main: a dispatch from another branch would put an
+    # unreviewed build into the release draft.
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # The draft is named after tauri.conf.json: a tag for another version
+      # would fill the wrong draft.
+      - name: The tag names the version being built
+        if: github.event_name == 'push'
+        run: |
+          version="$(jq -r .version app/tauri.conf.json)"
+          if [[ "$GITHUB_REF_NAME" != "app-v$version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match version $version in app/tauri.conf.json"
+            exit 1
+          fi
+
   build:
     name: ${{ matrix.name }}
+    needs: check
     strategy:
       fail-fast: false
       matrix:
@@ -67,6 +88,8 @@ jobs:
         working-directory: web
         shell: bash
       - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: app
           tauriScript: cargo tauri

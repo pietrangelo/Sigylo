@@ -33,6 +33,14 @@ jobs:
             echo "::error::pin these actions to a full commit SHA, with the tag in a comment"
             exit 1
           fi
+      # tauri-action creates the draft release only with this token: without it
+      # every build of a tag ends in "GITHUB_TOKEN is required".
+      - name: The app release can publish
+        run: |
+          if ! grep -qE '^\s+GITHUB_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}$' .github/workflows/app-release.yml; then
+            echo "::error::app-release.yml must pass GITHUB_TOKEN to tauri-action"
+            exit 1
+          fi
       - run: cargo fmt --all --check
       # --locked: what is built is what Cargo.lock says, and the deploy builds the same.
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings

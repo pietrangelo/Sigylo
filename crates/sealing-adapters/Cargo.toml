@@ -10,7 +10,7 @@ rust-version.workspace = true
 [dependencies]
 sealing.workspace = true
 zeroize.workspace = true
-ml-kem = { version = "0.3.2", features = ["hazmat"] }
+ml-kem = { version = "0.3.2", features = ["hazmat", "zeroize"] }
 x25519-dalek = { version = "3.0.0", features = ["static_secrets", "zeroize"] }
 ed25519-dalek = { version = "3.0.0", default-features = false, features = ["zeroize"] }
 ml-dsa = { version = "0.1.1", default-features = false, features = ["alloc", "zeroize"] }

@@ -81,6 +81,12 @@ impl OpaqueServer for ToyOpaque {
         RegistrationResponse::from_slice(&Self::oprf(account, request.as_bytes()))
     }
 
+    /// A toy record is a hash: one byte repeated is none a device makes.
+    fn check_record(&self, record: &RegistrationRecord) -> Result<(), AccessError> {
+        let bytes = record.as_bytes();
+        if bytes.iter().all(|b| *b == bytes[0]) { Err(AccessError::MalformedMessage) } else { Ok(()) }
+    }
+
     fn begin_login(
         &self,
         account: &AccountId,

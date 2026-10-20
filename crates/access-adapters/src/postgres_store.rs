@@ -34,7 +34,7 @@ mod sql {
     pub const STORE_KEYRING: &str = "select access.store_keyring($1, $2, $3), now()";
     pub const CLOSE_ACCOUNT: &str = "select access.close_account($1), now()";
     pub const PURGE_EXPIRED: &str = "select access.purge_expired(), now()";
-    pub const ADMIT: &str = "select access.admit($1, $2), now()";
+    pub const ADMIT: &str = "select access.admit($1, $2, $3), now()";
 
     #[cfg(test)]
     pub const ALL: [&str; 12] = [
@@ -198,7 +198,9 @@ impl<'a> PostgresThrottle<'a> {
 impl Throttle for PostgresThrottle<'_> {
     async fn admit(&self, account: &AccountId, budget: &Budget) -> bool {
         let bucket = crate::throttle_bucket(account, budget);
-        match self.client.query_one(sql::ADMIT, &[&bucket.as_slice(), &self.per_minute]).await {
+        // Registrations count against a reserve of their own, so a flood of logins cannot stop them.
+        let registration = matches!(budget, Budget::Registration);
+        match self.client.query_one(sql::ADMIT, &[&bucket.as_slice(), &self.per_minute, &registration]).await {
             Ok(row) => row.get(0),
             Err(_) => false,
         }

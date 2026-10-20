@@ -54,8 +54,10 @@ impl<O: OpaqueServer, S: AccountStore, T: Tokens, D: SessionDigester, R: Throttl
         self.opaque.registration_response(&account, request)
     }
 
-    /// Second half: file the record. An existing account is never overwritten.
+    /// Second half: file the record, once it is one a login can use. An
+    /// existing account is never overwritten.
     pub async fn register(&self, username: &Username, record: &RegistrationRecord) -> Result<(), AccessError> {
+        self.opaque.check_record(record)?;
         let account = self.opaque.account_of(username);
         if self.store.enroll(&account, record).await? { Ok(()) } else { Err(AccessError::AlreadyRegistered) }
     }

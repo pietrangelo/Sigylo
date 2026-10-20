@@ -18,6 +18,10 @@ pub trait OpaqueServer {
         request: &RegistrationRequest,
     ) -> Result<RegistrationResponse, AccessError>;
 
+    /// Refuses a record no login could ever use, with
+    /// [`AccessError::MalformedMessage`]: the client sends it unchecked.
+    fn check_record(&self, record: &RegistrationRecord) -> Result<(), AccessError>;
+
     /// KE2. With no record (unknown account) it must answer with a response
     /// indistinguishable from a real one, so logins do not reveal who exists.
     fn begin_login(
@@ -188,6 +192,10 @@ impl<T: OpaqueServer> OpaqueServer for &T {
         request: &RegistrationRequest,
     ) -> Result<RegistrationResponse, AccessError> {
         (**self).registration_response(account, request)
+    }
+
+    fn check_record(&self, record: &RegistrationRecord) -> Result<(), AccessError> {
+        (**self).check_record(record)
     }
 
     fn begin_login(
