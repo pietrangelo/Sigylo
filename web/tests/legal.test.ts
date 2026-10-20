@@ -85,5 +85,15 @@ describe('legal', () => {
       expect(notice).not.toMatch(UNFILLED);
       expect(notice).toContain('Apache License, Version 2.0');
     });
+
+    it('security.txt (RFC 9116) names the operator and has not expired', () => {
+      const txt = readFileSync(new URL('../public/.well-known/security.txt', import.meta.url), 'utf8');
+      expect(txt).toContain(`Contact: mailto:${operator.email}\n`);
+      expect(txt).toContain('Canonical: https://sigylo.net/.well-known/security.txt\n');
+      const expires = Date.parse(/^Expires: (\S+)$/m.exec(txt)?.[1] ?? '');
+      // An expired file fails the CI, and so the deploy, until a new date is set.
+      expect(expires).toBeGreaterThan(Date.now());
+      expect(expires - Date.now()).toBeLessThan(400 * 24 * 3600 * 1000);
+    });
   });
 });
