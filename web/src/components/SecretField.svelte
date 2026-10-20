@@ -1,6 +1,9 @@
 <script lang="ts">
   // What is being sealed: a text typed here, or a file from the device.
-  import { t } from '../lib/i18n';
+  import { language, t } from '../lib/i18n';
+
+  // Even at 3 UTF-8 bytes per UTF-16 unit this stays under the 64 KiB a signed answer may seal.
+  const MAX_TEXT_LEN = 10_000;
 
   let {
     kind = $bindable<'text' | 'file'>('text'),
@@ -8,6 +11,11 @@
     file = $bindable<File | null>(null),
     id,
   }: { kind?: 'text' | 'file'; text?: string; file?: File | null; id: string } = $props();
+
+  // Not maxlength: it would silently cut a pasted key. The form refuses to submit instead.
+  function limit(area: HTMLTextAreaElement) {
+    $effect(() => area.setCustomValidity(text.length > MAX_TEXT_LEN ? t.errTextTooLong : ''));
+  }
 
   function pick(event: Event) {
     file = (event.currentTarget as HTMLInputElement).files?.[0] ?? null;
@@ -28,7 +36,10 @@
 {#if kind === 'text'}
   <div>
     <label for={id}>{t.secretLabel}</label>
-    <textarea {id} bind:value={text} placeholder={t.secretPlaceholder} autocomplete="off" spellcheck="false" required data-testid="secret"></textarea>
+    <textarea {id} bind:value={text} placeholder={t.secretPlaceholder} autocomplete="off" spellcheck="false" required data-testid="secret" use:limit aria-describedby="{id}-count"></textarea>
+    <p id="{id}-count" class="small count" class:error={text.length > MAX_TEXT_LEN}>
+      {text.length.toLocaleString(language)} / {MAX_TEXT_LEN.toLocaleString(language)}
+    </p>
   </div>
 {:else}
   <div>
@@ -65,6 +76,17 @@
     width: auto;
     margin: 0;
     accent-color: var(--wax);
+  }
+
+  .count {
+    margin: var(--s2) 0 0;
+    text-align: right;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .count.error {
+    color: var(--alert);
   }
 
   .hint {
