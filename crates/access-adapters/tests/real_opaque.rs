@@ -240,7 +240,7 @@ mod adversary {
         // Otherwise register/finish files 192 bytes of anything: the name is
         // taken for good, every login answers 503 and nobody can close it.
         let keys = keys();
-        let (record, _) = register(&keys, &account(&keys, "ada"), "correct horse battery");
+        let (_, record, _, _) = parked(&keys, "ada");
         assert_eq!(keys.check_record(&record), Ok(()));
         for garbage in [[0xFF; RegistrationRecord::LEN], [0; RegistrationRecord::LEN]] {
             let garbage = RegistrationRecord::from_slice(&garbage).unwrap();

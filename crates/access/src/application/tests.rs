@@ -280,7 +280,8 @@ mod adversary {
         let username = Username::new("ada").unwrap();
         let forged = RegistrationRecord::from_slice(&[0xFF; RegistrationRecord::LEN]).unwrap();
         assert_eq!(block_on(world.relay().register(&username, &forged)), Err(AccessError::MalformedMessage));
-        world.register("ada", "correct horse battery").unwrap();
+        let account = world.opaque.account_of(&username);
+        assert_eq!(block_on(world.store.record(&account)), Ok(None), "the name stays free");
     }
 
     #[test]
