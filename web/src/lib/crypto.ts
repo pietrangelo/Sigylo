@@ -59,11 +59,17 @@ export function passphraseBytes(passphrase: string): Uint8Array | undefined {
 /**
  * File names are NFC-normalized too: the name the recipient sees is the one
  * that was sealed. Characters Windows refuses become underscores and emoji
- * presentation selectors are dropped, so ordinary names seal; anything that
- * could hide part of the name is left for the engine to refuse.
+ * presentation selectors are dropped, so ordinary names seal; no-break and
+ * other wide spaces (macOS puts U+202F before AM/PM in screenshot names)
+ * become plain ones, so a run stays a run. Anything that could hide part of
+ * the name is left for the engine to refuse.
  */
 export function fileName(name: string): string {
-  return name.normalize('NFC').replace(/[<>:"|?*]/g, '_').replace(/[\uFE0E\uFE0F]/g, '');
+  return name
+    .normalize('NFC')
+    .replace(/[<>:"|?*]/g, '_')
+    .replace(/[\uFE0E\uFE0F]/g, '')
+    .replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, ' ');
 }
 
 export function textBytes(text: string): Uint8Array {

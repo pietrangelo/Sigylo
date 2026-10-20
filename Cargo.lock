@@ -920,6 +920,7 @@ dependencies = [
  "pkcs8",
  "rand_core 0.10.1",
  "sha3",
+ "zeroize",
 ]
 
 [[package]]

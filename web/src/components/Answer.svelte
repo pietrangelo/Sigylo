@@ -82,7 +82,7 @@
         return;
       }
       // To the inbox the relay just named: the public request id takes no chunks.
-      if (chunks !== undefined && !(await push(startUpload(result.value.id, chunks)))) return;
+      if (chunks !== undefined && !(await push(startUpload(result.value.id, chunks, lifetime)))) return;
       finish();
     } catch (e) {
       error = sealMessage(errorCode(e));
