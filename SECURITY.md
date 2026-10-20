@@ -8,7 +8,7 @@ on GitHub. Say what you found and how to reproduce it.
 In scope: anything that lets someone read, change, keep or destroy a secret they were not
 given, learn who sent or received it, run code in the page or the app, or stop the
 service for everyone. Out of scope: reports from automated scanners without a working
-attack, and the known limits written down in CLAUDE.md ("Limite noto").
+attack, and the known limits written down in CLAUDE.md ("Known limit").
 
 Please never test against secrets that are not yours, and never flood the live service:
 run it locally instead (`bash scripts/e2e.sh`).
