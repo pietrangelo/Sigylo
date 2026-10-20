@@ -119,7 +119,13 @@ mod runtime {
         let binding = if write { "WRITE_LIMITER" } else { "READ_LIMITER" };
         let Ok(limiter) = env.rate_limiter(binding) else { return api::throttled(write, None) };
         let address = req.headers().get("CF-Connecting-IP").ok().flatten().unwrap_or_default();
-        api::throttled(write, limiter.limit(api::limiter_key(&address)).await.ok().map(|o| o.success))
+        if api::throttled(write, limiter.limit(api::limiter_key(&address)).await.ok().map(|o| o.success)) {
+            return true;
+        }
+        // Writes from IPv6 also spend their /48's allowance, closed like the first.
+        let Some(network) = api::network_key(&address).filter(|_| write) else { return false };
+        let Ok(limiter) = env.rate_limiter("NETWORK_WRITE_LIMITER") else { return true };
+        api::throttled(true, limiter.limit(network).await.ok().map(|o| o.success))
     }
 
     /// Login and registration attempts per account and per minute, counted

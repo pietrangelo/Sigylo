@@ -1,8 +1,9 @@
 name: Deploy
 
 # Publishes https://sigylo.net from main, and only after CI passed on that exact
-# commit. Pull requests never run this workflow, so no branch or fork ever sees
-# the Cloudflare token. Secrets: CLOUDFLARE_API_TOKEN ("Edit Cloudflare
+# commit. Pull requests never run this workflow, and the token is a secret of
+# the `production` environment, open to main only (CLAUDE.md §6), so no branch
+# or fork ever sees it. Secrets: CLOUDFLARE_API_TOKEN ("Edit Cloudflare
 # Workers", scoped to this account and the sigylo.net zone) and
 # CLOUDFLARE_ACCOUNT_ID.
 on:
@@ -34,11 +35,26 @@ jobs:
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-24.04
+    # The Cloudflare secrets live in this environment, which only main may
+    # use: a workflow pushed on any other branch, or this one dispatched from
+    # there, never sees them.
+    environment: production
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
+      # CI runs finish in any order: an older commit must never replace a newer
+      # one, which may carry a security fix.
+      - name: This commit is still the tip of main
+        env:
+          COMMIT: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          tip="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}" refs/heads/main | cut -f1)"
+          if [[ "$tip" != "$COMMIT" ]]; then
+            echo "::error::main moved on to $tip; its own run deploys it"
+            exit 1
+          fi
       - name: Hyperdrive is configured
         run: |
           if grep -Eq '^id = "0{32}"' worker/wrangler.toml; then

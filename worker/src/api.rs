@@ -194,6 +194,18 @@ pub fn limiter_key(address: &str) -> String {
     }
 }
 
+/// The /48 an IPv6 client sits in, counted against a second, larger
+/// allowance: one site, or one free tunnel, holds 65 536 /64s. None for
+/// IPv4 and anything unparsable, which have only [`limiter_key`].
+pub fn network_key(address: &str) -> Option<String> {
+    let v6 = match address.trim().parse::<IpAddr>() {
+        Ok(IpAddr::V6(v6)) if v6.to_ipv4_mapped().is_none() => v6,
+        _ => return None,
+    };
+    let s = v6.segments();
+    Some(format!("{:x}:{:x}:{:x}::/48", s[0], s[1], s[2]))
+}
+
 /// Whether a call waits, given the limiter's verdict (`None` when it did not
 /// answer). Writes fail closed: they fill the vault and spend its daily
 /// allowance of rows. Reads fail open, so a broken limiter never keeps a
@@ -1157,6 +1169,21 @@ mod tests {
             assert_eq!(limiter_key("::ffff:203.0.113.7"), "203.0.113.7");
             // Missing or garbled headers share one bucket rather than escape it.
             assert_eq!(limiter_key(""), limiter_key("not an address"));
+        }
+
+        #[test]
+        fn a_whole_ipv6_site_shares_a_second_allowance() {
+            // A free tunnel hands anyone a /48: 65 536 /64s, each with its own
+            // allowance, unless the /48 is counted too.
+            let site = network_key("2001:db8:1:ffff::1");
+            assert_eq!(site.as_deref(), Some("2001:db8:1::/48"));
+            assert_eq!(site, network_key("2001:db8:1:2::9"));
+            assert_ne!(site, network_key("2001:db8:2::1"));
+            assert_ne!(site.as_deref(), Some(limiter_key("2001:db8:1:ffff::1").as_str()));
+            // IPv4 (mapped or not) and garbled headers have only their own key.
+            for address in ["203.0.113.7", "::ffff:203.0.113.7", "", "not an address"] {
+                assert_eq!(network_key(address), None, "{address}");
+            }
         }
 
         #[test]
