@@ -1,31 +1,33 @@
 # Sigylo app (Tauri)
 
-La stessa interfaccia di sigylo.net e lo stesso motore Rust/Wasm, ma installati sul dispositivo: quando l'app gira nessun codice arriva da un server, quindi chi controlla l'hosting non può servire una pagina diversa a chi usa l'app. I link creati nell'app restano `https://sigylo.net/#/…` e si aprono in qualunque browser; un link ricevuto si incolla nel riquadro in cima e si apre con il motore dell'app.
+**English** · [Italiano](README.it.md)
 
-## Cosa può fare la pagina
+The same interface as sigylo.net and the same Rust/Wasm engine, but installed on the device: while the app runs no code comes from a server, so whoever controls the hosting cannot serve a different page to app users. Links created in the app stay `https://sigylo.net/#/…` and open in any browser; a received link is pasted into the box at the top and opened with the app's engine.
 
-- **Niente rete:** la CSP della pagina permette solo il bundle dell'app (`'self'`) e l'IPC di Tauri. `fetch` verso qualunque indirizzo fallisce.
-- **Due comandi soltanto** (`capabilities/main.json`, dichiarati in `build.rs`): `relay`, che accetta solo le chiamate dell'API del relay (segreti, file, richieste e account; il token di sessione solo dove serve, come `Authorization: Bearer`) e le manda solo a `https://sigylo.net/api` (niente redirect, niente cookie, corpo massimo 100 KiB, risposta massima 128 KiB; i blocchi dei file, in base64url, fino a 1 MiB + 16 byte), e `open_legal`, che apre nel browser di sistema solo i termini o l'informativa. Nessun permesso di Tauri o dei plugin è concesso alla pagina, e `window.__TAURI__` non esiste.
-- **Niente navigazione:** la webview non lascia mai il bundle (`src/navigation.rs`).
-- **Niente aggiornamenti automatici:** il codice cambia solo installando una nuova versione.
+## What the page can do
 
-## Comandi
+- **No network:** the page's CSP allows only the app bundle (`'self'`) and Tauri's IPC. `fetch` to any address fails.
+- **Only two commands** (`capabilities/main.json`, declared in `build.rs`): `relay`, which accepts only relay API calls (secrets, files, requests and accounts; the session token only where needed, as `Authorization: Bearer`) and sends them only to `https://sigylo.net/api` (no redirects, no cookies, body at most 100 KiB, response at most 128 KiB; file chunks, in base64url, up to 1 MiB + 16 bytes), and `open_legal`, which opens only the terms or the privacy notice in the system browser. No Tauri or plugin permission is granted to the page, and `window.__TAURI__` does not exist.
+- **No navigation:** the webview never leaves the bundle (`src/navigation.rs`).
+- **No automatic updates:** the code changes only by installing a new version.
+
+## Commands
 
 ```bash
-(cd web && npm ci && npm run build:app)   # client per l'app in web/dist-app
+(cd web && npm ci && npm run build:app)   # app client in web/dist-app
 cd app
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
-cargo tauri dev                           # avvia l'app (serve tauri-cli 2: cargo install tauri-cli --locked)
-cargo tauri build                         # installer per il sistema corrente
-bash ../scripts/app-smoke.sh              # l'app vera in un display virtuale, guidata via WebDriver
+cargo tauri dev                           # run the app (needs tauri-cli 2: cargo install tauri-cli --locked)
+cargo tauri build                         # installers for the current system
+bash ../scripts/app-smoke.sh              # the real app in a virtual display, driven via WebDriver
 ```
 
-Su Linux servono le librerie della webview: `libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev` (per lo smoke test anche `xvfb webkit2gtk-driver` e `cargo install tauri-driver --locked`).
+On Linux the webview libraries are needed: `libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev` (for the smoke test also `xvfb webkit2gtk-driver` and `cargo install tauri-driver --locked`).
 
-## Rilascio
+## Release
 
-`.github/workflows/app-release.yml` costruisce gli installer per Linux, macOS (Apple silicon e Intel) e Windows e li allega a una release GitHub in bozza, per un tag `app-v*` o a mano. Le build non sono firmate: macOS e Windows mostreranno un avviso finché non si aggiungono i certificati (Apple Developer ID, firma del codice per Windows) come segreti del repository.
+`.github/workflows/app-release.yml` builds the installers for Linux, macOS (Apple silicon and Intel) and Windows and attaches them to a draft GitHub release, on an `app-v*` tag or by hand. The builds are unsigned: macOS and Windows will show a warning until the certificates (Apple Developer ID, Windows code signing) are added as repository secrets.
 
 ## Mobile
 
-Il crate è già pronto per iOS e Android (`#[tauri::mobile_entry_point]`, `staticlib`/`cdylib`). Per generare i progetti nativi serve la toolchain della piattaforma: `cargo tauri android init` (Android SDK e NDK) oppure `cargo tauri ios init` (macOS con Xcode), poi `cargo tauri android dev` / `cargo tauri ios dev`. La pubblicazione negli store richiede gli account sviluppatore del titolare.
+The crate is already set up for iOS and Android (`#[tauri::mobile_entry_point]`, `staticlib`/`cdylib`). Generating the native projects needs the platform toolchain: `cargo tauri android init` (Android SDK and NDK) or `cargo tauri ios init` (macOS with Xcode), then `cargo tauri android dev` / `cargo tauri ios dev`. Publishing to the stores requires the owner's developer accounts.

@@ -6,7 +6,7 @@ The digital seal for your secrets. Write a password, choose whether it is destro
 
 Production: **https://sigylo.net**.
 
-Specification, architecture and development rules (in Italian): [CLAUDE.md](CLAUDE.md).
+Specification, architecture and development rules: [CLAUDE.md](CLAUDE.md).
 
 ## How it works
 

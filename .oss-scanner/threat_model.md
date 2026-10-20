@@ -5,7 +5,7 @@
 Sigylo shares secrets (credentials, keys, files up to 10 MiB) end to end encrypted. The sender seals the
 secret in the browser (Rust compiled to Wasm), a Cloudflare Worker relay stores only opaque envelopes, and
 the recipient opens it once (burn after reading) or until it expires. The live service is https://sigylo.net.
-CLAUDE.md (Italian) is the full specification; SECURITY.md is the disclosure policy.
+CLAUDE.md is the full specification; SECURITY.md is the disclosure policy.
 
 Treat all of the following as attacker-controlled:
 
@@ -72,7 +72,7 @@ Everything is built in the image; cargo and npm run offline.
 
 ## Anything to leave alone
 
-Known, documented limits (CLAUDE.md, "Limite noto"; do not report them unless you break them further):
+Known, documented limits (CLAUDE.md, "Known limit"; do not report them unless you break them further):
 whoever controls the hosting can serve a different `index.html` (SRI covers sub-resources only); JS strings
 and `Uint8Array`s may persist in GC copies; malware or XSS in the sender's browser can read the signing
 seed from `localStorage`; without an expected sender, whoever has the request link can answer first (it is
