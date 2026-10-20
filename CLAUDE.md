@@ -45,6 +45,7 @@ supabase/tests/            Test dei privilegi SQL + test di contratto del vault 
 tools/architecture-guard/  Verifica statica della rosetta
 scripts/e2e.sh             End-to-end: Worker reale (workerd) + PostgreSQL + Chromium
 scripts/app-smoke.sh       L'app vera in Xvfb, guidata via WebDriver (tauri-driver)
+.oss-scanner/              Dockerfile e modello delle minacce per l'OSS Scanner di Anthropic (build online, audit offline)
 ```
 
 Comandi (dalla radice):
