@@ -74,12 +74,25 @@ fn js_error(error: SealError) -> JsError {
     JsError::new(&format!("{error:?}"))
 }
 
-fn passphrase(bytes: Option<Vec<u8>>) -> Result<Option<Passphrase>, SealError> {
-    bytes.map(Passphrase::new).transpose()
+/// A secret argument under a wiping owner. Every export guards all of its
+/// secret arguments first: refusing any argument then drops the others
+/// through `Zeroizing`, never as a plain `Vec` freed unwiped.
+fn guarded(bytes: Vec<u8>) -> Zeroizing<Vec<u8>> {
+    Zeroizing::new(bytes)
 }
 
-fn sender_identity(bytes: Option<Vec<u8>>) -> Result<Option<SenderSeed>, SealError> {
-    bytes.map(|bytes| SenderSeed::from_slice(&Zeroizing::new(bytes))).transpose()
+/// Moves a guarded buffer, without copying it, into a value object that
+/// wipes it from then on.
+fn release(guarded: &mut Zeroizing<Vec<u8>>) -> Vec<u8> {
+    core::mem::take(&mut **guarded)
+}
+
+fn passphrase(bytes: Option<Zeroizing<Vec<u8>>>) -> Result<Option<Passphrase>, SealError> {
+    bytes.map(|mut bytes| Passphrase::new(release(&mut bytes))).transpose()
+}
+
+fn sender_identity(bytes: Option<Zeroizing<Vec<u8>>>) -> Result<Option<SenderSeed>, SealError> {
+    bytes.map(|bytes| SenderSeed::from_slice(&bytes)).transpose()
 }
 
 /// A link-mode secret: the envelope goes to the relay, the key into the fragment.
@@ -179,7 +192,8 @@ impl Received {
 #[wasm_bindgen(js_name = sealForLink)]
 pub fn seal_for_link(plaintext: Vec<u8>, passphrase_utf8: Option<Vec<u8>>) -> Result<SealedLink, JsError> {
     scrubbed(|| {
-        let plaintext = Plaintext::new(plaintext).map_err(js_error)?;
+        let (mut plaintext, passphrase_utf8) = (guarded(plaintext), passphrase_utf8.map(guarded));
+        let plaintext = Plaintext::new(release(&mut plaintext)).map_err(js_error)?;
         let passphrase = passphrase(passphrase_utf8).map_err(js_error)?;
         let (envelope, key) = sealer().seal_for_link(&plaintext, passphrase.as_ref()).map_err(js_error)?;
         Ok(SealedLink { envelope: envelope.to_bytes(), key: hand_over(key.expose()) })
@@ -189,7 +203,7 @@ pub fn seal_for_link(plaintext: Vec<u8>, passphrase_utf8: Option<Vec<u8>>) -> Re
 #[wasm_bindgen(js_name = openLink)]
 pub fn open_link(envelope: &[u8], key: Vec<u8>, passphrase_utf8: Option<Vec<u8>>) -> Result<Uint8Array, JsError> {
     scrubbed(|| {
-        let key = Zeroizing::new(key);
+        let (key, passphrase_utf8) = (guarded(key), passphrase_utf8.map(guarded));
         let key = LinkKey::from_slice(&key).map_err(js_error)?;
         let envelope = Envelope::parse(envelope).map_err(js_error)?;
         let passphrase = passphrase(passphrase_utf8).map_err(js_error)?;
@@ -228,7 +242,7 @@ pub fn new_sender() -> Result<NewSender, JsError> {
 #[wasm_bindgen(js_name = senderCode)]
 pub fn sender_code(seed: Vec<u8>) -> Result<String, JsError> {
     scrubbed(|| {
-        let seed = SenderSeed::from_slice(&Zeroizing::new(seed)).map_err(js_error)?;
+        let seed = SenderSeed::from_slice(&guarded(seed)).map_err(js_error)?;
         Ok(sealer().sender_fingerprint(&seed).code())
     })
 }
@@ -249,9 +263,10 @@ pub fn sender_pin(recipient_fingerprint: &[u8], code: &str) -> Result<Vec<u8>, J
 #[wasm_bindgen(js_name = isExpectedSender)]
 pub fn is_expected_sender(recipient_fingerprint: &[u8], pin: &[u8], sender_seed: Vec<u8>) -> Result<bool, JsError> {
     scrubbed(|| {
+        let sender_seed = guarded(sender_seed);
         let recipient = Fingerprint::from_slice(recipient_fingerprint).map_err(js_error)?;
         let pin = SenderPin::from_slice(pin).map_err(js_error)?;
-        let seed = SenderSeed::from_slice(&Zeroizing::new(sender_seed)).map_err(js_error)?;
+        let seed = SenderSeed::from_slice(&sender_seed).map_err(js_error)?;
         Ok(sealer().is_expected_sender(&recipient, &pin, &seed))
     })
 }
@@ -268,7 +283,9 @@ pub fn seal_for_recipient(
     expected_sender: Option<Vec<u8>>,
 ) -> Result<Vec<u8>, JsError> {
     scrubbed(|| {
-        let plaintext = Plaintext::new(plaintext).map_err(js_error)?;
+        let (mut plaintext, passphrase_utf8, sender_seed) =
+            (guarded(plaintext), passphrase_utf8.map(guarded), sender_seed.map(guarded));
+        let plaintext = Plaintext::new(release(&mut plaintext)).map_err(js_error)?;
         let public_key = RecipientPublicKey::from_slice(public_key).map_err(js_error)?;
         let fingerprint = Fingerprint::from_slice(fingerprint).map_err(js_error)?;
         let passphrase = passphrase(passphrase_utf8).map_err(js_error)?;
@@ -296,8 +313,8 @@ pub fn open_as_recipient(
     expected_sender: Option<Vec<u8>>,
 ) -> Result<Received, JsError> {
     scrubbed(|| {
+        let (seed, passphrase_utf8) = (guarded(seed), passphrase_utf8.map(guarded));
         let pin = self::expected_sender(expected_sender).map_err(js_error)?;
-        let seed = Zeroizing::new(seed);
         let seed = RecipientSeed::from_slice(&seed).map_err(js_error)?;
         let envelope = Envelope::parse(envelope).map_err(js_error)?;
         let passphrase = passphrase(passphrase_utf8).map_err(js_error)?;
@@ -313,8 +330,8 @@ pub fn open_as_recipient(
 #[wasm_bindgen(js_name = sealWithKey)]
 pub fn seal_with_key(plaintext: Vec<u8>, key: Vec<u8>) -> Result<Vec<u8>, JsError> {
     scrubbed(|| {
-        let plaintext = Plaintext::new(plaintext).map_err(js_error)?;
-        let key = Zeroizing::new(key);
+        let (mut plaintext, key) = (guarded(plaintext), guarded(key));
+        let plaintext = Plaintext::new(release(&mut plaintext)).map_err(js_error)?;
         let key = LinkKey::from_slice(&key).map_err(js_error)?;
         Ok(sealer().seal_with_link_key(&plaintext, &key).map_err(js_error)?.to_bytes())
     })
@@ -332,12 +349,57 @@ fn access_error(error: AccessError) -> JsError {
     JsError::new(&format!("{error:?}"))
 }
 
+/// An OPAQUE state between two round trips. It lives on the heap from the
+/// moment it is made, inside [`scrubbed`], so only a pointer moves through
+/// the outer frames; taking it overwrites it there with zeros, because
+/// wasm-bindgen frees the exported struct without wiping it and a move
+/// leaves the old bytes behind. `N` words cover the state (checked below).
+enum Slot<S, const N: usize> {
+    Ready(S),
+    Wiped([u64; N]),
+}
+
+struct Pending<S, const N: usize>(Box<Slot<S, N>>);
+
+impl<S, const N: usize> Pending<S, N> {
+    const COVERS_THE_STATE: () = assert!(N * 8 >= core::mem::size_of::<S>());
+
+    fn new(state: S) -> Self {
+        let () = Self::COVERS_THE_STATE;
+        Self(Box::new(Slot::Ready(state)))
+    }
+
+    /// The state, once: the slot is left all zeros.
+    fn take(&mut self) -> Option<S> {
+        match core::mem::replace(&mut *self.0, Slot::Wiped([0; N])) {
+            Slot::Ready(state) => Some(state),
+            Slot::Wiped(_) => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn is_wiped(&self) -> bool {
+        matches!(&*self.0, Slot::Wiped(words) if words.iter().all(|w| *w == 0))
+    }
+}
+
+impl<S, const N: usize> core::fmt::Debug for Pending<S, N> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Pending(redacted)")
+    }
+}
+
+type RegistrationState = PendingRegistration<<OpaqueDevice as access::OpaqueClient>::Registration>;
+type LoginState = PendingLogin<<OpaqueDevice as access::OpaqueClient>::Login>;
+type PendingRegistrationSlot = Pending<RegistrationState, { core::mem::size_of::<RegistrationState>().div_ceil(8) }>;
+type PendingLoginSlot = Pending<LoginState, { core::mem::size_of::<LoginState>().div_ceil(8) }>;
+
 /// A registration waiting for the relay's answer.
 #[wasm_bindgen]
 #[derive(Debug)]
 pub struct Registration {
     request: Vec<u8>,
-    pending: Option<PendingRegistration<<OpaqueDevice as access::OpaqueClient>::Registration>>,
+    pending: PendingRegistrationSlot,
 }
 
 /// What a finished registration or login hands back: the message for the
@@ -372,8 +434,8 @@ impl Registration {
     }
 
     pub fn finish(&mut self, response: &[u8]) -> Result<Admission, JsError> {
-        let pending = self.pending.take().ok_or_else(|| access_error(AccessError::NotAuthentic))?;
         scrubbed(|| {
+            let pending = self.pending.take().ok_or_else(|| access_error(AccessError::NotAuthentic))?;
             let response = RegistrationResponse::from_slice(response).map_err(access_error)?;
             let (record, key) = device().finish_registration(pending, &response).map_err(access_error)?;
             Ok(Admission { message: record.as_bytes().to_vec(), keyring_key: hand_over(key.expose()) })
@@ -386,7 +448,7 @@ pub fn begin_registration(password_utf8: Vec<u8>) -> Result<Registration, JsErro
     scrubbed(|| {
         let password = Password::new(password_utf8).map_err(access_error)?;
         let (request, pending) = device().begin_registration(password).map_err(access_error)?;
-        Ok(Registration { request: request.as_bytes().to_vec(), pending: Some(pending) })
+        Ok(Registration { request: request.as_bytes().to_vec(), pending: Pending::new(pending) })
     })
 }
 
@@ -395,7 +457,7 @@ pub fn begin_registration(password_utf8: Vec<u8>) -> Result<Registration, JsErro
 #[derive(Debug)]
 pub struct Login {
     request: Vec<u8>,
-    pending: Option<PendingLogin<<OpaqueDevice as access::OpaqueClient>::Login>>,
+    pending: PendingLoginSlot,
 }
 
 #[wasm_bindgen]
@@ -408,8 +470,8 @@ impl Login {
 
     /// Fails with `NotAuthentic` on a wrong password or an unknown user.
     pub fn finish(&mut self, response: &[u8]) -> Result<Admission, JsError> {
-        let pending = self.pending.take().ok_or_else(|| access_error(AccessError::NotAuthentic))?;
         scrubbed(|| {
+            let pending = self.pending.take().ok_or_else(|| access_error(AccessError::NotAuthentic))?;
             let response = CredentialResponse::from_slice(response).map_err(access_error)?;
             let (finalization, key) = device().finish_login(pending, &response).map_err(access_error)?;
             Ok(Admission { message: finalization.as_bytes().to_vec(), keyring_key: hand_over(key.expose()) })
@@ -422,7 +484,7 @@ pub fn begin_login(password_utf8: Vec<u8>) -> Result<Login, JsError> {
     scrubbed(|| {
         let password = Password::new(password_utf8).map_err(access_error)?;
         let (request, pending) = device().begin_login(password).map_err(access_error)?;
-        Ok(Login { request: request.as_bytes().to_vec(), pending: Some(pending) })
+        Ok(Login { request: request.as_bytes().to_vec(), pending: Pending::new(pending) })
     })
 }
 
@@ -507,8 +569,8 @@ fn chunk_array(chunks: Vec<SealedChunk>) -> Array {
     chunks.into_iter().map(|chunk| JsValue::from(Uint8Array::from(chunk.as_bytes()))).collect()
 }
 
-fn file_parts(name: String, contents: Vec<u8>) -> Result<(FileName, FileBytes), SealError> {
-    let contents = FileBytes::new(contents)?;
+fn file_parts(name: String, mut contents: Zeroizing<Vec<u8>>) -> Result<(FileName, FileBytes), SealError> {
+    let contents = FileBytes::new(release(&mut contents))?;
     Ok((FileName::new(name)?, contents))
 }
 
@@ -526,6 +588,7 @@ pub fn seal_file_for_link(
     passphrase_utf8: Option<Vec<u8>>,
 ) -> Result<SealedFileLink, JsError> {
     scrubbed(|| {
+        let (contents, passphrase_utf8) = (guarded(contents), passphrase_utf8.map(guarded));
         let (name, contents) = file_parts(name, contents).map_err(js_error)?;
         let passphrase = passphrase(passphrase_utf8).map_err(js_error)?;
         let (file, key) = sealer().seal_file_for_link(name, &contents, passphrase.as_ref()).map_err(js_error)?;
@@ -545,6 +608,8 @@ pub fn seal_file_for_recipient(
     expected_sender: Option<Vec<u8>>,
 ) -> Result<SealedFileForRecipient, JsError> {
     scrubbed(|| {
+        let (contents, passphrase_utf8, sender_seed) =
+            (guarded(contents), passphrase_utf8.map(guarded), sender_seed.map(guarded));
         let (name, contents) = file_parts(name, contents).map_err(js_error)?;
         let public_key = RecipientPublicKey::from_slice(public_key).map_err(js_error)?;
         let fingerprint = Fingerprint::from_slice(fingerprint).map_err(js_error)?;
@@ -595,4 +660,31 @@ pub fn open_file(plaintext: Vec<u8>, chunks: Array) -> Result<Uint8Array, JsErro
         let contents = sealer().open_file(&manifest, &chunks).map_err(js_error)?;
         Ok(hand_over(contents.expose()))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    mod adversary {
+        use crate::{begin_login, begin_registration};
+
+        // wasm-bindgen keeps an exported struct in a heap cell that it frees
+        // without wiping, and a move leaves the old bytes behind: the OPRF
+        // blind and the ephemeral key must not stay there once taken.
+
+        #[test]
+        fn a_taken_login_state_is_overwritten_where_it_was_kept() {
+            let mut login = begin_login(b"correct horse battery".to_vec()).unwrap();
+            assert!(login.pending.take().is_some());
+            assert!(login.pending.is_wiped());
+            assert!(login.pending.take().is_none(), "a login state works once");
+        }
+
+        #[test]
+        fn a_taken_registration_state_is_overwritten_where_it_was_kept() {
+            let mut registration = begin_registration(b"correct horse battery".to_vec()).unwrap();
+            assert!(registration.pending.take().is_some());
+            assert!(registration.pending.is_wiped());
+            assert!(registration.pending.take().is_none());
+        }
+    }
 }

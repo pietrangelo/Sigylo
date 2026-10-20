@@ -202,6 +202,43 @@ describe('adversary: Wasm memory after use', () => {
     expect(leftIn(key), 'link key after opening').toBe(false);
   }, 60_000);
 
+  it('wipes the passphrase, the seeds and the keys when a call is refused on an earlier argument', () => {
+    // Every secret argument is under a wiping owner before anything is checked:
+    // a refused file name or a bad key must not leave the others behind.
+    const pass = text('passphrase di una chiamata rifiutata 51ce');
+    const sender = engine.newSender();
+    const senderSeed = sender.seed;
+    sender.free();
+    const recipient = engine.newRecipient();
+    const seed = recipient.seed;
+    const publicKey = recipient.publicKey;
+    const fingerprint = recipient.fingerprint;
+    recipient.free();
+    const contents = new Uint8Array(64).fill(0x2e);
+    const key = new Uint8Array(32).map((_, i) => 90 + i);
+    const refused: [string, () => unknown][] = [
+      ['answer file with a refused name', () => engine.sealFileForRecipient('a  b.txt', contents.slice(), publicKey, fingerprint, pass.slice(), senderSeed.slice())],
+      ['answer file to a bad key', () => engine.sealFileForRecipient('a.txt', contents.slice(), new Uint8Array(5), fingerprint, pass.slice(), senderSeed.slice())],
+      ['answer to a bad fingerprint', () => engine.sealForRecipient(secret.slice(), publicKey, new Uint8Array(5), pass.slice(), senderSeed.slice())],
+      ['empty answer', () => engine.sealForRecipient(new Uint8Array(0), publicKey, fingerprint, pass.slice(), senderSeed.slice())],
+      ['link file with a refused name', () => engine.sealFileForLink('a  b.txt', contents.slice(), pass.slice())],
+      ['empty link secret', () => engine.sealForLink(new Uint8Array(0), pass.slice())],
+      ['link open of a bad envelope', () => engine.openLink(new Uint8Array(5), key.slice(), pass.slice())],
+      ['link open with a bad key', () => engine.openLink(new Uint8Array(5), new Uint8Array(5), pass.slice())],
+      ['recipient open of a bad envelope', () => engine.openAsRecipient(new Uint8Array(5), seed.slice(), pass.slice())],
+      ['recipient open with a bad pin', () => engine.openAsRecipient(new Uint8Array(5), seed.slice(), pass.slice(), new Uint8Array(5))],
+      ['expected sender with a bad fingerprint', () => engine.isExpectedSender(new Uint8Array(5), new Uint8Array(32), senderSeed.slice())],
+      ['empty keyring', () => engine.sealWithKey(new Uint8Array(0), key.slice())],
+    ];
+    for (const [what, call] of refused) {
+      expect(call, what).toThrow();
+      expect(leftIn(pass), `passphrase after ${what}`).toBe(false);
+      expect(leftIn(senderSeed), `sender seed after ${what}`).toBe(false);
+      expect(leftIn(seed), `recipient seed after ${what}`).toBe(false);
+      expect(leftIn(key), `key after ${what}`).toBe(false);
+    }
+  });
+
   it('wipes the file even when sealing it is refused', () => {
     const marker = text('file rifiutato per il nome 9e2b');
     const contents = new Uint8Array(4096).fill(0x2e);
