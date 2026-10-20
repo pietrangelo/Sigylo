@@ -25,6 +25,12 @@ const run = (script) => wd('POST', `/session/${sessionId}/execute/sync`, { scrip
 const runAsync = (script) => wd('POST', `/session/${sessionId}/execute/async`, { script: `const done = arguments[arguments.length - 1]; ${script}`, args: [] });
 const url = () => wd('GET', `/session/${sessionId}/url`);
 
+// Compare scheme and host, not a prefix: http://tauri.localhost.evil.example is not the bundle.
+const inBundle = (u) => {
+  const { protocol, host } = new URL(u);
+  return (protocol === 'tauri:' && host === 'localhost') || (protocol === 'http:' && host === 'tauri.localhost');
+};
+
 let failures = 0;
 function check(name, actual, expected) {
   const ok = typeof expected === 'function' ? expected(actual) : actual === expected;
@@ -34,7 +40,7 @@ function check(name, actual, expected) {
 
 try {
   for (let i = 0; i < 50 && !(await run('return !!document.querySelector("[data-testid=paste-link]")')); i++) await sleep(200);
-  check('serves the bundle', await url(), (u) => u.startsWith('tauri://localhost') || u.startsWith('http://tauri.localhost'));
+  check('serves the bundle', await url(), inBundle);
   check('shows the app view with the paste box', await run('return !!document.querySelector("[data-testid=paste-link]")'), true);
   check('exposes no global Tauri API', await run('return typeof window.__TAURI__'), 'undefined');
   check(
@@ -67,10 +73,10 @@ try {
   const saved = join(DOWNLOADS, 'smoke-check.bin');
   for (let i = 0; i < 50 && !existsSync(saved); i++) await sleep(200);
   check('a saved file lands in the downloads', existsSync(saved) && readFileSync(saved, 'utf8'), 'sealed bytes');
-  check('and the page stays where it was', await url(), (u) => u.startsWith('tauri://localhost') || u.startsWith('http://tauri.localhost'));
+  check('and the page stays where it was', await url(), inBundle);
   await run('location.href = "https://example.com/"');
   await sleep(1500);
-  check('the webview never leaves the bundle', await url(), (u) => !u.includes('example.com'));
+  check('the webview never leaves the bundle', await url(), inBundle);
 } finally {
   await wd('DELETE', `/session/${sessionId}`).catch(() => {});
 }
