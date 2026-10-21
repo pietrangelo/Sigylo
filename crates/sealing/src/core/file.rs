@@ -81,7 +81,19 @@ impl FileName {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// A safe name for a file whose own name these rules refuse: `file`,
+    /// with the original extension when that passes on its own.
+    fn stand_in(refused: &str) -> Self {
+        refused
+            .rsplit_once('.')
+            .and_then(|(_, extension)| Self::new(format!("{STAND_IN}.{extension}")).ok())
+            .unwrap_or_else(|| Self(STAND_IN.to_owned()))
+    }
 }
+
+/// The name a refused one is opened under ([`FileName::stand_in`]).
+const STAND_IN: &str = "file";
 
 /// Most combining marks of the generic blocks (and of the scripts listed in
 /// [`is_combining_mark`]) one character may carry: enough for the ordinary
@@ -406,7 +418,13 @@ impl FileManifest {
             return Err(malformed);
         }
         let name = core::str::from_utf8(name).map_err(|_| malformed)?;
-        let name = FileName::new(name.to_owned()).map_err(|_| malformed)?;
+        let name = match FileName::new(name.to_owned()) {
+            Ok(name) => name,
+            Err(_) if name.is_empty() => return Err(malformed),
+            // Sealed under looser rules than these (an older client, an app
+            // without updates): open it under a safe name rather than lose it.
+            Err(_) => FileName::stand_in(name),
+        };
         Ok(Some(Self { key, size, name }))
     }
 }
@@ -669,13 +687,37 @@ mod tests {
             trailing.push(b'x');
             let mut not_utf8 = good.clone();
             *not_utf8.last_mut().unwrap() = 0xC3;
-            let mut hidden = good[..FIXED_LEN].to_vec();
-            hidden[46] = 5;
-            hidden.extend_from_slice("a\u{202E}b".as_bytes());
-            cases.extend([version, empty, huge, long_name, trailing, not_utf8, hidden]);
+            let mut nameless = good[..FIXED_LEN].to_vec();
+            nameless[46] = 0;
+            cases.extend([version, empty, huge, long_name, trailing, not_utf8, nameless]);
             for bytes in cases {
                 let plaintext = Plaintext::new(bytes.clone()).unwrap();
                 assert_eq!(FileManifest::recognize(&plaintext), Err(SealError::MalformedEnvelope), "{bytes:02x?}");
+            }
+        }
+
+        #[test]
+        fn a_name_these_rules_refuse_opens_under_a_safe_stand_in() {
+            // Sealed by a client with looser rules (or an app without updates):
+            // the file is not lost, and the refused name never reaches the disk.
+            let good = manifest(1000).to_plaintext().expose().to_vec();
+            for (refused, stand_in) in [
+                ("a\u{202E}fdp.exe", "file.exe"),
+                ("report\u{00A0}final.pdf", "file.pdf"),
+                ("CON.txt", "file.txt"),
+                ("notes.", "file"),
+                ("x.t\u{202E}xt", "file"),
+                ("\u{200B}", "file"),
+            ] {
+                let mut bytes = good[..FIXED_LEN].to_vec();
+                bytes[46] = refused.len() as u8;
+                bytes.extend_from_slice(refused.as_bytes());
+                let opened = FileManifest::recognize(&Plaintext::new(bytes).unwrap()).unwrap().unwrap();
+                assert_eq!(opened.name().as_str(), stand_in, "{refused:?}");
+                assert_eq!(
+                    (opened.key().expose(), opened.size()),
+                    (manifest(1000).key().expose(), manifest(1000).size())
+                );
             }
         }
 

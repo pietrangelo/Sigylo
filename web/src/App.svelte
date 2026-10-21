@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { parseFragment, type Route } from './lib/links';
+  import { leavingLoses, parseFragment, type Route } from './lib/links';
   import { t } from './lib/i18n';
   import Compose from './components/Compose.svelte';
   import Opener from './components/Opener.svelte';
@@ -71,8 +71,9 @@
       {#if isApp}
         <button class="link" onclick={() => openLegal('terms')}>{t.termsLink}</button>
         <button class="link" onclick={() => openLegal('privacy')}>{t.privacyLink}</button>
-        <!-- The sender identity lives in the app's own storage, so its code is shown here. -->
-        <a href="#/me" data-testid="me-link">{t.myCodeLink}</a>
+        <!-- The sender identity lives in the app's own storage, so its code is shown here,
+             in place: never from a page whose secret leaving would lose. -->
+        {#if !leavingLoses(route)}<a href="#/me" data-testid="me-link">{t.myCodeLink}</a>{/if}
       {:else}
         <a href="#/terms" target="_blank" rel="noopener noreferrer" data-testid="terms-link">{t.termsLink}</a>
         <a href="#/privacy" target="_blank" rel="noopener noreferrer" data-testid="privacy-link">{t.privacyLink}</a>

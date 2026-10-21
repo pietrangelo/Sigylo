@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { encode } from '../src/lib/base64url';
-import { inboxLink, linkFragment, parseFragment, requestLink, revokeLink, secretLink } from '../src/lib/links';
+import { inboxLink, leavingLoses, linkFragment, parseFragment, requestLink, revokeLink, secretLink } from '../src/lib/links';
 
 const id = Uint8Array.from({ length: 16 }, (_, i) => i);
 const key = Uint8Array.from({ length: 32 }, (_, i) => 255 - i);
@@ -40,6 +40,16 @@ describe('links', () => {
 
   it('the account has its own page', () => {
     expect(parseFragment('#/account')).toEqual({ kind: 'account' });
+  });
+
+  it('pages holding something that opens once are the ones a quiet link must not leave', () => {
+    const at = (link: string) => parseFragment(new URL(link).hash);
+    expect(leavingLoses(at(secretLink('https://sigylo.net', id, key, false)))).toBe(true);
+    expect(leavingLoses(at(inboxLink('https://sigylo.net', id, key)))).toBe(true);
+    expect(leavingLoses(at(requestLink('https://sigylo.net', id, key)))).toBe(true);
+    for (const page of ['#/', '#/me', '#/account', '#/terms', '#/privacy', '#/nonsense']) {
+      expect(leavingLoses(parseFragment(page)), page).toBe(false);
+    }
   });
 
   it('an empty fragment is the compose page', () => {

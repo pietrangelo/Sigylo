@@ -15,6 +15,8 @@ on:
 
 permissions:
   contents: read
+  # To read whether CI passed on the commit a manual run would publish.
+  actions: read
 
 concurrency:
   group: production
@@ -55,6 +57,20 @@ jobs:
             echo "::error::main moved on to $tip; its own run deploys it"
             exit 1
           fi
+      # A run by hand has no CI run behind it: it publishes only a commit
+      # whose CI, pushed to main, finished green.
+      - name: CI passed on this commit
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          passed="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${COMMIT}&event=push&branch=main&status=success" --jq '.total_count')"
+          if [[ "$passed" -lt 1 ]]; then
+            echo "::error::CI has not passed on $COMMIT (failed, still running or never run): nothing to deploy"
+            exit 1
+          fi
       - name: Hyperdrive is configured
         run: |
           if grep -Eq '^id = "0{32}"' worker/wrangler.toml; then
@@ -64,11 +80,7 @@ jobs:
       # The switches for the local runtime only (scripts/e2e.sh passes them to
       # wrangler dev) never ship: production keeps TLS and the EU vault.
       - name: No local-only switch
-        run: |
-          if grep -Eq '^(DB_TLS|VAULT_PLACEMENT) *=' worker/wrangler.toml; then
-            echo "::error file=worker/wrangler.toml::DB_TLS and VAULT_PLACEMENT are for wrangler dev only"
-            exit 1
-          fi
+        run: python3 scripts/local-switches.py worker/wrangler.toml
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: wasm32-unknown-unknown

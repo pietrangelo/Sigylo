@@ -41,6 +41,22 @@ jobs:
             echo "::error::app-release.yml must pass GITHUB_TOKEN to tauri-action"
             exit 1
           fi
+      # The deploy refuses the local-only switches however they are spelled.
+      - name: The local-only switch check sees every spelling
+        run: |
+          set -euo pipefail
+          python3 scripts/local-switches.py worker/wrangler.toml
+          dir="$(mktemp -d)"
+          printf '[vars]\n  DB_TLS = "disable"\n' > "$dir/indented.toml"
+          printf '[vars]\n"VAULT_PLACEMENT" = "local"\n' > "$dir/quoted.toml"
+          printf 'vars.DB_TLS = "disable"\n' > "$dir/dotted.toml"
+          printf '[env.staging.vars]\nVAULT_PLACEMENT = "local"\n' > "$dir/nested.toml"
+          for bad in "$dir"/*.toml; do
+            if python3 scripts/local-switches.py "$bad" > /dev/null; then
+              echo "::error::scripts/local-switches.py missed $(basename "$bad")"
+              exit 1
+            fi
+          done
       - run: cargo fmt --all --check
       # --locked: what is built is what Cargo.lock says, and the deploy builds the same.
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
