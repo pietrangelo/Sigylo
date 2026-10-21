@@ -43,16 +43,10 @@
   <text x="740" y="264" class="t">sealed envelopes and 1 MiB file chunks</text>
   <text x="740" y="283" class="s">random 128-bit names, deleted on burn</text>
 
-  <rect x="345" y="300" width="280" height="90" rx="10" class="box"/>
-  <text x="365" y="327" class="t b">Hyperdrive</text>
-  <text x="365" y="349" class="t">TLS pool, caching disabled</text>
-  <text x="365" y="370" class="s">role sigylo_relay: EXECUTE only</text>
-
-  <rect x="720" y="430" width="320" height="95" rx="10" class="box" stroke-dasharray="6 4"/>
-  <text x="740" y="457" class="t b">PostgreSQL · being retired</text>
-  <text x="740" y="479" class="t">accounts until they move to the vault;</text>
-  <text x="740" y="499" class="t">old custody draining (max 7 days)</text>
-  <text x="740" y="517" class="s">SECURITY DEFINER functions, forced RLS</text>
+  <rect x="720" y="315" width="320" height="80" rx="10" class="box"/>
+  <text x="740" y="342" class="t b">Durable Object SigyloAccounts</text>
+  <text x="740" y="364" class="t">accounts, sealed keyrings, sessions</text>
+  <text x="740" y="383" class="s">logins in progress, counters: memory only</text>
 
   <rect x="30" y="430" width="250" height="95" rx="10" class="box"/>
   <text x="50" y="457" class="t b">GitHub Actions</text>
@@ -64,9 +58,13 @@
   <text x="285" y="150" class="s">HTTPS</text>
   <text x="285" y="180" class="s">sealed</text>
   <path d="M625 155H720" class="ln" marker-end="url(#a)"/>
+  <text x="640" y="147" class="s">custody</text>
   <path d="M625 235C670 235 680 255 720 255" class="ln" marker-end="url(#a)"/>
-  <path d="M485 255V300" class="ln" marker-end="url(#a)"/>
-  <path d="M625 345C690 345 680 477 720 477" class="ln" marker-end="url(#a)"/>
+  <text x="640" y="227" class="s">chunks</text>
+  <path d="M880 195V215" class="ln" marker-end="url(#a)"/>
+  <text x="890" y="209" class="s">envelopes</text>
+  <path d="M485 255V355H720" class="ln" marker-end="url(#a)"/>
+  <text x="500" y="347" class="s">accounts</text>
   <path d="M280 470C318 470 305 232 345 232" class="ln" marker-end="url(#a)"/>
   <text x="292" y="420" class="s">deploy</text>
   <path d="M155 430V235" class="ln" stroke-dasharray="4 4"/>
@@ -105,7 +103,7 @@
     <rect x="580" y="760" width="205" height="52" rx="8" class="core"/>
     <text x="575" y="750" class="t b">vault · application</text>
     <text x="595" y="782" fill="#fff" class="b">core</text>
-    <text x="595" y="801" fill="#fff" font-size="12">ledger records, wire calls</text>
+    <text x="595" y="801" fill="#fff" font-size="12">custody + account records</text>
   </g>
   <g>
     <rect x="825" y="725" width="245" height="105" rx="10" class="dom"/>
@@ -121,13 +119,13 @@
   <text x="45" y="895" class="s">RustCrypto: ML-KEM, ML-DSA, Argon2id</text>
   <rect x="295" y="850" width="245" height="62" rx="10" class="ad"/>
   <text x="310" y="874" class="t b">custody-adapters</text>
-  <text x="310" y="895" class="s">PostgresVault, R2ChunkStore</text>
+  <text x="310" y="895" class="s">R2ChunkStore, token digests, ids</text>
   <rect x="560" y="850" width="245" height="62" rx="10" class="ad"/>
   <text x="575" y="874" class="t b">vault-adapters</text>
-  <text x="575" y="895" class="s">Durable Object KV, R2, EU link</text>
+  <text x="575" y="895" class="s">Durable Object KV, R2, EU links</text>
   <rect x="825" y="850" width="245" height="62" rx="10" class="ad"/>
   <text x="840" y="874" class="t b">access-adapters</text>
-  <text x="840" y="895" class="s">opaque-ke, PostgresAccounts</text>
+  <text x="840" y="895" class="s">opaque-ke, passes, throttle buckets</text>
 
   <text x="30" y="932" class="s">Enforced in CI by tools/architecture-guard: domains depend only on zeroize and other domains, no I/O, no unsafe; adapters never depend on each other.</text>
 </svg>

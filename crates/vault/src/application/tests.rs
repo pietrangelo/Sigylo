@@ -10,7 +10,7 @@ use custody::{
 
 use super::Clock;
 use super::fakes::{Loopback, ManualClock, MemoryBucket, MemoryKv, SequentialIds, ToyDigest, block_on};
-use super::{Draining, LedgerVault, RemoteVault};
+use super::{LedgerVault, RemoteVault};
 use crate::core::{
     INCOMPLETE_FILE_SECONDS, OBJECT_BYTES_CEILING, PURGE_BATCH, RECORD_CEILING, STORING_WRITES_PER_DAY,
     TEARDOWN_WRITES_PER_DAY, Usage, keys,
@@ -691,101 +691,6 @@ mod adversary {
         let id = block_on(relay.deposit(sealed(1), BURN, Lifetime::ONE_HOUR, None)).unwrap().id;
         block_on(relay.open(&id)).unwrap();
         assert_eq!(link.calls.get(), 2);
-    }
-}
-
-mod draining {
-    use super::*;
-
-    /// A new vault and an old one with its own records and the same bucket.
-    struct Two {
-        new: World,
-        old_kv: MemoryKv,
-    }
-
-    impl Two {
-        fn new() -> Self {
-            Self { new: World::default(), old_kv: MemoryKv::default() }
-        }
-
-        fn old(&self) -> Inner<'_> {
-            LedgerVault::new(&self.old_kv, &self.new.bucket, &self.new.ids, &self.new.clock)
-        }
-
-        fn old_relay(&self) -> Custodian<Inner<'_>, &MemoryBucket, ToyDigest, &SequentialIds> {
-            Custodian::new(self.old(), &self.new.bucket, ToyDigest, &self.new.ids)
-        }
-
-        fn relay(&self) -> Custodian<Draining<Inner<'_>, Inner<'_>>, &MemoryBucket, ToyDigest, &SequentialIds> {
-            Custodian::new(Draining::new(self.new.vault(), self.old()), &self.new.bucket, ToyDigest, &self.new.ids)
-        }
-    }
-
-    #[test]
-    fn what_the_old_vault_holds_is_still_opened_revoked_and_answered() {
-        let two = Two::new();
-        let old = two.old_relay();
-        let burn = block_on(old.deposit(sealed(1), BURN, Lifetime::ONE_DAY, None)).unwrap().id;
-        let revocable = block_on(old.deposit(sealed(2), KEEP, Lifetime::ONE_DAY, Some(&token(2)))).unwrap().id;
-        let posted = block_on(old.post_request(key(), Lifetime::ONE_DAY)).unwrap();
-        let file = {
-            let count = ChunkCount::new(1).unwrap();
-            block_on(old.deposit_file(sealed(3), count, BURN, Lifetime::ONE_DAY, None)).unwrap().id
-        };
-
-        let relay = two.relay();
-        block_on(relay.put_chunk(&file, at(0), chunk(9, MIN_CHUNK_LEN))).unwrap();
-        assert_eq!(block_on(relay.open(&burn)).unwrap().payload, sealed(1));
-        assert_eq!(block_on(relay.open(&burn)), Err(CustodyError::NotFound));
-        block_on(relay.revoke(&revocable, &token(2))).unwrap();
-        assert_eq!(block_on(relay.fetch_request(&posted.id)).unwrap().recipient_key, key());
-        let answer = Answer { payload: sealed(4), retention: BURN, lifetime: Lifetime::ONE_HOUR, chunks: None };
-        assert_eq!(block_on(relay.answer_request(posted.id, answer)).unwrap().id, posted.inbox);
-        assert_eq!(block_on(relay.open(&posted.inbox)).unwrap().payload, sealed(4));
-        let claim = block_on(relay.open(&file)).unwrap().claim.unwrap();
-        assert_eq!(block_on(relay.open_chunk(&file, at(0), Some(&claim))).unwrap(), chunk(9, MIN_CHUNK_LEN));
-
-        // Nothing of it ever moved into the new vault.
-        assert_eq!(two.new.kv.keys(), Vec::<String>::new());
-        two.new.advance(GARBAGE_GRACE_SECONDS);
-        block_on(relay.collect_garbage(|| true)).unwrap();
-        assert_eq!(two.new.bucket.len(), 0);
-    }
-
-    #[test]
-    fn everything_new_goes_to_the_new_vault() {
-        let two = Two::new();
-        let relay = two.relay();
-        let id = block_on(relay.deposit(sealed(1), KEEP, Lifetime::ONE_DAY, None)).unwrap().id;
-        let posted = block_on(relay.post_request(key(), Lifetime::ONE_DAY)).unwrap();
-        assert!(two.old_kv.keys().is_empty());
-        assert!(block_on(two.new.vault().open(&id, &custody::ClaimDigest::from_array([0; 32]))).unwrap().is_some());
-        assert!(block_on(two.new.vault().fetch_request(&posted.id)).unwrap().is_some());
-    }
-
-    #[test]
-    fn a_failing_old_vault_does_not_stop_the_new_one_from_cleaning_up() {
-        let two = Two::new();
-        let relay = two.relay();
-        let id = block_on(relay.deposit(sealed(1), KEEP, Lifetime::MIN, None)).unwrap().id;
-        two.old_kv.down.set(true);
-        two.new.advance(Lifetime::MIN.seconds());
-        assert_eq!(block_on(relay.purge_expired()).unwrap(), 1);
-        two.new.advance(GARBAGE_GRACE_SECONDS);
-        block_on(relay.collect_garbage(|| true)).unwrap();
-        assert_eq!(two.new.bucket.len(), 0);
-        // A miss still says the old vault could not be asked: what it holds is not gone.
-        assert_eq!(block_on(relay.open(&id)), Err(CustodyError::VaultUnavailable));
-    }
-
-    #[test]
-    fn expiry_is_purged_in_both() {
-        let two = Two::new();
-        block_on(two.old_relay().deposit(sealed(1), KEEP, Lifetime::MIN, None)).unwrap();
-        let relay = two.relay();
-        block_on(relay.deposit(sealed(2), KEEP, Lifetime::MIN, None)).unwrap();
-        two.new.advance(Lifetime::MIN.seconds());
-        assert_eq!(block_on(relay.purge_expired()).unwrap(), 2);
     }
 }
 

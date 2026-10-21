@@ -30,7 +30,7 @@ use std::net::IpAddr;
 pub const MAX_BODY_LEN: usize = 100 * 1024;
 
 /// Most garbage batches one cron run deletes from R2 ([`custody::GARBAGE_BATCH`]
-/// objects each): the run waits on the database and R2 and stays within the
+/// objects each): the run waits on the vault and R2 and stays within the
 /// free plan's 10 ms of CPU.
 pub const GARBAGE_ROUNDS: u32 = 5;
 /// Wall time after which a cron run starts no new garbage batch.
@@ -254,6 +254,19 @@ pub fn route(method: &str, path: &str) -> Result<Route, ApiError> {
         _ => return Err(ApiError::NotFound),
     };
     if method == expected { Ok(route) } else { Err(ApiError::MethodNotAllowed) }
+}
+
+/// What the accounts' Durable Object lets in: only the relay's link, a POST
+/// to `/call` (`vault_adapters::DurableLink`). Anything else never reaches
+/// the ledger.
+pub fn accounts_door(method: &str, path: &str) -> Result<(), ApiError> {
+    if method != "POST" {
+        return Err(ApiError::MethodNotAllowed);
+    }
+    if path != "/call" {
+        return Err(ApiError::NotFound);
+    }
+    Ok(())
 }
 
 fn decode(field: &str) -> Result<Vec<u8>, ApiError> {
@@ -516,7 +529,7 @@ fn parse_account(route: &Route, body: &[u8], bearer: Option<&str>) -> Result<Acc
 }
 
 /// Everything a route needs, validated before the vault is touched: a
-/// malformed body never costs a database connection.
+/// malformed body never costs a Durable Object request.
 #[derive(Debug)]
 pub enum Command {
     Deposit(DepositCommand),
@@ -994,6 +1007,19 @@ mod tests {
         }
 
         #[test]
+        fn the_accounts_object_answers_only_a_post_to_call() {
+            assert_eq!(accounts_door("POST", "/call"), Ok(()));
+            for method in ["GET", "HEAD", "OPTIONS", "PUT", "DELETE", "PATCH", "post", ""] {
+                assert_eq!(accounts_door(method, "/call"), Err(ApiError::MethodNotAllowed), "{method}");
+            }
+            for path in
+                ["", "/", "/call/", "/Call", "/calls", "//call", "/vault/call", "/call/../call", "/api/account/keyring"]
+            {
+                assert_eq!(accounts_door("POST", path), Err(ApiError::NotFound), "{path}");
+            }
+        }
+
+        #[test]
         fn malformed_bodies_are_rejected() {
             assert_eq!(parse_deposit(b"not json").unwrap_err(), ApiError::InvalidJson);
             let unknown = deposit_json(r#","owner":"me@example.com""#);
@@ -1112,7 +1138,7 @@ mod tests {
 
         #[test]
         fn payloads_and_chunks_smaller_than_the_sealer_makes_are_refused() {
-            // Each costs a database row: a flood of tiny ones would fill it
+            // Each costs a vault record: a flood of tiny ones would fill it
             // while the ceiling counted almost nothing.
             let tiny = deposit_json("").replace(&payload64(), "U0dZAQ");
             let too_small = ApiError::Custody(CustodyError::PayloadTooSmall);

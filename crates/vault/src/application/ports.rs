@@ -1,6 +1,9 @@
 //! Ports of the Vault context.
 
+use access::{AccessError, AccountId, AccountStore};
 use custody::{CustodyError, ObjectName, SealedPayload, UnixTime};
+
+use crate::core::Class;
 
 /// An ordered key-value store whose calls are synchronous: a Durable
 /// Object's storage, where a run of calls with no `await` between them
@@ -38,10 +41,28 @@ pub trait Clock {
 }
 
 /// How the relay reaches the vault: one encoded [`crate::Call`] in, one
-/// encoded [`crate::Reply`] out (a fetch to the Durable Object).
+/// encoded [`crate::Reply`] out (a fetch to the Durable Object); for the
+/// accounts object, an [`crate::AccountCall`] and an [`crate::AccountReply`].
 #[allow(async_fn_in_trait)]
 pub trait Link {
     async fn call(&self, call: Vec<u8>) -> Result<Vec<u8>, CustodyError>;
+}
+
+/// The accounts object as the relay reaches it: the Access store, and the
+/// attempt counters it keeps in memory, so the throttle counts once for the
+/// whole world. Only an attempt's bucket reaches the object, never a pass.
+#[allow(async_fn_in_trait)]
+pub trait Accounts: AccountStore {
+    /// Counts an attempt on `class`'s budget, filed under `bucket`, and says
+    /// whether it is within `limit` (1 to [`crate::core::ATTEMPT_LIMIT_CEILING`])
+    /// for the current window. An error is never an admission.
+    async fn admit(
+        &self,
+        account: &AccountId,
+        bucket: &[u8; 32],
+        class: Class,
+        limit: u16,
+    ) -> Result<bool, AccessError>;
 }
 
 impl<K: KeyValue> KeyValue for &K {
@@ -89,5 +110,17 @@ impl<C: Clock> Clock for &C {
 impl<L: Link> Link for &L {
     async fn call(&self, call: Vec<u8>) -> Result<Vec<u8>, CustodyError> {
         (**self).call(call).await
+    }
+}
+
+impl<A: Accounts> Accounts for &A {
+    async fn admit(
+        &self,
+        account: &AccountId,
+        bucket: &[u8; 32],
+        class: Class,
+        limit: u16,
+    ) -> Result<bool, AccessError> {
+        (**self).admit(account, bucket, class, limit).await
     }
 }

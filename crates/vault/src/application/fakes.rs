@@ -12,8 +12,10 @@ use custody::{
     SealedChunk, SealedPayload, TokenDigest, UnixTime, Vault,
 };
 
+use super::accounts::AccountLedger;
 use super::ports::{Clock, KeyValue, Link, PayloadStore};
 use super::remote::serve;
+use super::remote_accounts::serve_accounts;
 
 /// Drive a future that never actually waits (all fakes complete immediately).
 pub fn block_on<F: Future>(future: F) -> F::Output {
@@ -284,6 +286,35 @@ impl<V: Vault> Link for Loopback<V> {
     async fn call(&self, call: Vec<u8>) -> Result<Vec<u8>, CustodyError> {
         self.calls.set(self.calls.get() + 1);
         let reply = serve(&self.vault, &call).await;
+        Ok(self.garble.borrow().clone().unwrap_or(reply))
+    }
+}
+
+/// Carries account calls straight to [`serve_accounts`], as the accounts
+/// object would, and counts them: each one is a request it bills.
+#[derive(Debug)]
+pub struct AccountLoopback<'s, K, C> {
+    pub ledger: AccountLedger<'s, K, C>,
+    pub calls: Cell<u32>,
+    /// Replaces every reply, as a broken link would.
+    pub garble: RefCell<Option<Vec<u8>>>,
+    /// Every call fails on the way, as a fetch that never arrives.
+    pub cut: Cell<bool>,
+}
+
+impl<'s, K, C> AccountLoopback<'s, K, C> {
+    pub fn new(ledger: AccountLedger<'s, K, C>) -> Self {
+        Self { ledger, calls: Cell::new(0), garble: RefCell::new(None), cut: Cell::new(false) }
+    }
+}
+
+impl<K: KeyValue, C: Clock> Link for AccountLoopback<'_, K, C> {
+    async fn call(&self, call: Vec<u8>) -> Result<Vec<u8>, CustodyError> {
+        if self.cut.get() {
+            return Err(CustodyError::VaultUnavailable);
+        }
+        self.calls.set(self.calls.get() + 1);
+        let reply = serve_accounts(&self.ledger, &call);
         Ok(self.garble.borrow().clone().unwrap_or(reply))
     }
 }

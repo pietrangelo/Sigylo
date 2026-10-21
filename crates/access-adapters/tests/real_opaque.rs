@@ -60,7 +60,7 @@ fn accounts_are_filed_under_a_keyed_hash_of_the_name() {
     assert_eq!(account(&keys, "Ada"), account(&keys, "ada"));
     assert_ne!(account(&keys, "ada"), account(&keys, "bob"));
     // Another relay secret files the same name elsewhere: guessing names
-    // against a database dump needs the secret too.
+    // against a copy of the store needs the secret too.
     let other = OpaqueKeys::from_seed(&[43; 32]).unwrap();
     assert_ne!(account(&keys, "ada"), account(&other, "ada"));
 }
@@ -161,8 +161,9 @@ mod adversary {
 
     #[test]
     fn a_parked_state_is_sealed_every_bit_of_it() {
-        // Whoever can write access.logins (a stolen relay credential) must not
-        // be able to plant a state of their own and finish it into a session.
+        // Whoever can tamper with a parked login (a copy of the accounts store,
+        // or code that reaches the SigyloAccounts object) must not be able to
+        // plant a state of their own and finish it into a session.
         let keys = keys();
         let (ada, record, state, finalization) = parked(&keys, "ada");
         for i in 0..LoginState::LEN {

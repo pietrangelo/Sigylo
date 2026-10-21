@@ -39,7 +39,7 @@ impl Kind {
 
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
-fn push_hex(key: &mut String, bytes: &[u8]) {
+pub(super) fn push_hex(key: &mut String, bytes: &[u8]) {
     for byte in bytes {
         key.push(char::from(HEX[usize::from(byte >> 4)]));
         key.push(char::from(HEX[usize::from(byte & 0x0F)]));
@@ -47,11 +47,11 @@ fn push_hex(key: &mut String, bytes: &[u8]) {
 }
 
 /// Times before the epoch never occur; they sort first rather than wrap.
-fn push_time(key: &mut String, at: UnixTime) {
+pub(super) fn push_time(key: &mut String, at: UnixTime) {
     push_hex(key, &u64::try_from(at.0).unwrap_or(0).to_be_bytes());
 }
 
-fn parse_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
+pub(super) fn parse_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
     let digits = text.as_bytes();
     if digits.len() != 2 * N {
         return None;
@@ -68,7 +68,7 @@ fn parse_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
     Some(out)
 }
 
-fn keyed(tag: char, capacity: usize) -> String {
+pub(super) fn keyed(tag: char, capacity: usize) -> String {
     let mut key = String::with_capacity(1 + capacity);
     key.push(tag);
     key

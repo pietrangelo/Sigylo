@@ -9,8 +9,8 @@ version must be distributed under another name.
 
 This product bundles third-party software, each under its own licence:
 the RustCrypto crates (MIT or Apache-2.0), wasm-bindgen (MIT or
-Apache-2.0), tokio-postgres (MIT or Apache-2.0), workers-rs
-(Apache-2.0), Svelte (MIT) and, in the app, Tauri (MIT or Apache-2.0).
+Apache-2.0), workers-rs (Apache-2.0), Svelte (MIT) and, in the app,
+Tauri (MIT or Apache-2.0).
 Their licence texts and copyright notices ship with their source
 packages, pinned in Cargo.lock, app/Cargo.lock and
 web/package-lock.json.

@@ -71,14 +71,9 @@ jobs:
             echo "::error::CI has not passed on $COMMIT (failed, still running or never run): nothing to deploy"
             exit 1
           fi
-      - name: Hyperdrive is configured
-        run: |
-          if grep -Eq '^id = "0{32}"' worker/wrangler.toml; then
-            echo "::error file=worker/wrangler.toml::the Hyperdrive id is still the placeholder (CLAUDE.md §6)"
-            exit 1
-          fi
-      # The switches for the local runtime only (scripts/e2e.sh passes them to
-      # wrangler dev) never ship: production keeps TLS and the EU vault.
+      # The switch for the local runtime only (scripts/e2e.sh passes it to
+      # wrangler dev) never ships: production keeps the Durable Objects in the
+      # EU. Nor does anything of the database that is gone (Hyperdrive, the drain).
       - name: No local-only switch
         run: python3 scripts/local-switches.py worker/wrangler.toml
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable

@@ -8,9 +8,9 @@
 # Ubuntu 24.04, the CI runner. x86-64 only: rustup-init below is the x86_64 build.
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive LC_ALL=C.UTF-8 PATH=/root/.cargo/bin:$PATH
-# PostgreSQL 16 for supabase/tests and scripts/e2e.sh; WebKitGTK for the Tauri shell in app/.
+# WebKitGTK for the Tauri shell in app/.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates build-essential pkg-config curl git python3 postgresql postgresql-client \
+      ca-certificates build-essential pkg-config curl git python3 \
       libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev file \
     && rm -rf /var/lib/apt/lists/*
 
@@ -57,7 +57,6 @@ RUN cargo build --workspace --all-targets --locked \
 
 # Run the suites so the log shows the image works, without letting a failure abort the build.
 RUN (timeout 1800 cargo test --workspace --locked || echo "WARNING: cargo test reported failures") \
-    && (timeout 900 bash supabase/tests/run.sh || echo "WARNING: supabase/tests reported failures") \
     && (cd web && timeout 900 npm test || echo "WARNING: web tests reported failures") \
     && (timeout 1800 bash scripts/e2e.sh || echo "WARNING: scripts/e2e.sh reported failures")
 
