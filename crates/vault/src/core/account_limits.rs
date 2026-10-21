@@ -22,6 +22,19 @@ pub const COUNTER_COST: u64 = 128;
 /// What a login in progress weighs in the memory pools.
 pub const PARKED_LOGIN_COST: u64 = 384;
 
+/// Which allowance an attempt spends, as the accounts object knows it: an
+/// [`access::Budget`] without the pass, which reaches the object only as the
+/// bucket its counter is filed under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Class {
+    /// Logins without a valid pass: the one guessing spends.
+    Login,
+    /// Registrations of a name nobody holds.
+    Registration,
+    /// Logins from a device that holds a pass.
+    Device,
+}
+
 /// Memory for the logins that spend the shared budget and their counters,
 /// and where the two reserves overflow.
 pub const SHARED_POOL: u64 = 16 * 1024 * 1024;
