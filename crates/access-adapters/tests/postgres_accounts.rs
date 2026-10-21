@@ -702,4 +702,50 @@ mod adversary {
             .unwrap();
         assert_eq!(relay.finish_login(&challenge.handle, &finalization).await.unwrap_err(), AccessError::NotAuthentic);
     }
+
+    #[tokio::test]
+    async fn closing_an_account_locks_the_account_before_the_usage_counter() {
+        // Every other writer (open_session, store_keyring) locks the account
+        // row first and the usage counter after; closing the other way round
+        // deadlocks against them.
+        databases!(client, admin);
+        let Some(watcher) = connect("SIGYLO_TEST_DATABASE_URL").await else { return };
+        let relay = relay(&client);
+        let name = fresh_name();
+        register(&relay, &name).await;
+        let session = login(&relay, &name).await;
+        let _in_flight = challenge(&relay, &name).await;
+        let account = keys().account_of(&name);
+
+        admin.batch_execute("begin").await.unwrap();
+        admin
+            .execute("select 1 from access.accounts where account = $1 for update", &[&account.as_bytes().as_slice()])
+            .await
+            .unwrap();
+        let closing = relay.close_account(&session.token);
+        let check = async {
+            // Wait until the close is stuck on a lock, then see what it holds.
+            loop {
+                let waiting: i64 = watcher
+                    .query_one(
+                        "select count(*) from pg_stat_activity
+                         where wait_event_type = 'Lock' and query like '%close_account%'",
+                        &[],
+                    )
+                    .await
+                    .unwrap()
+                    .get(0);
+                if waiting > 0 {
+                    break;
+                }
+                watcher.execute("select pg_sleep(0.02)", &[]).await.unwrap();
+            }
+            let usage_free = watcher.execute("select 1 from access.usage for update nowait", &[]).await.is_ok();
+            admin.batch_execute("rollback").await.unwrap();
+            usage_free
+        };
+        let (closed, usage_free) = tokio::join!(closing, check);
+        assert!(usage_free, "close_account held the usage counter while waiting for the account");
+        closed.unwrap();
+    }
 }
