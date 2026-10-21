@@ -161,8 +161,9 @@ mod adversary {
 
     #[test]
     fn a_parked_state_is_sealed_every_bit_of_it() {
-        // Whoever can write access.logins (a stolen relay credential) must not
-        // be able to plant a state of their own and finish it into a session.
+        // Whoever can tamper with a parked login (a copy of the accounts store,
+        // or code that reaches the SigyloAccounts object) must not be able to
+        // plant a state of their own and finish it into a session.
         let keys = keys();
         let (ada, record, state, finalization) = parked(&keys, "ada");
         for i in 0..LoginState::LEN {

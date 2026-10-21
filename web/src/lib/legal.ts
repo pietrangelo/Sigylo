@@ -129,7 +129,7 @@ const it: LegalTexts = {
       {
         heading: `Per quanto tempo`,
         body: [
-          `I dati vengono cancellati alla prima lettura, alla revoca o alla scadenza, al massimo dopo 7 giorni. Un file a lettura unica viene cancellato pezzo per pezzo mentre lo scarichi; se il download si interrompe, ciò che resta scade entro un'ora. Ciò che è stato letto, revocato o è scaduto viene eliminato fisicamente dai nostri archivi entro circa mezz'ora. I Durable Object di Cloudflare tengono una cronologia di ripristino di 30 giorni. Per i segreti contiene solo identificativi, scadenze, regole e impronte, non i dati cifrati, che stanno su R2. Per gli account contiene l'hash con chiave del tuo nome utente, il record OPAQUE, il portachiavi cifrato, le impronte delle sessioni e le loro scadenze (da cui si ricava l'ora di accesso), che restano recuperabili per 30 giorni anche dopo l'uscita e dopo la chiusura dell'account.`,
+          `I dati vengono cancellati alla prima lettura, alla revoca o alla scadenza, al massimo dopo 7 giorni. Un file a lettura unica viene cancellato pezzo per pezzo mentre lo scarichi; se il download si interrompe, ciò che resta scade entro un'ora. Ciò che è stato letto, revocato o è scaduto viene eliminato fisicamente dai nostri archivi entro circa mezz'ora. I Durable Object di Cloudflare tengono una cronologia di ripristino di 30 giorni. Per i segreti contiene solo identificativi, scadenze, regole, impronte, nomi degli oggetti e dimensioni, e le chiavi pubbliche delle richieste, non i dati cifrati, che stanno su R2. Per gli account contiene l'hash con chiave del tuo nome utente, il record OPAQUE, il portachiavi cifrato, le impronte delle sessioni e le loro scadenze (da cui si ricava l'ora di accesso), che restano recuperabili per 30 giorni anche dopo l'uscita e dopo la chiusura dell'account.`,
         ],
       },
       {
@@ -148,7 +148,7 @@ const it: LegalTexts = {
       {
         heading: `Fornitore e trasferimenti`,
         body: [
-          `Cloudflare, Inc.: hosting, rete e limitazione della frequenza, su una rete globale, e custodia dei segreti e degli account nella giurisdizione dell'Unione europea: buste e pezzi cifrati dei file su Cloudflare R2; scadenze, regole e impronte dei segreti in un Durable Object di Cloudflare; hash degli account, record OPAQUE, portachiavi cifrati, impronte e scadenze delle sessioni in un altro Durable Object di Cloudflare. I trasferimenti verso gli Stati Uniti si basano sull'EU-U.S. Data Privacy Framework e sulle clausole contrattuali tipo.`,
+          `Cloudflare, Inc.: hosting, rete e limitazione della frequenza, su una rete globale, e custodia dei segreti e degli account nella giurisdizione dell'Unione europea: buste e pezzi cifrati dei file su Cloudflare R2; scadenze, regole, impronte, nomi degli oggetti e dimensioni dei segreti e chiavi pubbliche delle richieste in un Durable Object di Cloudflare; hash degli account, record OPAQUE, portachiavi cifrati, impronte e scadenze delle sessioni in un altro Durable Object di Cloudflare. I trasferimenti verso gli Stati Uniti si basano sull'EU-U.S. Data Privacy Framework e sulle clausole contrattuali tipo.`,
           `Cloudflare è il nostro unico fornitore e agisce come responsabile del trattamento in base al suo accordo sul trattamento dei dati.`,
         ],
       },
@@ -156,7 +156,7 @@ const it: LegalTexts = {
         heading: `I tuoi diritti`,
         body: [
           `Hai diritto di accesso, rettifica, cancellazione, limitazione, opposizione e portabilità (articoli 15-22 del GDPR). Poiché non conserviamo identificativi, di norma non possiamo collegare alcun dato a te (articolo 11); puoi però distruggere un segreto in qualsiasi momento con il link di revoca o aprendolo. Per ogni richiesta scrivi a ${email}.`,
-          `Se hai un account, puoi cancellarlo con tutti i suoi dati in qualsiasi momento dalla pagina dell'account.`,
+          `Se hai un account, puoi cancellarlo con tutti i suoi dati in qualsiasi momento dalla pagina dell'account; la cronologia di ripristino di Cloudflare ne conserva una copia per 30 giorni, come descritto sopra.`,
           `Puoi proporre reclamo al Garante per la protezione dei dati personali (garanteprivacy.it) o all'autorità di controllo del tuo Paese. Non prendiamo decisioni automatizzate che ti riguardano.`,
         ],
       },
@@ -262,7 +262,7 @@ const en: LegalTexts = {
       {
         heading: `For how long`,
         body: [
-          `Data is deleted at the first read, on revocation or at expiry, after 7 days at most. A burn-after-reading file is deleted piece by piece as it downloads; if the download stops, what is left expires within an hour. Whatever was read, revoked or expired is physically removed from our storage within about half an hour. Cloudflare's Durable Objects keep a 30-day recovery history. For secrets it holds only identifiers, expiries, rules and digests, not the encrypted data, which lives on R2. For accounts it holds the keyed hash of your username, the OPAQUE record, the encrypted keyring, the session digests and their expiries (from which the sign-in time can be worked out), which stay recoverable for 30 days, even after signing out and after closing the account.`,
+          `Data is deleted at the first read, on revocation or at expiry, after 7 days at most. A burn-after-reading file is deleted piece by piece as it downloads; if the download stops, what is left expires within an hour. Whatever was read, revoked or expired is physically removed from our storage within about half an hour. Cloudflare's Durable Objects keep a 30-day recovery history. For secrets it holds only identifiers, expiries, rules, digests, object names and sizes, and the public keys of requests, not the encrypted data, which lives on R2. For accounts it holds the keyed hash of your username, the OPAQUE record, the encrypted keyring, the session digests and their expiries (from which the sign-in time can be worked out), which stay recoverable for 30 days, even after signing out and after closing the account.`,
         ],
       },
       {
@@ -281,7 +281,7 @@ const en: LegalTexts = {
       {
         heading: `Provider and transfers`,
         body: [
-          `Cloudflare, Inc.: hosting, network and rate limiting, on a global network, and safekeeping of secrets and accounts in the European Union jurisdiction: envelopes and encrypted pieces of files on Cloudflare R2; expiries, rules and digests of secrets in a Cloudflare Durable Object; account hashes, OPAQUE records, encrypted keyrings, session digests and expiries in another Cloudflare Durable Object. Transfers to the United States rely on the EU-U.S. Data Privacy Framework and the standard contractual clauses.`,
+          `Cloudflare, Inc.: hosting, network and rate limiting, on a global network, and safekeeping of secrets and accounts in the European Union jurisdiction: envelopes and encrypted pieces of files on Cloudflare R2; expiries, rules, digests, object names and sizes of secrets and the public keys of requests in a Cloudflare Durable Object; account hashes, OPAQUE records, encrypted keyrings, session digests and expiries in another Cloudflare Durable Object. Transfers to the United States rely on the EU-U.S. Data Privacy Framework and the standard contractual clauses.`,
           `Cloudflare is our only provider and acts as a processor under its data processing agreement.`,
         ],
       },
@@ -289,7 +289,7 @@ const en: LegalTexts = {
         heading: `Your rights`,
         body: [
           `You have the rights of access, rectification, erasure, restriction, objection and portability (articles 15-22 GDPR). Since we keep no identifiers, we usually cannot link any data to you (article 11); you can however destroy a secret at any time with the revocation link or by opening it. For any request, write to ${email}.`,
-          `If you have an account, you can delete it with all its data at any time from the account page.`,
+          `If you have an account, you can delete it with all its data at any time from the account page; Cloudflare's recovery history keeps a copy for 30 days, as described above.`,
           `You may lodge a complaint with the Italian Garante per la protezione dei dati personali (garanteprivacy.it) or with the supervisory authority of your country. We make no automated decisions about you.`,
         ],
       },
@@ -395,7 +395,7 @@ const fr: LegalTexts = {
       {
         heading: `Pendant combien de temps`,
         body: [
-          `Les données sont supprimées à la première lecture, à la révocation ou à l'expiration, au plus tard après 7 jours. Un fichier à lecture unique est supprimé morceau par morceau pendant son téléchargement ; si celui-ci s'interrompt, le reste expire dans l'heure. Ce qui a été lu, révoqué ou a expiré est effacé physiquement de notre stockage en une demi-heure environ. Les Durable Objects de Cloudflare gardent un historique de restauration de 30 jours. Pour les secrets, il ne contient que des identifiants, des expirations, des règles et des empreintes, pas les données chiffrées, qui sont sur R2. Pour les comptes, il contient le hachage à clé de votre nom d'utilisateur, l'enregistrement OPAQUE, le trousseau chiffré, les empreintes des sessions et leurs expirations (dont on peut déduire l'heure de connexion), qui restent récupérables pendant 30 jours, même après la déconnexion et après la fermeture du compte.`,
+          `Les données sont supprimées à la première lecture, à la révocation ou à l'expiration, au plus tard après 7 jours. Un fichier à lecture unique est supprimé morceau par morceau pendant son téléchargement ; si celui-ci s'interrompt, le reste expire dans l'heure. Ce qui a été lu, révoqué ou a expiré est effacé physiquement de notre stockage en une demi-heure environ. Les Durable Objects de Cloudflare gardent un historique de restauration de 30 jours. Pour les secrets, il ne contient que des identifiants, des expirations, des règles, des empreintes, les noms des objets et leurs tailles, et les clés publiques des demandes, pas les données chiffrées, qui sont sur R2. Pour les comptes, il contient le hachage à clé de votre nom d'utilisateur, l'enregistrement OPAQUE, le trousseau chiffré, les empreintes des sessions et leurs expirations (dont on peut déduire l'heure de connexion), qui restent récupérables pendant 30 jours, même après la déconnexion et après la fermeture du compte.`,
         ],
       },
       {
@@ -414,7 +414,7 @@ const fr: LegalTexts = {
       {
         heading: `Prestataire et transferts`,
         body: [
-          `Cloudflare, Inc. : hébergement, réseau et limitation de fréquence, sur un réseau mondial, et garde des secrets et des comptes dans la juridiction de l'Union européenne : enveloppes et morceaux chiffrés des fichiers sur Cloudflare R2 ; expirations, règles et empreintes des secrets dans un Durable Object de Cloudflare ; hachages des comptes, enregistrements OPAQUE, trousseaux chiffrés, empreintes et expirations des sessions dans un autre Durable Object de Cloudflare. Les transferts vers les États-Unis reposent sur l'EU-U.S. Data Privacy Framework et les clauses contractuelles types.`,
+          `Cloudflare, Inc. : hébergement, réseau et limitation de fréquence, sur un réseau mondial, et garde des secrets et des comptes dans la juridiction de l'Union européenne : enveloppes et morceaux chiffrés des fichiers sur Cloudflare R2 ; expirations, règles, empreintes, noms des objets et tailles des secrets et clés publiques des demandes dans un Durable Object de Cloudflare ; hachages des comptes, enregistrements OPAQUE, trousseaux chiffrés, empreintes et expirations des sessions dans un autre Durable Object de Cloudflare. Les transferts vers les États-Unis reposent sur l'EU-U.S. Data Privacy Framework et les clauses contractuelles types.`,
           `Cloudflare est notre seul prestataire et agit en tant que sous-traitant selon son accord de traitement des données.`,
         ],
       },
@@ -422,7 +422,7 @@ const fr: LegalTexts = {
         heading: `Vos droits`,
         body: [
           `Vous disposez des droits d'accès, de rectification, d'effacement, de limitation, d'opposition et de portabilité (articles 15 à 22 du RGPD). Comme nous ne conservons aucun identifiant, nous ne pouvons généralement relier aucune donnée à vous (article 11) ; vous pouvez toutefois détruire un secret à tout moment avec le lien de révocation ou en l'ouvrant. Pour toute demande, écrivez à ${email}.`,
-          `Si vous avez un compte, vous pouvez le supprimer avec toutes ses données à tout moment depuis la page du compte.`,
+          `Si vous avez un compte, vous pouvez le supprimer avec toutes ses données à tout moment depuis la page du compte ; l'historique de restauration de Cloudflare en garde une copie pendant 30 jours, comme décrit plus haut.`,
           `Vous pouvez introduire une réclamation auprès du Garante per la protezione dei dati personali italien (garanteprivacy.it) ou de l'autorité de contrôle de votre pays, comme la CNIL. Nous ne prenons aucune décision automatisée vous concernant.`,
         ],
       },
@@ -528,7 +528,7 @@ const es: LegalTexts = {
       {
         heading: `Durante cuánto tiempo`,
         body: [
-          `Los datos se borran en la primera lectura, con la revocación o al vencer, como máximo a los 7 días. Un archivo de lectura única se borra fragmento a fragmento mientras se descarga; si la descarga se interrumpe, lo que queda vence en una hora. Lo que se ha leído, revocado o ha vencido se elimina físicamente de nuestro almacenamiento en una media hora como máximo. Los Durable Objects de Cloudflare guardan un historial de restauración de 30 días. Para los secretos solo contiene identificadores, vencimientos, reglas y huellas, no los datos cifrados, que están en R2. Para las cuentas contiene el hash con clave de tu nombre de usuario, el registro OPAQUE, el llavero cifrado, las huellas de las sesiones y sus vencimientos (de los que se deduce la hora de inicio de sesión), que siguen siendo recuperables durante 30 días, también después de cerrar la sesión y tras el cierre de la cuenta.`,
+          `Los datos se borran en la primera lectura, con la revocación o al vencer, como máximo a los 7 días. Un archivo de lectura única se borra fragmento a fragmento mientras se descarga; si la descarga se interrumpe, lo que queda vence en una hora. Lo que se ha leído, revocado o ha vencido se elimina físicamente de nuestro almacenamiento en una media hora como máximo. Los Durable Objects de Cloudflare guardan un historial de restauración de 30 días. Para los secretos solo contiene identificadores, vencimientos, reglas, huellas, los nombres de los objetos y sus tamaños, y las claves públicas de las solicitudes, no los datos cifrados, que están en R2. Para las cuentas contiene el hash con clave de tu nombre de usuario, el registro OPAQUE, el llavero cifrado, las huellas de las sesiones y sus vencimientos (de los que se deduce la hora de inicio de sesión), que siguen siendo recuperables durante 30 días, también después de cerrar la sesión y tras el cierre de la cuenta.`,
         ],
       },
       {
@@ -547,7 +547,7 @@ const es: LegalTexts = {
       {
         heading: `Proveedor y transferencias`,
         body: [
-          `Cloudflare, Inc.: alojamiento, red y limitación de frecuencia, en una red global, y custodia de los secretos y de las cuentas en la jurisdicción de la Unión Europea: sobres y fragmentos cifrados de los archivos en Cloudflare R2; vencimientos, reglas y huellas de los secretos en un Durable Object de Cloudflare; hashes de las cuentas, registros OPAQUE, llaveros cifrados, huellas y vencimientos de las sesiones en otro Durable Object de Cloudflare. Las transferencias a Estados Unidos se basan en el EU-U.S. Data Privacy Framework y en las cláusulas contractuales tipo.`,
+          `Cloudflare, Inc.: alojamiento, red y limitación de frecuencia, en una red global, y custodia de los secretos y de las cuentas en la jurisdicción de la Unión Europea: sobres y fragmentos cifrados de los archivos en Cloudflare R2; vencimientos, reglas, huellas, nombres de los objetos y tamaños de los secretos y claves públicas de las solicitudes en un Durable Object de Cloudflare; hashes de las cuentas, registros OPAQUE, llaveros cifrados, huellas y vencimientos de las sesiones en otro Durable Object de Cloudflare. Las transferencias a Estados Unidos se basan en el EU-U.S. Data Privacy Framework y en las cláusulas contractuales tipo.`,
           `Cloudflare es nuestro único proveedor y actúa como encargado del tratamiento según su acuerdo de tratamiento de datos.`,
         ],
       },
@@ -555,7 +555,7 @@ const es: LegalTexts = {
         heading: `Tus derechos`,
         body: [
           `Tienes derecho de acceso, rectificación, supresión, limitación, oposición y portabilidad (artículos 15 a 22 del RGPD). Como no guardamos identificadores, normalmente no podemos vincular ningún dato contigo (artículo 11); aun así, puedes destruir un secreto en cualquier momento con el enlace de revocación o abriéndolo. Para cualquier solicitud, escribe a ${email}.`,
-          `Si tienes una cuenta, puedes eliminarla con todos sus datos en cualquier momento desde la página de la cuenta.`,
+          `Si tienes una cuenta, puedes eliminarla con todos sus datos en cualquier momento desde la página de la cuenta; el historial de restauración de Cloudflare guarda una copia durante 30 días, como se describe más arriba.`,
           `Puedes presentar una reclamación ante el Garante per la protezione dei dati personali italiano (garanteprivacy.it) o ante la autoridad de control de tu país, como la AEPD. No tomamos decisiones automatizadas sobre ti.`,
         ],
       },
@@ -661,7 +661,7 @@ const de: LegalTexts = {
       {
         heading: `Wie lange`,
         body: [
-          `Die Daten werden beim ersten Lesen, beim Widerruf oder zum Ablauf gelöscht, spätestens nach 7 Tagen. Eine Datei zum einmaligen Lesen wird beim Herunterladen Teil für Teil gelöscht; bricht der Download ab, läuft der Rest binnen einer Stunde ab. Was gelesen, widerrufen wurde oder abgelaufen ist, wird binnen etwa einer halben Stunde physisch aus unserem Speicher entfernt. Die Durable Objects von Cloudflare führen einen Wiederherstellungsverlauf von 30 Tagen. Für Geheimnisse enthält er nur Kennungen, Abläufe, Regeln und Fingerabdrücke, nicht die verschlüsselten Daten, die auf R2 liegen. Für Konten enthält er den schlüsselbasierten Hash deines Benutzernamens, den OPAQUE-Registrierungsdatensatz, den verschlüsselten Schlüsselbund, die Fingerabdrücke der Sitzungen und ihre Abläufe (aus denen sich der Zeitpunkt der Anmeldung ergibt); sie bleiben 30 Tage lang wiederherstellbar, auch nach der Abmeldung und nach dem Schließen des Kontos.`,
+          `Die Daten werden beim ersten Lesen, beim Widerruf oder zum Ablauf gelöscht, spätestens nach 7 Tagen. Eine Datei zum einmaligen Lesen wird beim Herunterladen Teil für Teil gelöscht; bricht der Download ab, läuft der Rest binnen einer Stunde ab. Was gelesen, widerrufen wurde oder abgelaufen ist, wird binnen etwa einer halben Stunde physisch aus unserem Speicher entfernt. Die Durable Objects von Cloudflare führen einen Wiederherstellungsverlauf von 30 Tagen. Für Geheimnisse enthält er nur Kennungen, Abläufe, Regeln, Fingerabdrücke, Objektnamen und -größen sowie die öffentlichen Schlüssel der Anfragen, nicht die verschlüsselten Daten, die auf R2 liegen. Für Konten enthält er den schlüsselbasierten Hash deines Benutzernamens, den OPAQUE-Registrierungsdatensatz, den verschlüsselten Schlüsselbund, die Fingerabdrücke der Sitzungen und ihre Abläufe (aus denen sich der Zeitpunkt der Anmeldung ergibt); sie bleiben 30 Tage lang wiederherstellbar, auch nach der Abmeldung und nach dem Schließen des Kontos.`,
         ],
       },
       {
@@ -680,7 +680,7 @@ const de: LegalTexts = {
       {
         heading: `Anbieter und Übermittlungen`,
         body: [
-          `Cloudflare, Inc.: Hosting, Netzwerk und Ratenbegrenzung in einem globalen Netz sowie Verwahrung der Geheimnisse und der Konten im Rechtsraum der Europäischen Union: Umschläge und verschlüsselte Teile von Dateien auf Cloudflare R2; Abläufe, Regeln und Fingerabdrücke der Geheimnisse in einem Durable Object von Cloudflare; Konto-Hashes, OPAQUE-Registrierungsdatensätze, verschlüsselte Schlüsselbunde, Fingerabdrücke und Abläufe der Sitzungen in einem weiteren Durable Object von Cloudflare. Übermittlungen in die Vereinigten Staaten stützen sich auf das EU-U.S. Data Privacy Framework und die Standardvertragsklauseln.`,
+          `Cloudflare, Inc.: Hosting, Netzwerk und Ratenbegrenzung in einem globalen Netz sowie Verwahrung der Geheimnisse und der Konten im Rechtsraum der Europäischen Union: Umschläge und verschlüsselte Teile von Dateien auf Cloudflare R2; Abläufe, Regeln, Fingerabdrücke, Objektnamen und -größen der Geheimnisse sowie die öffentlichen Schlüssel der Anfragen in einem Durable Object von Cloudflare; Konto-Hashes, OPAQUE-Registrierungsdatensätze, verschlüsselte Schlüsselbunde, Fingerabdrücke und Abläufe der Sitzungen in einem weiteren Durable Object von Cloudflare. Übermittlungen in die Vereinigten Staaten stützen sich auf das EU-U.S. Data Privacy Framework und die Standardvertragsklauseln.`,
           `Cloudflare ist unser einziger Anbieter und handelt als Auftragsverarbeiter auf Grundlage seines Auftragsverarbeitungsvertrags.`,
         ],
       },
@@ -688,7 +688,7 @@ const de: LegalTexts = {
         heading: `Deine Rechte`,
         body: [
           `Du hast das Recht auf Auskunft, Berichtigung, Löschung, Einschränkung, Widerspruch und Datenübertragbarkeit (Artikel 15 bis 22 DSGVO). Da wir keine Kennungen speichern, können wir in der Regel keine Daten dir zuordnen (Artikel 11); du kannst ein Geheimnis aber jederzeit mit dem Widerrufslink oder durch Öffnen vernichten. Für jede Anfrage schreibe an ${email}.`,
-          `Wenn du ein Konto hast, kannst du es mit allen Daten jederzeit auf der Kontoseite löschen.`,
+          `Wenn du ein Konto hast, kannst du es mit allen Daten jederzeit auf der Kontoseite löschen; der Wiederherstellungsverlauf von Cloudflare bewahrt 30 Tage lang eine Kopie auf, wie oben beschrieben.`,
           `Du kannst dich bei der italienischen Garante per la protezione dei dati personali (garanteprivacy.it) oder bei der Aufsichtsbehörde deines Landes beschweren. Wir treffen keine automatisierten Entscheidungen über dich.`,
         ],
       },

@@ -95,6 +95,31 @@ describe('legal', () => {
     }
   });
 
+  it('says everything the recovery history keeps, and that closing an account leaves it there', () => {
+    // Sections share their order in every language (first test), so the English headings find them.
+    const at = (heading: string) => legal.en.privacy.sections.findIndex((s) => s.heading === heading);
+    const [retention, provider, rights] = [at('For how long'), at('Provider and transfers'), at('Your rights')];
+    expect(Math.min(retention, provider, rights)).toBeGreaterThanOrEqual(0);
+    const words = {
+      it: { keys: 'chiavi pubbliche', names: 'nomi degli oggetti', history: '30 giorni' },
+      en: { keys: 'public keys', names: 'object names', history: '30 days' },
+      fr: { keys: 'clés publiques', names: 'noms des objets', history: '30 jours' },
+      es: { keys: 'claves públicas', names: 'nombres de los objetos', history: '30 días' },
+      de: { keys: 'öffentlichen Schlüssel', names: 'Objektnamen', history: '30 Tage' },
+    };
+    for (const language of languages) {
+      const sections = legal[language].privacy.sections;
+      const section = (i: number) => sections[i]!.body.join('\n');
+      const { keys, names, history } = words[language];
+      // Each request record, with the recipient's public key, sits in SigyloVault's storage.
+      expect(section(retention), language).toContain(keys);
+      expect(section(retention), language).toContain(names);
+      expect(section(provider), language).toContain(keys);
+      expect(section(provider), language).toContain(names);
+      expect(section(rights), language).toContain(history);
+    }
+  });
+
   it('carries a real date of last update', () => {
     expect(LEGAL_UPDATED).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(Number.isNaN(Date.parse(LEGAL_UPDATED))).toBe(false);
