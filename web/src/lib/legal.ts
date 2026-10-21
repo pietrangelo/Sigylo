@@ -12,7 +12,7 @@ export const operator = {
 } as const;
 
 /** Date of the last change to any of these texts (ISO 8601). */
-export const LEGAL_UPDATED = '2026-10-18';
+export const LEGAL_UPDATED = '2026-10-21';
 
 export interface LegalSection {
   heading: string;
@@ -129,13 +129,13 @@ const it: LegalTexts = {
       {
         heading: `Per quanto tempo`,
         body: [
-          `I dati vengono cancellati alla prima lettura, alla revoca o alla scadenza, al massimo dopo 7 giorni. Un file a lettura unica viene cancellato pezzo per pezzo mentre lo scarichi; se il download si interrompe, ciò che resta scade entro un'ora. Ciò che scade viene eliminato fisicamente entro circa 15 minuti. Le eventuali copie di ripristino dei fornitori contengono gli stessi dati cifrati e si rinnovano secondo i loro cicli.`,
+          `I dati vengono cancellati alla prima lettura, alla revoca o alla scadenza, al massimo dopo 7 giorni. Un file a lettura unica viene cancellato pezzo per pezzo mentre lo scarichi; se il download si interrompe, ciò che resta scade entro un'ora. Ciò che è stato letto, revocato o è scaduto viene eliminato fisicamente dai nostri archivi entro circa mezz'ora. Le eventuali copie di ripristino dei fornitori contengono gli stessi dati cifrati e si rinnovano secondo i loro cicli.`,
         ],
       },
       {
         heading: `Dati di rete`,
         body: [
-          `Per consegnare la pagina e proteggere il servizio, Cloudflare tratta il tuo indirizzo IP e i dati tecnici della richiesta. Sigylo usa l'indirizzo IP solo per limitare le scritture (30 al minuto), in memoria presso Cloudflare, senza salvarlo; i log del Worker sono disattivati. Cloudflare può conservare dati di sicurezza secondo la propria informativa.`,
+          `Per consegnare la pagina e proteggere il servizio, Cloudflare tratta il tuo indirizzo IP e i dati tecnici della richiesta. Sigylo usa l'indirizzo IP solo per limitare le richieste (30 scritture e 60 letture al minuto per indirizzo; per IPv6 per blocco /64, e le scritture anche per blocco /48), in memoria presso Cloudflare, senza salvarlo; i log del Worker sono disattivati. Cloudflare può conservare dati di sicurezza secondo la propria informativa.`,
           `Per gli account limitiamo anche i tentativi di accesso (10 al minuto per account), legati all'hash dell'account e non al tuo indirizzo: li contiamo in memoria presso Cloudflare e nel nostro database, dove restano solo l'inizio del minuto in corso e il numero di tentativi, cancellati entro circa 15 minuti. Dopo ogni accesso il browser tiene nella memoria locale (localStorage) di sigylo.net un pass del dispositivo, sotto un hash del nome dell'account: ai prossimi accessi da questo dispositivo i tentativi si contano a parte, così chi prova password sul tuo nome non può chiuderti fuori. Da solo non apre nulla e sparisce quando cancelli i dati del sito.`,
         ],
       },
@@ -262,13 +262,13 @@ const en: LegalTexts = {
       {
         heading: `For how long`,
         body: [
-          `Data is deleted at the first read, on revocation or at expiry, after 7 days at most. A burn-after-reading file is deleted piece by piece as it downloads; if the download stops, what is left expires within an hour. Whatever expires is physically removed within about 15 minutes. Any recovery copies held by our providers contain the same encrypted data and roll over on their own cycles.`,
+          `Data is deleted at the first read, on revocation or at expiry, after 7 days at most. A burn-after-reading file is deleted piece by piece as it downloads; if the download stops, what is left expires within an hour. Whatever was read, revoked or expired is physically removed from our storage within about half an hour. Any recovery copies held by our providers contain the same encrypted data and roll over on their own cycles.`,
         ],
       },
       {
         heading: `Network data`,
         body: [
-          `To deliver the page and protect the service, Cloudflare processes your IP address and the technical data of each request. Sigylo uses the IP address only to limit writes (30 per minute), in memory at Cloudflare, without storing it; Worker logs are switched off. Cloudflare may keep security data under its own privacy policy.`,
+          `To deliver the page and protect the service, Cloudflare processes your IP address and the technical data of each request. Sigylo uses the IP address only to limit requests (30 writes and 60 reads per minute per address; for IPv6 per /64 block, and writes also per /48 block), in memory at Cloudflare, without storing it; Worker logs are switched off. Cloudflare may keep security data under its own privacy policy.`,
           `For accounts we also limit sign-in attempts (10 per minute per account), tied to the account's hash rather than to your address: we count them in memory at Cloudflare and in our database, which keeps only the start of the current minute and the number of attempts, deleted within about 15 minutes. After each sign-in your browser keeps a device pass in the local storage (localStorage) of sigylo.net, under a hash of the account name: later sign-ins from this device are counted separately, so someone guessing passwords for your name cannot lock you out. On its own it opens nothing, and it goes when you clear the site data.`,
         ],
       },
@@ -395,13 +395,13 @@ const fr: LegalTexts = {
       {
         heading: `Pendant combien de temps`,
         body: [
-          `Les données sont supprimées à la première lecture, à la révocation ou à l'expiration, au plus tard après 7 jours. Un fichier à lecture unique est supprimé morceau par morceau pendant son téléchargement ; si celui-ci s'interrompt, le reste expire dans l'heure. Ce qui expire est effacé physiquement en 15 minutes environ. Les éventuelles copies de restauration de nos prestataires contiennent les mêmes données chiffrées et se renouvellent selon leurs propres cycles.`,
+          `Les données sont supprimées à la première lecture, à la révocation ou à l'expiration, au plus tard après 7 jours. Un fichier à lecture unique est supprimé morceau par morceau pendant son téléchargement ; si celui-ci s'interrompt, le reste expire dans l'heure. Ce qui a été lu, révoqué ou a expiré est effacé physiquement de notre stockage en une demi-heure environ. Les éventuelles copies de restauration de nos prestataires contiennent les mêmes données chiffrées et se renouvellent selon leurs propres cycles.`,
         ],
       },
       {
         heading: `Données réseau`,
         body: [
-          `Pour délivrer la page et protéger le service, Cloudflare traite votre adresse IP et les données techniques de chaque requête. Sigylo n'utilise l'adresse IP que pour limiter les écritures (30 par minute), en mémoire chez Cloudflare, sans la conserver ; les journaux du Worker sont désactivés. Cloudflare peut conserver des données de sécurité selon sa propre politique de confidentialité.`,
+          `Pour délivrer la page et protéger le service, Cloudflare traite votre adresse IP et les données techniques de chaque requête. Sigylo n'utilise l'adresse IP que pour limiter les requêtes (30 écritures et 60 lectures par minute et par adresse ; en IPv6 par bloc /64, et les écritures aussi par bloc /48), en mémoire chez Cloudflare, sans la conserver ; les journaux du Worker sont désactivés. Cloudflare peut conserver des données de sécurité selon sa propre politique de confidentialité.`,
           `Pour les comptes, nous limitons aussi les tentatives de connexion (10 par minute et par compte), liées au hachage du compte et non à votre adresse : nous les comptons en mémoire chez Cloudflare et dans notre base de données, qui ne garde que le début de la minute en cours et le nombre de tentatives, effacés en 15 minutes environ. Après chaque connexion, votre navigateur garde un laissez-passer de l'appareil dans le stockage local (localStorage) de sigylo.net, sous un hachage du nom du compte : les connexions suivantes depuis cet appareil sont comptées à part, si bien que quelqu'un qui essaie des mots de passe sur votre nom ne peut pas vous bloquer. Seul, il n'ouvre rien, et il disparaît quand vous effacez les données du site.`,
         ],
       },
@@ -528,13 +528,13 @@ const es: LegalTexts = {
       {
         heading: `Durante cuánto tiempo`,
         body: [
-          `Los datos se borran en la primera lectura, con la revocación o al vencer, como máximo a los 7 días. Un archivo de lectura única se borra fragmento a fragmento mientras se descarga; si la descarga se interrumpe, lo que queda vence en una hora. Lo que vence se elimina físicamente en unos 15 minutos. Las posibles copias de restauración de nuestros proveedores contienen los mismos datos cifrados y se renuevan según sus propios ciclos.`,
+          `Los datos se borran en la primera lectura, con la revocación o al vencer, como máximo a los 7 días. Un archivo de lectura única se borra fragmento a fragmento mientras se descarga; si la descarga se interrumpe, lo que queda vence en una hora. Lo que se ha leído, revocado o ha vencido se elimina físicamente de nuestro almacenamiento en una media hora como máximo. Las posibles copias de restauración de nuestros proveedores contienen los mismos datos cifrados y se renuevan según sus propios ciclos.`,
         ],
       },
       {
         heading: `Datos de red`,
         body: [
-          `Para entregar la página y proteger el servicio, Cloudflare trata tu dirección IP y los datos técnicos de cada petición. Sigylo usa la dirección IP solo para limitar las escrituras (30 por minuto), en memoria en Cloudflare, sin guardarla; los registros del Worker están desactivados. Cloudflare puede conservar datos de seguridad según su propia política de privacidad.`,
+          `Para entregar la página y proteger el servicio, Cloudflare trata tu dirección IP y los datos técnicos de cada petición. Sigylo usa la dirección IP solo para limitar las peticiones (30 escrituras y 60 lecturas por minuto y dirección; en IPv6 por bloque /64, y las escrituras también por bloque /48), en memoria en Cloudflare, sin guardarla; los registros del Worker están desactivados. Cloudflare puede conservar datos de seguridad según su propia política de privacidad.`,
           `Para las cuentas limitamos también los intentos de inicio de sesión (10 por minuto y cuenta), ligados al hash de la cuenta y no a tu dirección: los contamos en memoria en Cloudflare y en nuestra base de datos, que solo guarda el inicio del minuto en curso y el número de intentos, borrados en unos 15 minutos. Después de cada inicio de sesión, tu navegador guarda un pase del dispositivo en el almacenamiento local (localStorage) de sigylo.net, bajo un hash del nombre de la cuenta: los siguientes inicios de sesión desde este dispositivo se cuentan aparte, así quien prueba contraseñas con tu nombre no puede dejarte fuera. Por sí solo no abre nada y desaparece cuando borras los datos del sitio.`,
         ],
       },
@@ -661,13 +661,13 @@ const de: LegalTexts = {
       {
         heading: `Wie lange`,
         body: [
-          `Die Daten werden beim ersten Lesen, beim Widerruf oder zum Ablauf gelöscht, spätestens nach 7 Tagen. Eine Datei zum einmaligen Lesen wird beim Herunterladen Teil für Teil gelöscht; bricht der Download ab, läuft der Rest binnen einer Stunde ab. Was abläuft, wird binnen etwa 15 Minuten physisch entfernt. Etwaige Wiederherstellungskopien unserer Anbieter enthalten dieselben verschlüsselten Daten und erneuern sich nach deren eigenen Zyklen.`,
+          `Die Daten werden beim ersten Lesen, beim Widerruf oder zum Ablauf gelöscht, spätestens nach 7 Tagen. Eine Datei zum einmaligen Lesen wird beim Herunterladen Teil für Teil gelöscht; bricht der Download ab, läuft der Rest binnen einer Stunde ab. Was gelesen, widerrufen wurde oder abgelaufen ist, wird binnen etwa einer halben Stunde physisch aus unserem Speicher entfernt. Etwaige Wiederherstellungskopien unserer Anbieter enthalten dieselben verschlüsselten Daten und erneuern sich nach deren eigenen Zyklen.`,
         ],
       },
       {
         heading: `Netzwerkdaten`,
         body: [
-          `Um die Seite auszuliefern und den Dienst zu schützen, verarbeitet Cloudflare deine IP-Adresse und die technischen Daten jeder Anfrage. Sigylo nutzt die IP-Adresse nur, um Schreibvorgänge zu begrenzen (30 pro Minute), im Speicher bei Cloudflare, ohne sie zu speichern; die Worker-Protokolle sind abgeschaltet. Cloudflare kann Sicherheitsdaten nach seiner eigenen Datenschutzerklärung aufbewahren.`,
+          `Um die Seite auszuliefern und den Dienst zu schützen, verarbeitet Cloudflare deine IP-Adresse und die technischen Daten jeder Anfrage. Sigylo nutzt die IP-Adresse nur, um Anfragen zu begrenzen (30 Schreib- und 60 Lesevorgänge pro Minute und Adresse; bei IPv6 pro /64-Block, Schreibvorgänge auch pro /48-Block), im Speicher bei Cloudflare, ohne sie zu speichern; die Worker-Protokolle sind abgeschaltet. Cloudflare kann Sicherheitsdaten nach seiner eigenen Datenschutzerklärung aufbewahren.`,
           `Bei Konten begrenzen wir außerdem Anmeldeversuche (10 pro Minute und Konto), gebunden an den Hash des Kontos statt an deine Adresse: Wir zählen sie im Speicher bei Cloudflare und in unserer Datenbank, die nur den Beginn der laufenden Minute und die Zahl der Versuche speichert und binnen etwa 15 Minuten löscht. Nach jeder Anmeldung bewahrt dein Browser einen Gerätepass im lokalen Speicher (localStorage) von sigylo.net auf, unter einem Hash des Kontonamens: Spätere Anmeldungen von diesem Gerät werden getrennt gezählt, sodass niemand, der Passwörter für deinen Namen ausprobiert, dich aussperren kann. Allein öffnet er nichts, und er verschwindet, wenn du die Websitedaten löschst.`,
         ],
       },

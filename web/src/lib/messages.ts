@@ -47,6 +47,21 @@ export function relayMessage(error: RelayError): string {
   }
 }
 
+/** A send that broke off before the relay's answer may still have been kept. */
+export function mayHaveArrived(error: RelayError): boolean {
+  return error === 'Network' || error === 'Unexpected';
+}
+
+/**
+ * Why an answer to a request did not go. A request already used right after
+ * one of our own sends broke off is most likely that send, not someone else
+ * answering first: say so, instead of the warning about a stranger.
+ */
+export function answerMessage(error: RelayError, earlierSendBrokeOff: boolean): string {
+  if (error === 'NotFound') return earlierSendBrokeOff ? t.answerMaybeSent : t.requestGone;
+  return relayMessage(error);
+}
+
 export function accountMessage(error: AccountError): string {
   switch (error) {
     case 'NotAuthentic':
