@@ -28,6 +28,9 @@ tokio-postgres = { version = "0.7.18", default-features = false, optional = true
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
 
 [dev-dependencies]
+# The account contract suite runs on the vault: domains only, never linked into the crate.
+vault.workspace = true
+custody.workspace = true
 tokio-postgres = { version = "0.7.18" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 futures-util = "0.3"

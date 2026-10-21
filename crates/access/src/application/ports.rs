@@ -90,7 +90,7 @@ pub enum KeyringWrite {
 /// Durable storage of accounts, logins in progress and sessions.
 ///
 /// Contract every adapter must honour (checked by the contract tests in
-/// `access-adapters/tests`):
+/// `access-adapters/tests/vault_accounts.rs`):
 ///
 /// * the store's own clock decides every expiry;
 /// * a lifetime above [`crate::LOGIN_WINDOW_SECONDS`] (logins) or
