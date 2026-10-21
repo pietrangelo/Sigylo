@@ -91,7 +91,13 @@ export class Accounts {
     if (!registered.ok) return registered;
     registered.value.keyringKey.fill(0);
     const filed = await this.relay.registerFinish(name, registered.value.message);
-    if (!filed.ok) return filed;
+    if (!filed.ok) {
+      // The record may have been filed with only the answer lost: signing in
+      // tells, and spares a retry that would find the name taken.
+      if (filed.error !== 'Network' && filed.error !== 'Unexpected') return filed;
+      const session = await this.signIn(name, password);
+      return session.ok ? session : filed;
+    }
     return this.signIn(name, password);
   }
 
@@ -152,7 +158,7 @@ export class Accounts {
     for (let attempt = 0; attempt < 4; attempt++) {
       const current = await this.keyring(session);
       if (!current.ok) return current;
-      const next = { ...change(pruneExpired(current.value.data, Math.floor(Date.now() / 1000))), gen: current.value.data.gen + 1 };
+      const next = { ...change(pruneExpired(current.value.data, pruneBefore(session))), gen: current.value.data.gen + 1 };
       let sealed: Uint8Array;
       try {
         sealed = this.engine.sealWithKey(textBytes(serializeKeyring(next)), session.keyringKey);
@@ -191,6 +197,18 @@ export class Accounts {
     }
     return closed;
   }
+}
+
+/** A session's lifetime on the relay (`access::SESSION_SECONDS`). */
+export const SESSION_SECONDS = 12 * 60 * 60;
+
+/**
+ * Seals that expired before this moment can go. It is never later than the
+ * relay's own clock at sign-in, so a device clock running ahead does not
+ * drop seals that are still live from the shared keyring.
+ */
+function pruneBefore(session: Session): number {
+  return Math.min(Math.floor(Date.now() / 1000), session.expiresAt - SESSION_SECONDS);
 }
 
 /** Overwrites what the session held in this tab. */

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { decode, encode } from '../src/lib/base64url';
 import { Accounts, normalizeUsername, type AccountEngine } from '../src/lib/account';
 import type { SeedStore } from '../src/lib/identity';
@@ -222,6 +222,46 @@ describe('accounts', () => {
     const ids = await accounts.keyring(session.value);
     expect(ids.ok && ids.value.data.seals.map((s) => s.id)).toEqual([seal(3).id, seal(2).id, seal(1).id]);
     expect(state.version).toBe(3);
+  });
+
+  it('a registration whose answer was lost still ends signed in, not on "name taken"', async () => {
+    const { fetchImpl } = toyRelay([]);
+    // The relay files the record, but its 201 never reaches the device.
+    const lossy = new Relay(async (url, init) => {
+      const response = await fetchImpl(url, init);
+      if (url === '/api/account/register/finish') throw new TypeError('connection reset');
+      return response;
+    });
+    const accounts = new Accounts(toyEngine(), lossy);
+    const result = await accounts.register('ada', 'correct horse battery');
+    expect(result.ok && result.value.username).toBe('ada');
+    // A record that never arrived still reports the network, not a wrong password.
+    const down = new Accounts(toyEngine(), new Relay(async (url, init) => {
+      if (url === '/api/account/register/finish') throw new TypeError('offline');
+      return fetchImpl(url, init);
+    }));
+    expect(await down.register('bob', 'another long password')).toEqual({ ok: false, error: 'Network' });
+  });
+
+  it('a device clock running ahead never prunes seals the relay still keeps', async () => {
+    const { relay } = toyRelay([]);
+    const accounts = new Accounts(toyEngine(), relay);
+    const registered = await accounts.register('ada', 'correct horse battery');
+    if (!registered.ok) throw new Error('no session');
+    const now = Math.floor(Date.now() / 1000);
+    // The relay signed this session in just now: 12 hours from its clock.
+    const session = { ...registered.value, expiresAt: now + 12 * 3600 };
+    const live = { ...seal(1), expires: now + 86400 };
+    const gone = { ...seal(2), expires: now - 60 };
+    await accounts.update(session, (k) => addSeal(addSeal(k, live), gone));
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime((now + 2 * 86400) * 1000);
+      const result = await accounts.update(session, (k) => addSeal(k, seal(3)));
+      expect(result.ok && result.value.seals.map((s) => s.id)).toEqual([seal(3).id, live.id]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('signing out wipes the token and the keyring key from this tab', async () => {

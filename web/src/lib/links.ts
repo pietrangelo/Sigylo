@@ -69,6 +69,11 @@ function link(origin: string, ...parts: string[]): string {
   return `${origin}/#/${parts.join('/')}`;
 }
 
+/** Pages whose content is gone once left: an opened secret, an inbox, an answer being written. */
+export function leavingLoses(route: Route): boolean {
+  return route.kind === 'secret' || route.kind === 'inbox' || route.kind === 'answer';
+}
+
 export function secretLink(origin: string, id: Uint8Array, key: Uint8Array, passphrase: boolean): string {
   const parts = ['s', encode(id), encode(key)];
   if (passphrase) parts.push('p');

@@ -51,6 +51,10 @@
           error = t.errFileTooLarge;
           return;
         }
+        if (file.size === 0) {
+          error = t.errFileEmpty;
+          return;
+        }
         const contents = new Uint8Array(await file.arrayBuffer());
         try {
           const sealed = engine.sealFileForLink(fileName(file.name), contents, pass);

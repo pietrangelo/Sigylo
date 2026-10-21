@@ -3,7 +3,7 @@
   import { MAX_FILE_LEN, resumeUpload, startUpload, type Upload } from '../lib/files';
   import { t } from '../lib/i18n';
   import { SEED_LEN, browserStore, loadOrCreateSeed } from '../lib/identity';
-  import { relayMessage, sealMessage } from '../lib/messages';
+  import { answerMessage, mayHaveArrived, relayMessage, sealMessage } from '../lib/messages';
   import { Relay, type Retention } from '../lib/relay';
   import { relayFetch } from '../lib/platform';
   import SealOptions from './SealOptions.svelte';
@@ -22,6 +22,8 @@
   let uploading = $state(false);
   // The answer used up the request: chunks that did not all go up wait here for a retry.
   let pending: Upload | null = $state.raw(null);
+  // A send broke off before its receipt: a "request already used" next may be that send.
+  let brokeOff = false;
   let retention: Retention = $state('burn_after_reading');
   let lifetime = $state(86400);
   let passphrase = $state('');
@@ -49,7 +51,7 @@
       await loadEngine();
       const request = await relay.fetchRequest(id);
       if (!request.ok) {
-        error = request.error === 'NotFound' ? t.requestGone : relayMessage(request.error);
+        error = answerMessage(request.error, brokeOff);
         return;
       }
       // Both throw FingerprintMismatch if the relay served a substituted key, and
@@ -62,6 +64,10 @@
         if (file === null) return;
         if (file.size > MAX_FILE_LEN) {
           error = t.errFileTooLarge;
+          return;
+        }
+        if (file.size === 0) {
+          error = t.errFileEmpty;
           return;
         }
         const contents = new Uint8Array(await file.arrayBuffer());
@@ -78,7 +84,9 @@
       }
       const result = await relay.answer(id, envelope, retention, lifetime, chunks?.length);
       if (!result.ok) {
-        error = result.error === 'NotFound' ? t.requestGone : relayMessage(result.error);
+        error = answerMessage(result.error, brokeOff);
+        // The relay may have kept it with only its receipt lost.
+        brokeOff ||= mayHaveArrived(result.error);
         return;
       }
       // To the inbox the relay just named: the public request id takes no chunks.

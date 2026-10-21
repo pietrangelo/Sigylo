@@ -59,6 +59,10 @@
       } else {
         fail(result.error);
       }
+    } catch {
+      // The engine did not load (network, integrity): say so instead of nothing.
+      password = '';
+      error = t.errGeneric;
     } finally {
       busy = false;
     }
