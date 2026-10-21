@@ -28,6 +28,8 @@ Su Linux servono le librerie della webview: `libwebkit2gtk-4.1-dev build-essenti
 
 `.github/workflows/app-release.yml` costruisce gli installer per Linux, macOS (Apple silicon e Intel) e Windows e li allega a una release GitHub in bozza, per un tag `app-v*` o a mano. Le build non sono firmate: macOS e Windows mostreranno un avviso finché non si aggiungono i certificati (Apple Developer ID, firma del codice per Windows) come segreti del repository.
 
+La build Windows produce anche `Sigylo_<versione>.0_x64.msix` per il Microsoft Store (artefatto del workflow `sigylo-msix`, creato da `msix/pack.ps1` a partire da `msix/AppxManifest.xml`). Porta l'identità che Partner Center ha riservato a Sigylo e si carica lì senza firma: la firma la mette lo Store. Non è allegato alla release, perché un MSIX non firmato non si installa.
+
 ## Mobile
 
 Il crate è già pronto per iOS e Android (`#[tauri::mobile_entry_point]`, `staticlib`/`cdylib`). Per generare i progetti nativi serve la toolchain della piattaforma: `cargo tauri android init` (Android SDK e NDK) oppure `cargo tauri ios init` (macOS con Xcode), poi `cargo tauri android dev` / `cargo tauri ios dev`. La pubblicazione negli store richiede gli account sviluppatore del titolare.
