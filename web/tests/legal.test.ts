@@ -39,7 +39,7 @@ describe('legal', () => {
     }
   });
 
-  it('every language names the operator, the processors and the code licence', () => {
+  it('every language names the operator, the one processor and the code licence', () => {
     for (const language of languages) {
       const terms = text(legal[language].terms);
       const privacy = text(legal[language].privacy);
@@ -50,8 +50,10 @@ describe('legal', () => {
       expect(terms).toContain('Apache License 2.0');
       expect(terms).toContain('sigylo.net');
       expect(privacy).toContain('Cloudflare');
-      expect(privacy).toContain('Supabase');
-      expect(privacy).toContain('eu-central-1');
+      expect(privacy).toContain('Durable Object');
+      expect(privacy).not.toContain('Supabase');
+      expect(privacy).not.toContain('eu-central-1');
+      expect(privacy).not.toContain('PostgreSQL');
       expect(privacy).toContain('SHA-256');
       expect(privacy).toMatch(/\b7\b/);
       expect(privacy).toMatch(/2016\/679/);
@@ -71,6 +73,25 @@ describe('legal', () => {
       expect(privacy, language).toContain('/64');
       expect(privacy, language).toContain('/48');
       expect(privacy, language).toContain(halfHour[language]);
+    }
+  });
+
+  it('keeps accounts in the vault: no database, sign-ins in memory only, 30 days of recovery history', () => {
+    const words = {
+      it: { database: 'database', disk: 'su disco', history: '30 giorni', closing: 'chiusura' },
+      en: { database: 'database', disk: 'to disk', history: '30 days', closing: 'closing' },
+      fr: { database: 'base de données', disk: 'sur disque', history: '30 jours', closing: 'fermeture' },
+      es: { database: 'base de datos', disk: 'en disco', history: '30 días', closing: 'cierre' },
+      de: { database: 'Datenbank', disk: 'Datenträger', history: '30 Tage', closing: 'Schließen' },
+    };
+    for (const language of languages) {
+      const privacy = text(legal[language].privacy);
+      const { database, disk, history, closing } = words[language];
+      expect(privacy.toLowerCase(), language).not.toContain(database.toLowerCase());
+      expect(privacy, language).toContain(disk);
+      expect(privacy, language).toContain(history);
+      expect(privacy, language).toContain(closing);
+      expect(privacy, language).toContain('OPAQUE');
     }
   });
 

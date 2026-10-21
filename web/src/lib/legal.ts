@@ -116,7 +116,7 @@ const it: LegalTexts = {
         heading: `Account facoltativi`,
         body: [
           `Se crei un account conserviamo: un hash con chiave del tuo nome utente (non il nome), il record di registrazione OPAQUE (la tua password non ci arriva mai, nemmeno come hash) e il tuo portachiavi, cifrato sul tuo dispositivo con una chiave che non vediamo mai, con un contatore delle sue modifiche. Il portachiavi contiene i codici per distruggere i segreti che hai sigillato da connesso, non i link per aprirli.`,
-          `Mentre sei connesso conserviamo un'impronta con chiave (HMAC-SHA256) del codice di sessione e la sua scadenza, al massimo 12 ore; durante un accesso, per cinque minuti, lo stato del protocollo. L'account resta finché non lo elimini dalla pagina dell'account, che cancella tutto in una volta.`,
+          `Mentre sei connesso conserviamo un'impronta con chiave (HMAC-SHA256) del codice di sessione e la sua scadenza, al massimo 12 ore; durante un accesso, per cinque minuti, lo stato del protocollo, solo in memoria e mai scritto su disco. L'account resta finché non lo elimini dalla pagina dell'account, che cancella tutto in una volta, salvo la cronologia di ripristino descritta più sotto.`,
           ],
         },
         {
@@ -129,14 +129,14 @@ const it: LegalTexts = {
       {
         heading: `Per quanto tempo`,
         body: [
-          `I dati vengono cancellati alla prima lettura, alla revoca o alla scadenza, al massimo dopo 7 giorni. Un file a lettura unica viene cancellato pezzo per pezzo mentre lo scarichi; se il download si interrompe, ciò che resta scade entro un'ora. Ciò che è stato letto, revocato o è scaduto viene eliminato fisicamente dai nostri archivi entro circa mezz'ora. Le eventuali copie di ripristino dei fornitori contengono gli stessi dati cifrati e si rinnovano secondo i loro cicli.`,
+          `I dati vengono cancellati alla prima lettura, alla revoca o alla scadenza, al massimo dopo 7 giorni. Un file a lettura unica viene cancellato pezzo per pezzo mentre lo scarichi; se il download si interrompe, ciò che resta scade entro un'ora. Ciò che è stato letto, revocato o è scaduto viene eliminato fisicamente dai nostri archivi entro circa mezz'ora. I Durable Object di Cloudflare tengono una cronologia di ripristino di 30 giorni. Per i segreti contiene solo identificativi, scadenze, regole e impronte, non i dati cifrati, che stanno su R2. Per gli account contiene l'hash con chiave del tuo nome utente, il record OPAQUE, il portachiavi cifrato, le impronte delle sessioni e le loro scadenze (da cui si ricava l'ora di accesso), che restano recuperabili per 30 giorni anche dopo l'uscita e dopo la chiusura dell'account.`,
         ],
       },
       {
         heading: `Dati di rete`,
         body: [
           `Per consegnare la pagina e proteggere il servizio, Cloudflare tratta il tuo indirizzo IP e i dati tecnici della richiesta. Sigylo usa l'indirizzo IP solo per limitare le richieste (30 scritture e 60 letture al minuto per indirizzo; per IPv6 per blocco /64, e le scritture anche per blocco /48), in memoria presso Cloudflare, senza salvarlo; i log del Worker sono disattivati. Cloudflare può conservare dati di sicurezza secondo la propria informativa.`,
-          `Per gli account limitiamo anche i tentativi di accesso (10 al minuto per account), legati all'hash dell'account e non al tuo indirizzo: li contiamo in memoria presso Cloudflare e nel nostro database, dove restano solo l'inizio del minuto in corso e il numero di tentativi, cancellati entro circa 15 minuti. Dopo ogni accesso il browser tiene nella memoria locale (localStorage) di sigylo.net un pass del dispositivo, sotto un hash del nome dell'account: ai prossimi accessi da questo dispositivo i tentativi si contano a parte, così chi prova password sul tuo nome non può chiuderti fuori. Da solo non apre nulla e sparisce quando cancelli i dati del sito.`,
+          `Per gli account limitiamo anche i tentativi di accesso (10 al minuto per account), legati all'hash dell'account e non al tuo indirizzo: li contiamo in memoria presso Cloudflare e nella memoria del nostro Durable Object, senza mai scriverli su disco: restano solo l'inizio del minuto in corso e il numero di tentativi, cancellati entro circa 15 minuti. Dopo ogni accesso il browser tiene nella memoria locale (localStorage) di sigylo.net un pass del dispositivo, sotto un hash del nome dell'account: ai prossimi accessi da questo dispositivo i tentativi si contano a parte, così chi prova password sul tuo nome non può chiuderti fuori. Da solo non apre nulla e sparisce quando cancelli i dati del sito.`,
         ],
       },
       {
@@ -146,10 +146,10 @@ const it: LegalTexts = {
         ],
       },
       {
-        heading: `Fornitori e trasferimenti`,
+        heading: `Fornitore e trasferimenti`,
         body: [
-          `Cloudflare, Inc.: hosting, rete e limitazione della frequenza, su una rete globale, e custodia dei segreti nella giurisdizione dell'Unione europea: buste e pezzi cifrati dei file su Cloudflare R2, scadenze, regole e impronte in un Durable Object di Cloudflare; i trasferimenti verso gli Stati Uniti si basano sull'EU-U.S. Data Privacy Framework e sulle clausole contrattuali tipo.`,
-          `Supabase, Inc.: database PostgreSQL ospitato nella regione eu-central-1 (Francoforte, Germania), per gli account e, fino alla loro scadenza (al massimo 7 giorni), per i segreti custoditi lì in precedenza. Entrambi agiscono come responsabili del trattamento in base ai rispettivi accordi sul trattamento dei dati.`,
+          `Cloudflare, Inc.: hosting, rete e limitazione della frequenza, su una rete globale, e custodia dei segreti e degli account nella giurisdizione dell'Unione europea: buste e pezzi cifrati dei file su Cloudflare R2; scadenze, regole e impronte dei segreti in un Durable Object di Cloudflare; hash degli account, record OPAQUE, portachiavi cifrati, impronte e scadenze delle sessioni in un altro Durable Object di Cloudflare. I trasferimenti verso gli Stati Uniti si basano sull'EU-U.S. Data Privacy Framework e sulle clausole contrattuali tipo.`,
+          `Cloudflare è il nostro unico fornitore e agisce come responsabile del trattamento in base al suo accordo sul trattamento dei dati.`,
         ],
       },
       {
@@ -249,7 +249,7 @@ const en: LegalTexts = {
         heading: `Optional accounts`,
         body: [
           `If you create an account we keep: a keyed hash of your username (not the name itself), the OPAQUE registration record (your password never reaches us, not even as a hash) and your keyring, encrypted on your device with a key we never see, with a counter of its changes. The keyring holds the codes to destroy the secrets you sealed while signed in, not the links that open them.`,
-          `While you are signed in we keep a keyed digest (HMAC-SHA256) of your session code and its expiry, 12 hours at most; during a sign-in, for five minutes, the state of the protocol. The account stays until you delete it from the account page, which erases everything at once.`,
+          `While you are signed in we keep a keyed digest (HMAC-SHA256) of your session code and its expiry, 12 hours at most; during a sign-in, for five minutes, the state of the protocol, in memory only and never written to disk. The account stays until you delete it from the account page, which erases everything at once, except for the recovery history described below.`,
           ],
         },
         {
@@ -262,14 +262,14 @@ const en: LegalTexts = {
       {
         heading: `For how long`,
         body: [
-          `Data is deleted at the first read, on revocation or at expiry, after 7 days at most. A burn-after-reading file is deleted piece by piece as it downloads; if the download stops, what is left expires within an hour. Whatever was read, revoked or expired is physically removed from our storage within about half an hour. Any recovery copies held by our providers contain the same encrypted data and roll over on their own cycles.`,
+          `Data is deleted at the first read, on revocation or at expiry, after 7 days at most. A burn-after-reading file is deleted piece by piece as it downloads; if the download stops, what is left expires within an hour. Whatever was read, revoked or expired is physically removed from our storage within about half an hour. Cloudflare's Durable Objects keep a 30-day recovery history. For secrets it holds only identifiers, expiries, rules and digests, not the encrypted data, which lives on R2. For accounts it holds the keyed hash of your username, the OPAQUE record, the encrypted keyring, the session digests and their expiries (from which the sign-in time can be worked out), which stay recoverable for 30 days, even after signing out and after closing the account.`,
         ],
       },
       {
         heading: `Network data`,
         body: [
           `To deliver the page and protect the service, Cloudflare processes your IP address and the technical data of each request. Sigylo uses the IP address only to limit requests (30 writes and 60 reads per minute per address; for IPv6 per /64 block, and writes also per /48 block), in memory at Cloudflare, without storing it; Worker logs are switched off. Cloudflare may keep security data under its own privacy policy.`,
-          `For accounts we also limit sign-in attempts (10 per minute per account), tied to the account's hash rather than to your address: we count them in memory at Cloudflare and in our database, which keeps only the start of the current minute and the number of attempts, deleted within about 15 minutes. After each sign-in your browser keeps a device pass in the local storage (localStorage) of sigylo.net, under a hash of the account name: later sign-ins from this device are counted separately, so someone guessing passwords for your name cannot lock you out. On its own it opens nothing, and it goes when you clear the site data.`,
+          `For accounts we also limit sign-in attempts (10 per minute per account), tied to the account's hash rather than to your address: we count them in memory at Cloudflare and in the memory of our Durable Object, never writing them to disk: all that stays is the start of the current minute and the number of attempts, deleted within about 15 minutes. After each sign-in your browser keeps a device pass in the local storage (localStorage) of sigylo.net, under a hash of the account name: later sign-ins from this device are counted separately, so someone guessing passwords for your name cannot lock you out. On its own it opens nothing, and it goes when you clear the site data.`,
         ],
       },
       {
@@ -279,10 +279,10 @@ const en: LegalTexts = {
         ],
       },
       {
-        heading: `Providers and transfers`,
+        heading: `Provider and transfers`,
         body: [
-          `Cloudflare, Inc.: hosting, network and rate limiting, on a global network, and safekeeping of secrets in the European Union jurisdiction: envelopes and encrypted pieces of files on Cloudflare R2, expiries, rules and digests in a Cloudflare Durable Object; transfers to the United States rely on the EU-U.S. Data Privacy Framework and the standard contractual clauses.`,
-          `Supabase, Inc.: PostgreSQL database hosted in the eu-central-1 region (Frankfurt, Germany), for accounts and, until they expire (7 days at most), for secrets kept there before. Both act as processors under their data processing agreements.`,
+          `Cloudflare, Inc.: hosting, network and rate limiting, on a global network, and safekeeping of secrets and accounts in the European Union jurisdiction: envelopes and encrypted pieces of files on Cloudflare R2; expiries, rules and digests of secrets in a Cloudflare Durable Object; account hashes, OPAQUE records, encrypted keyrings, session digests and expiries in another Cloudflare Durable Object. Transfers to the United States rely on the EU-U.S. Data Privacy Framework and the standard contractual clauses.`,
+          `Cloudflare is our only provider and acts as a processor under its data processing agreement.`,
         ],
       },
       {
@@ -382,7 +382,7 @@ const fr: LegalTexts = {
         heading: `Comptes facultatifs`,
         body: [
           `Si vous créez un compte, nous conservons : un hachage à clé de votre nom d'utilisateur (pas le nom lui-même), l'enregistrement OPAQUE (votre mot de passe ne nous parvient jamais, pas même sous forme de hachage) et votre trousseau, chiffré sur votre appareil avec une clé que nous ne voyons jamais, avec un compteur de ses modifications. Le trousseau contient les codes pour détruire les secrets que vous avez scellés une fois connecté, pas les liens qui les ouvrent.`,
-          `Tant que vous êtes connecté, nous conservons une empreinte à clé (HMAC-SHA256) de votre code de session et son expiration, 12 heures au plus ; pendant une connexion, pendant cinq minutes, l'état du protocole. Le compte reste jusqu'à ce que vous le supprimiez depuis la page du compte, ce qui efface tout en une fois.`,
+          `Tant que vous êtes connecté, nous conservons une empreinte à clé (HMAC-SHA256) de votre code de session et son expiration, 12 heures au plus ; pendant une connexion, pendant cinq minutes, l'état du protocole, uniquement en mémoire et jamais écrit sur disque. Le compte reste jusqu'à ce que vous le supprimiez depuis la page du compte, ce qui efface tout en une fois, sauf l'historique de restauration décrit plus bas.`,
           ],
         },
         {
@@ -395,14 +395,14 @@ const fr: LegalTexts = {
       {
         heading: `Pendant combien de temps`,
         body: [
-          `Les données sont supprimées à la première lecture, à la révocation ou à l'expiration, au plus tard après 7 jours. Un fichier à lecture unique est supprimé morceau par morceau pendant son téléchargement ; si celui-ci s'interrompt, le reste expire dans l'heure. Ce qui a été lu, révoqué ou a expiré est effacé physiquement de notre stockage en une demi-heure environ. Les éventuelles copies de restauration de nos prestataires contiennent les mêmes données chiffrées et se renouvellent selon leurs propres cycles.`,
+          `Les données sont supprimées à la première lecture, à la révocation ou à l'expiration, au plus tard après 7 jours. Un fichier à lecture unique est supprimé morceau par morceau pendant son téléchargement ; si celui-ci s'interrompt, le reste expire dans l'heure. Ce qui a été lu, révoqué ou a expiré est effacé physiquement de notre stockage en une demi-heure environ. Les Durable Objects de Cloudflare gardent un historique de restauration de 30 jours. Pour les secrets, il ne contient que des identifiants, des expirations, des règles et des empreintes, pas les données chiffrées, qui sont sur R2. Pour les comptes, il contient le hachage à clé de votre nom d'utilisateur, l'enregistrement OPAQUE, le trousseau chiffré, les empreintes des sessions et leurs expirations (dont on peut déduire l'heure de connexion), qui restent récupérables pendant 30 jours, même après la déconnexion et après la fermeture du compte.`,
         ],
       },
       {
         heading: `Données réseau`,
         body: [
           `Pour délivrer la page et protéger le service, Cloudflare traite votre adresse IP et les données techniques de chaque requête. Sigylo n'utilise l'adresse IP que pour limiter les requêtes (30 écritures et 60 lectures par minute et par adresse ; en IPv6 par bloc /64, et les écritures aussi par bloc /48), en mémoire chez Cloudflare, sans la conserver ; les journaux du Worker sont désactivés. Cloudflare peut conserver des données de sécurité selon sa propre politique de confidentialité.`,
-          `Pour les comptes, nous limitons aussi les tentatives de connexion (10 par minute et par compte), liées au hachage du compte et non à votre adresse : nous les comptons en mémoire chez Cloudflare et dans notre base de données, qui ne garde que le début de la minute en cours et le nombre de tentatives, effacés en 15 minutes environ. Après chaque connexion, votre navigateur garde un laissez-passer de l'appareil dans le stockage local (localStorage) de sigylo.net, sous un hachage du nom du compte : les connexions suivantes depuis cet appareil sont comptées à part, si bien que quelqu'un qui essaie des mots de passe sur votre nom ne peut pas vous bloquer. Seul, il n'ouvre rien, et il disparaît quand vous effacez les données du site.`,
+          `Pour les comptes, nous limitons aussi les tentatives de connexion (10 par minute et par compte), liées au hachage du compte et non à votre adresse : nous les comptons en mémoire chez Cloudflare et dans la mémoire de notre Durable Object, sans jamais les écrire sur disque : il n'en reste que le début de la minute en cours et le nombre de tentatives, effacés en 15 minutes environ. Après chaque connexion, votre navigateur garde un laissez-passer de l'appareil dans le stockage local (localStorage) de sigylo.net, sous un hachage du nom du compte : les connexions suivantes depuis cet appareil sont comptées à part, si bien que quelqu'un qui essaie des mots de passe sur votre nom ne peut pas vous bloquer. Seul, il n'ouvre rien, et il disparaît quand vous effacez les données du site.`,
         ],
       },
       {
@@ -412,10 +412,10 @@ const fr: LegalTexts = {
         ],
       },
       {
-        heading: `Prestataires et transferts`,
+        heading: `Prestataire et transferts`,
         body: [
-          `Cloudflare, Inc. : hébergement, réseau et limitation de fréquence, sur un réseau mondial, et garde des secrets dans la juridiction de l'Union européenne : enveloppes et morceaux chiffrés des fichiers sur Cloudflare R2, expirations, règles et empreintes dans un Durable Object de Cloudflare ; les transferts vers les États-Unis reposent sur l'EU-U.S. Data Privacy Framework et les clauses contractuelles types.`,
-          `Supabase, Inc. : base de données PostgreSQL hébergée dans la région eu-central-1 (Francfort, Allemagne), pour les comptes et, jusqu'à leur expiration (7 jours au plus), pour les secrets qui y étaient gardés auparavant. Tous deux agissent en tant que sous-traitants selon leurs accords de traitement des données.`,
+          `Cloudflare, Inc. : hébergement, réseau et limitation de fréquence, sur un réseau mondial, et garde des secrets et des comptes dans la juridiction de l'Union européenne : enveloppes et morceaux chiffrés des fichiers sur Cloudflare R2 ; expirations, règles et empreintes des secrets dans un Durable Object de Cloudflare ; hachages des comptes, enregistrements OPAQUE, trousseaux chiffrés, empreintes et expirations des sessions dans un autre Durable Object de Cloudflare. Les transferts vers les États-Unis reposent sur l'EU-U.S. Data Privacy Framework et les clauses contractuelles types.`,
+          `Cloudflare est notre seul prestataire et agit en tant que sous-traitant selon son accord de traitement des données.`,
         ],
       },
       {
@@ -515,7 +515,7 @@ const es: LegalTexts = {
         heading: `Cuentas opcionales`,
         body: [
           `Si creas una cuenta guardamos: un hash con clave de tu nombre de usuario (no el nombre), el registro OPAQUE (tu contraseña nunca nos llega, ni siquiera como hash) y tu llavero, cifrado en tu dispositivo con una clave que nunca vemos, con un contador de sus cambios. El llavero contiene los códigos para destruir los secretos que sellaste con la sesión iniciada, no los enlaces que los abren.`,
-          `Mientras tienes la sesión iniciada guardamos una huella con clave (HMAC-SHA256) de tu código de sesión y su vencimiento, 12 horas como máximo; durante un inicio de sesión, durante cinco minutos, el estado del protocolo. La cuenta se mantiene hasta que la eliminas desde la página de la cuenta, que lo borra todo de una vez.`,
+          `Mientras tienes la sesión iniciada guardamos una huella con clave (HMAC-SHA256) de tu código de sesión y su vencimiento, 12 horas como máximo; durante un inicio de sesión, durante cinco minutos, el estado del protocolo, solo en memoria y nunca escrito en disco. La cuenta se mantiene hasta que la eliminas desde la página de la cuenta, que lo borra todo de una vez, salvo el historial de restauración descrito más abajo.`,
           ],
         },
         {
@@ -528,14 +528,14 @@ const es: LegalTexts = {
       {
         heading: `Durante cuánto tiempo`,
         body: [
-          `Los datos se borran en la primera lectura, con la revocación o al vencer, como máximo a los 7 días. Un archivo de lectura única se borra fragmento a fragmento mientras se descarga; si la descarga se interrumpe, lo que queda vence en una hora. Lo que se ha leído, revocado o ha vencido se elimina físicamente de nuestro almacenamiento en una media hora como máximo. Las posibles copias de restauración de nuestros proveedores contienen los mismos datos cifrados y se renuevan según sus propios ciclos.`,
+          `Los datos se borran en la primera lectura, con la revocación o al vencer, como máximo a los 7 días. Un archivo de lectura única se borra fragmento a fragmento mientras se descarga; si la descarga se interrumpe, lo que queda vence en una hora. Lo que se ha leído, revocado o ha vencido se elimina físicamente de nuestro almacenamiento en una media hora como máximo. Los Durable Objects de Cloudflare guardan un historial de restauración de 30 días. Para los secretos solo contiene identificadores, vencimientos, reglas y huellas, no los datos cifrados, que están en R2. Para las cuentas contiene el hash con clave de tu nombre de usuario, el registro OPAQUE, el llavero cifrado, las huellas de las sesiones y sus vencimientos (de los que se deduce la hora de inicio de sesión), que siguen siendo recuperables durante 30 días, también después de cerrar la sesión y tras el cierre de la cuenta.`,
         ],
       },
       {
         heading: `Datos de red`,
         body: [
           `Para entregar la página y proteger el servicio, Cloudflare trata tu dirección IP y los datos técnicos de cada petición. Sigylo usa la dirección IP solo para limitar las peticiones (30 escrituras y 60 lecturas por minuto y dirección; en IPv6 por bloque /64, y las escrituras también por bloque /48), en memoria en Cloudflare, sin guardarla; los registros del Worker están desactivados. Cloudflare puede conservar datos de seguridad según su propia política de privacidad.`,
-          `Para las cuentas limitamos también los intentos de inicio de sesión (10 por minuto y cuenta), ligados al hash de la cuenta y no a tu dirección: los contamos en memoria en Cloudflare y en nuestra base de datos, que solo guarda el inicio del minuto en curso y el número de intentos, borrados en unos 15 minutos. Después de cada inicio de sesión, tu navegador guarda un pase del dispositivo en el almacenamiento local (localStorage) de sigylo.net, bajo un hash del nombre de la cuenta: los siguientes inicios de sesión desde este dispositivo se cuentan aparte, así quien prueba contraseñas con tu nombre no puede dejarte fuera. Por sí solo no abre nada y desaparece cuando borras los datos del sitio.`,
+          `Para las cuentas limitamos también los intentos de inicio de sesión (10 por minuto y cuenta), ligados al hash de la cuenta y no a tu dirección: los contamos en memoria en Cloudflare y en la memoria de nuestro Durable Object, sin escribirlos nunca en disco: solo quedan el inicio del minuto en curso y el número de intentos, borrados en unos 15 minutos. Después de cada inicio de sesión, tu navegador guarda un pase del dispositivo en el almacenamiento local (localStorage) de sigylo.net, bajo un hash del nombre de la cuenta: los siguientes inicios de sesión desde este dispositivo se cuentan aparte, así quien prueba contraseñas con tu nombre no puede dejarte fuera. Por sí solo no abre nada y desaparece cuando borras los datos del sitio.`,
         ],
       },
       {
@@ -545,10 +545,10 @@ const es: LegalTexts = {
         ],
       },
       {
-        heading: `Proveedores y transferencias`,
+        heading: `Proveedor y transferencias`,
         body: [
-          `Cloudflare, Inc.: alojamiento, red y limitación de frecuencia, en una red global, y custodia de los secretos en la jurisdicción de la Unión Europea: sobres y fragmentos cifrados de los archivos en Cloudflare R2, vencimientos, reglas y huellas en un Durable Object de Cloudflare; las transferencias a Estados Unidos se basan en el EU-U.S. Data Privacy Framework y en las cláusulas contractuales tipo.`,
-          `Supabase, Inc.: base de datos PostgreSQL alojada en la región eu-central-1 (Fráncfort, Alemania), para las cuentas y, hasta su vencimiento (7 días como máximo), para los secretos custodiados allí anteriormente. Ambos actúan como encargados del tratamiento según sus acuerdos de tratamiento de datos.`,
+          `Cloudflare, Inc.: alojamiento, red y limitación de frecuencia, en una red global, y custodia de los secretos y de las cuentas en la jurisdicción de la Unión Europea: sobres y fragmentos cifrados de los archivos en Cloudflare R2; vencimientos, reglas y huellas de los secretos en un Durable Object de Cloudflare; hashes de las cuentas, registros OPAQUE, llaveros cifrados, huellas y vencimientos de las sesiones en otro Durable Object de Cloudflare. Las transferencias a Estados Unidos se basan en el EU-U.S. Data Privacy Framework y en las cláusulas contractuales tipo.`,
+          `Cloudflare es nuestro único proveedor y actúa como encargado del tratamiento según su acuerdo de tratamiento de datos.`,
         ],
       },
       {
@@ -648,7 +648,7 @@ const de: LegalTexts = {
         heading: `Optionale Konten`,
         body: [
           `Wenn du ein Konto erstellst, speichern wir: einen schlüsselbasierten Hash deines Benutzernamens (nicht den Namen selbst), den OPAQUE-Registrierungsdatensatz (dein Passwort erreicht uns nie, nicht einmal als Hash) und deinen Schlüsselbund, verschlüsselt auf deinem Gerät mit einem Schlüssel, den wir nie sehen, samt einem Zähler seiner Änderungen. Der Schlüsselbund enthält die Codes zum Vernichten der Geheimnisse, die du angemeldet versiegelt hast, nicht die Links, die sie öffnen.`,
-          `Solange du angemeldet bist, speichern wir einen Fingerabdruck mit Schlüssel (HMAC-SHA256) deines Sitzungscodes und seinen Ablauf, höchstens 12 Stunden; während einer Anmeldung fünf Minuten lang den Zustand des Protokolls. Das Konto bleibt, bis du es auf der Kontoseite löschst; das löscht alles auf einmal.`,
+          `Solange du angemeldet bist, speichern wir einen Fingerabdruck mit Schlüssel (HMAC-SHA256) deines Sitzungscodes und seinen Ablauf, höchstens 12 Stunden; während einer Anmeldung fünf Minuten lang den Zustand des Protokolls, nur im Arbeitsspeicher und nie auf einen Datenträger geschrieben. Das Konto bleibt, bis du es auf der Kontoseite löschst; das löscht alles auf einmal, bis auf den weiter unten beschriebenen Wiederherstellungsverlauf.`,
           ],
         },
         {
@@ -661,14 +661,14 @@ const de: LegalTexts = {
       {
         heading: `Wie lange`,
         body: [
-          `Die Daten werden beim ersten Lesen, beim Widerruf oder zum Ablauf gelöscht, spätestens nach 7 Tagen. Eine Datei zum einmaligen Lesen wird beim Herunterladen Teil für Teil gelöscht; bricht der Download ab, läuft der Rest binnen einer Stunde ab. Was gelesen, widerrufen wurde oder abgelaufen ist, wird binnen etwa einer halben Stunde physisch aus unserem Speicher entfernt. Etwaige Wiederherstellungskopien unserer Anbieter enthalten dieselben verschlüsselten Daten und erneuern sich nach deren eigenen Zyklen.`,
+          `Die Daten werden beim ersten Lesen, beim Widerruf oder zum Ablauf gelöscht, spätestens nach 7 Tagen. Eine Datei zum einmaligen Lesen wird beim Herunterladen Teil für Teil gelöscht; bricht der Download ab, läuft der Rest binnen einer Stunde ab. Was gelesen, widerrufen wurde oder abgelaufen ist, wird binnen etwa einer halben Stunde physisch aus unserem Speicher entfernt. Die Durable Objects von Cloudflare führen einen Wiederherstellungsverlauf von 30 Tagen. Für Geheimnisse enthält er nur Kennungen, Abläufe, Regeln und Fingerabdrücke, nicht die verschlüsselten Daten, die auf R2 liegen. Für Konten enthält er den schlüsselbasierten Hash deines Benutzernamens, den OPAQUE-Registrierungsdatensatz, den verschlüsselten Schlüsselbund, die Fingerabdrücke der Sitzungen und ihre Abläufe (aus denen sich der Zeitpunkt der Anmeldung ergibt); sie bleiben 30 Tage lang wiederherstellbar, auch nach der Abmeldung und nach dem Schließen des Kontos.`,
         ],
       },
       {
         heading: `Netzwerkdaten`,
         body: [
           `Um die Seite auszuliefern und den Dienst zu schützen, verarbeitet Cloudflare deine IP-Adresse und die technischen Daten jeder Anfrage. Sigylo nutzt die IP-Adresse nur, um Anfragen zu begrenzen (30 Schreib- und 60 Lesevorgänge pro Minute und Adresse; bei IPv6 pro /64-Block, Schreibvorgänge auch pro /48-Block), im Speicher bei Cloudflare, ohne sie zu speichern; die Worker-Protokolle sind abgeschaltet. Cloudflare kann Sicherheitsdaten nach seiner eigenen Datenschutzerklärung aufbewahren.`,
-          `Bei Konten begrenzen wir außerdem Anmeldeversuche (10 pro Minute und Konto), gebunden an den Hash des Kontos statt an deine Adresse: Wir zählen sie im Speicher bei Cloudflare und in unserer Datenbank, die nur den Beginn der laufenden Minute und die Zahl der Versuche speichert und binnen etwa 15 Minuten löscht. Nach jeder Anmeldung bewahrt dein Browser einen Gerätepass im lokalen Speicher (localStorage) von sigylo.net auf, unter einem Hash des Kontonamens: Spätere Anmeldungen von diesem Gerät werden getrennt gezählt, sodass niemand, der Passwörter für deinen Namen ausprobiert, dich aussperren kann. Allein öffnet er nichts, und er verschwindet, wenn du die Websitedaten löschst.`,
+          `Bei Konten begrenzen wir außerdem Anmeldeversuche (10 pro Minute und Konto), gebunden an den Hash des Kontos statt an deine Adresse: Wir zählen sie im Speicher bei Cloudflare und im Arbeitsspeicher unseres Durable Objects, ohne sie je auf einen Datenträger zu schreiben: Es bleiben nur der Beginn der laufenden Minute und die Zahl der Versuche, die binnen etwa 15 Minuten gelöscht werden. Nach jeder Anmeldung bewahrt dein Browser einen Gerätepass im lokalen Speicher (localStorage) von sigylo.net auf, unter einem Hash des Kontonamens: Spätere Anmeldungen von diesem Gerät werden getrennt gezählt, sodass niemand, der Passwörter für deinen Namen ausprobiert, dich aussperren kann. Allein öffnet er nichts, und er verschwindet, wenn du die Websitedaten löschst.`,
         ],
       },
       {
@@ -680,8 +680,8 @@ const de: LegalTexts = {
       {
         heading: `Anbieter und Übermittlungen`,
         body: [
-          `Cloudflare, Inc.: Hosting, Netzwerk und Ratenbegrenzung in einem globalen Netz sowie Verwahrung der Geheimnisse im Rechtsraum der Europäischen Union: Umschläge und verschlüsselte Teile von Dateien auf Cloudflare R2, Abläufe, Regeln und Fingerabdrücke in einem Durable Object von Cloudflare; Übermittlungen in die Vereinigten Staaten stützen sich auf das EU-U.S. Data Privacy Framework und die Standardvertragsklauseln.`,
-          `Supabase, Inc.: PostgreSQL-Datenbank in der Region eu-central-1 (Frankfurt, Deutschland), für Konten und, bis zu ihrem Ablauf (höchstens 7 Tage), für zuvor dort verwahrte Geheimnisse. Beide handeln als Auftragsverarbeiter auf Grundlage ihrer Auftragsverarbeitungsverträge.`,
+          `Cloudflare, Inc.: Hosting, Netzwerk und Ratenbegrenzung in einem globalen Netz sowie Verwahrung der Geheimnisse und der Konten im Rechtsraum der Europäischen Union: Umschläge und verschlüsselte Teile von Dateien auf Cloudflare R2; Abläufe, Regeln und Fingerabdrücke der Geheimnisse in einem Durable Object von Cloudflare; Konto-Hashes, OPAQUE-Registrierungsdatensätze, verschlüsselte Schlüsselbunde, Fingerabdrücke und Abläufe der Sitzungen in einem weiteren Durable Object von Cloudflare. Übermittlungen in die Vereinigten Staaten stützen sich auf das EU-U.S. Data Privacy Framework und die Standardvertragsklauseln.`,
+          `Cloudflare ist unser einziger Anbieter und handelt als Auftragsverarbeiter auf Grundlage seines Auftragsverarbeitungsvertrags.`,
         ],
       },
       {
