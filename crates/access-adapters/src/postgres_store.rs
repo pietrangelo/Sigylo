@@ -91,6 +91,7 @@ impl AccountStore for PostgresAccounts<'_> {
         account: &AccountId,
         state: &LoginState,
         lifetime_seconds: u32,
+        _budget: &Budget,
     ) -> Result<(), AccessError> {
         let seconds = i32::try_from(lifetime_seconds).map_err(|_| AccessError::StoreUnavailable)?;
         self.client
@@ -117,6 +118,7 @@ impl AccountStore for PostgresAccounts<'_> {
         &self,
         digest: &SessionDigest,
         account: &AccountId,
+        _record: &RegistrationRecord,
         lifetime_seconds: u32,
     ) -> Result<Option<UnixTime>, AccessError> {
         let seconds = i32::try_from(lifetime_seconds).map_err(|_| AccessError::StoreUnavailable)?;

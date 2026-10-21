@@ -2,7 +2,8 @@ use super::fakes::{CountingThrottle, FakeStore, SequentialTokens, ToyDigest, Toy
 use super::{AccountStore, Gatekeeper, Member, OpaqueServer, Passes, SessionDigester, Throttle, Tokens};
 use crate::core::{
     AccessError, AccountId, Budget, CredentialFinalization, DevicePass, Keyring, KeyringKey, KeyringVersion,
-    LOGIN_WINDOW_SECONDS, MAX_SESSIONS, Password, RegistrationRecord, SESSION_SECONDS, Session, Username,
+    LOGIN_WINDOW_SECONDS, MAX_SESSIONS, Password, RegistrationRecord, SESSION_SECONDS, Session, SessionDigest,
+    Username,
 };
 
 struct World {
@@ -202,6 +203,19 @@ fn an_account_keeps_at_most_max_sessions_and_the_oldest_goes_first() {
     for live in &sessions[1..] {
         assert!(block_on(world.relay().keyring(&live.token)).is_ok());
     }
+}
+
+#[test]
+fn a_login_is_parked_under_the_budget_it_spent() {
+    let world = World::new();
+    world.register("ada", "correct horse battery").unwrap();
+    let (session, _) = world.login("ada", "correct horse battery").unwrap();
+    let username = Username::new("ada").unwrap();
+    let (request, _) = world.device().begin_login(pw("correct horse battery")).unwrap();
+    let shared = block_on(world.relay().begin_login(&username, &request, None)).unwrap();
+    assert_eq!(world.store.parked_budget(&shared.handle), Some(Budget::Login));
+    let device = block_on(world.relay().begin_login(&username, &request, Some(&session.pass))).unwrap();
+    assert_eq!(world.store.parked_budget(&device.handle), Some(Budget::Device(session.pass.clone())));
 }
 
 #[test]
@@ -490,12 +504,47 @@ mod adversary {
         block_on(world.relay().close_account(&session.token)).unwrap();
         world.register("ada", "the new owner's password").unwrap();
         let handle = world.tokens.login_handle().unwrap();
-        block_on(world.store.park_login(&handle, &account, &state, LOGIN_WINDOW_SECONDS)).unwrap();
+        block_on(world.store.park_login(&handle, &account, &state, LOGIN_WINDOW_SECONDS, &Budget::Login)).unwrap();
         let (finalization, _) = world.device().finish_login(pending, &response).unwrap();
         assert_eq!(
             block_on(world.relay().finish_login(&handle, &finalization)).unwrap_err(),
             AccessError::NotAuthentic
         );
+    }
+
+    #[test]
+    fn a_session_never_opens_on_a_record_other_than_the_one_the_password_was_checked_against() {
+        // The account is closed and its name registered again after
+        // finish_login read the record but before the session opens: the
+        // old owner's password must not sign into the new owner's account.
+        let world = World::new();
+        world.register("ada", "correct horse battery").unwrap();
+        let account = world.opaque.account_of(&Username::new("ada").unwrap());
+        let newcomer = RegistrationRecord::from_slice(&[7; RegistrationRecord::LEN]).unwrap();
+        *world.store.hand_over_before_session.borrow_mut() = Some(newcomer.clone());
+        assert_eq!(world.login("ada", "correct horse battery").unwrap_err(), AccessError::NotAuthentic);
+        assert_eq!(block_on(world.store.record(&account)).unwrap(), Some(newcomer));
+        assert!(world.store.sessions.borrow().is_empty());
+    }
+
+    #[test]
+    fn eviction_never_picks_the_session_being_opened() {
+        // Sessions opened in the same second tie on expiry: the lowest
+        // digest among the others goes, never the new one.
+        let world = World::new();
+        world.register("ada", "correct horse battery").unwrap();
+        let account = world.opaque.account_of(&Username::new("ada").unwrap());
+        let record = block_on(world.store.record(&account)).unwrap().unwrap();
+        let digest = |n: u8| SessionDigest::from_array([n; 32]);
+        let open = |n: u8| block_on(world.store.open_session(&digest(n), &account, &record, SESSION_SECONDS));
+        for n in 1..=MAX_SESSIONS as u8 {
+            assert!(open(n).unwrap().is_some());
+        }
+        assert!(open(0).unwrap().is_some());
+        let sessions = world.store.sessions.borrow();
+        assert_eq!(sessions.len(), MAX_SESSIONS as usize);
+        assert!(sessions.contains_key(&digest(0)));
+        assert!(!sessions.contains_key(&digest(1)));
     }
 
     #[test]

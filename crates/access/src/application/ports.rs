@@ -90,17 +90,28 @@ pub enum KeyringWrite {
 /// Durable storage of accounts, logins in progress and sessions.
 ///
 /// Contract every adapter must honour (checked by the contract tests in
-/// `access-adapters`):
+/// `access-adapters/tests`):
 ///
 /// * the store's own clock decides every expiry;
+/// * a lifetime above [`crate::LOGIN_WINDOW_SECONDS`] (logins) or
+///   [`crate::SESSION_SECONDS`] (sessions) is refused;
 /// * [`AccountStore::enroll`] never overwrites an existing account;
-/// * [`AccountStore::take_login`] returns a parked login **at most once**;
+/// * [`AccountStore::take_login`] returns a parked login **at most once**,
+///   and removes an expired one too, without returning it;
+/// * a login is parked under the [`Budget`] its attempt spent;
+/// * a session opens only on the record the password was checked against;
 /// * a session works only while it and its account live;
 /// * [`AccountStore::store_keyring`] writes only when the stored version is
 ///   `expected`, atomically, and then bumps it by one;
 /// * an account keeps at most [`crate::MAX_SESSIONS`] live sessions: opening
-///   one more ends the one that expires first;
-/// * closing an account removes its record, keyring and every session.
+///   one more ends the one that expires first, the lowest digest on a tie,
+///   never the one being opened;
+/// * [`AccountStore::close_sessions`] and [`AccountStore::close_account`]
+///   need a live session behind the digest;
+/// * closing an account removes its record, keyring, every session and its
+///   parked logins;
+/// * [`AccountStore::purge_expired`] counts every expired login, session
+///   and attempt counter it removes.
 // Workers run on one thread, so the futures need not be `Send`.
 #[allow(async_fn_in_trait)]
 pub trait AccountStore {
@@ -109,21 +120,26 @@ pub trait AccountStore {
 
     async fn record(&self, account: &AccountId) -> Result<Option<RegistrationRecord>, AccessError>;
 
+    /// `budget` is the one the attempt spent, so a store that keeps logins
+    /// apart by budget charges the right one.
     async fn park_login(
         &self,
         handle: &LoginHandle,
         account: &AccountId,
         state: &LoginState,
         lifetime_seconds: u32,
+        budget: &Budget,
     ) -> Result<(), AccessError>;
 
     async fn take_login(&self, handle: &LoginHandle) -> Result<Option<(AccountId, LoginState)>, AccessError>;
 
-    /// `None` when the account no longer exists.
+    /// `None` when the account no longer exists or its record is no longer
+    /// `record`, the one the password was just checked against.
     async fn open_session(
         &self,
         digest: &SessionDigest,
         account: &AccountId,
+        record: &RegistrationRecord,
         lifetime_seconds: u32,
     ) -> Result<Option<UnixTime>, AccessError>;
 
@@ -146,7 +162,8 @@ pub trait AccountStore {
     /// False when there is no live session behind the digest.
     async fn close_account(&self, digest: &SessionDigest) -> Result<bool, AccessError>;
 
-    /// Physically removes expired logins and sessions. Returns how many went.
+    /// Physically removes expired logins, sessions and attempt counters.
+    /// Returns how many went.
     async fn purge_expired(&self) -> Result<u64, AccessError>;
 }
 
@@ -267,8 +284,9 @@ impl<T: AccountStore> AccountStore for &T {
         account: &AccountId,
         state: &LoginState,
         lifetime_seconds: u32,
+        budget: &Budget,
     ) -> Result<(), AccessError> {
-        (**self).park_login(handle, account, state, lifetime_seconds).await
+        (**self).park_login(handle, account, state, lifetime_seconds, budget).await
     }
 
     async fn take_login(&self, handle: &LoginHandle) -> Result<Option<(AccountId, LoginState)>, AccessError> {
@@ -279,9 +297,10 @@ impl<T: AccountStore> AccountStore for &T {
         &self,
         digest: &SessionDigest,
         account: &AccountId,
+        record: &RegistrationRecord,
         lifetime_seconds: u32,
     ) -> Result<Option<UnixTime>, AccessError> {
-        (**self).open_session(digest, account, lifetime_seconds).await
+        (**self).open_session(digest, account, record, lifetime_seconds).await
     }
 
     async fn close_session(&self, digest: &SessionDigest) -> Result<(), AccessError> {

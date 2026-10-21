@@ -266,14 +266,20 @@ struct Account {
     version: u64,
 }
 
+/// A parked login: whose, its state, its expiry, the budget it was filed under.
+type Parked = (AccountId, LoginState, i64, Budget);
+
 /// A reference in-memory store with a hand-driven clock.
 #[derive(Debug, Default)]
 pub struct FakeStore {
     pub now: Cell<i64>,
     pub broken: Cell<bool>,
     accounts: RefCell<HashMap<AccountId, Account>>,
-    logins: RefCell<HashMap<[u8; LoginHandle::LEN], (AccountId, LoginState, i64)>>,
+    logins: RefCell<HashMap<[u8; LoginHandle::LEN], Parked>>,
     pub sessions: RefCell<HashMap<SessionDigest, (AccountId, i64)>>,
+    /// When set, the name changes hands right before the next session
+    /// opens: the account is closed and enrolled again with this record.
+    pub hand_over_before_session: RefCell<Option<RegistrationRecord>>,
 }
 
 impl FakeStore {
@@ -287,6 +293,11 @@ impl FakeStore {
 
     pub fn parked_logins(&self) -> usize {
         self.logins.borrow().len()
+    }
+
+    /// The budget a parked login was filed under.
+    pub fn parked_budget(&self, handle: &LoginHandle) -> Option<Budget> {
+        self.logins.borrow().get(handle.expose()).map(|(_, _, _, budget)| budget.clone())
     }
 
     fn up(&self) -> Result<(), AccessError> {
@@ -322,27 +333,33 @@ impl AccountStore for FakeStore {
         account: &AccountId,
         state: &LoginState,
         lifetime_seconds: u32,
+        budget: &Budget,
     ) -> Result<(), AccessError> {
         self.up()?;
         let expires = self.now.get() + i64::from(lifetime_seconds);
-        self.logins.borrow_mut().insert(*handle.expose(), (*account, state.clone(), expires));
+        self.logins.borrow_mut().insert(*handle.expose(), (*account, state.clone(), expires, budget.clone()));
         Ok(())
     }
 
     async fn take_login(&self, handle: &LoginHandle) -> Result<Option<(AccountId, LoginState)>, AccessError> {
         self.up()?;
         let taken = self.logins.borrow_mut().remove(handle.expose());
-        Ok(taken.filter(|(_, _, expires)| *expires > self.now.get()).map(|(a, s, _)| (a, s)))
+        Ok(taken.filter(|(_, _, expires, _)| *expires > self.now.get()).map(|(a, s, _, _)| (a, s)))
     }
 
     async fn open_session(
         &self,
         digest: &SessionDigest,
         account: &AccountId,
+        record: &RegistrationRecord,
         lifetime_seconds: u32,
     ) -> Result<Option<UnixTime>, AccessError> {
         self.up()?;
-        if !self.accounts.borrow().contains_key(account) {
+        if let Some(newcomer) = self.hand_over_before_session.borrow_mut().take() {
+            self.sessions.borrow_mut().retain(|_, (a, _)| a != account);
+            self.accounts.borrow_mut().insert(*account, Account { record: newcomer, keyring: None, version: 0 });
+        }
+        if self.accounts.borrow().get(account).is_none_or(|a| a.record != *record) {
             return Ok(None);
         }
         let expires = self.now.get() + i64::from(lifetime_seconds);
@@ -353,7 +370,12 @@ impl AccountStore for FakeStore {
             if mine.clone().count() <= MAX_SESSIONS as usize {
                 break;
             }
-            let oldest = *mine.min_by_key(|(_, (_, e))| *e).map(|(d, _)| d).expect("over the cap");
+            // The earliest expiry goes, then the lowest digest; never the new one.
+            let oldest = *mine
+                .filter(|(d, _)| *d != digest)
+                .min_by_key(|(d, (_, e))| (*e, *d.as_bytes()))
+                .map(|(d, _)| d)
+                .expect("over the cap");
             sessions.remove(&oldest);
         }
         Ok(Some(UnixTime(expires)))
@@ -403,7 +425,7 @@ impl AccountStore for FakeStore {
         let Some(account) = self.session(digest) else { return Ok(false) };
         self.accounts.borrow_mut().remove(&account);
         self.sessions.borrow_mut().retain(|_, (a, _)| *a != account);
-        self.logins.borrow_mut().retain(|_, (a, _, _)| *a != account);
+        self.logins.borrow_mut().retain(|_, (a, _, _, _)| *a != account);
         Ok(true)
     }
 
@@ -411,7 +433,7 @@ impl AccountStore for FakeStore {
         self.up()?;
         let now = self.now.get();
         let before = self.logins.borrow().len() + self.sessions.borrow().len();
-        self.logins.borrow_mut().retain(|_, (_, _, e)| *e > now);
+        self.logins.borrow_mut().retain(|_, (_, _, e, _)| *e > now);
         self.sessions.borrow_mut().retain(|_, (_, e)| *e > now);
         Ok((before - self.logins.borrow().len() - self.sessions.borrow().len()) as u64)
     }
