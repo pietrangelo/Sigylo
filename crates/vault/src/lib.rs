@@ -19,5 +19,6 @@ pub use crate::core::{
     RECORD_CEILING, Reply, RequestRecord, STORING_WRITES_PER_DAY, Stored, TEARDOWN_WRITES_PER_DAY, Usage,
 };
 pub use application::{
-    Clock, Draining, KeyValue, Ledger, LedgerVault, Link, PayloadStore, RemoteVault, Scratch, serve,
+    AccountLedger, Accounts, Clock, Draining, KeyValue, Ledger, LedgerVault, Link, PayloadStore, RemoteVault, Scratch,
+    serve,
 };
