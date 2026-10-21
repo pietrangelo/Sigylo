@@ -41,7 +41,8 @@ pub trait Clock {
 }
 
 /// How the relay reaches the vault: one encoded [`crate::Call`] in, one
-/// encoded [`crate::Reply`] out (a fetch to the Durable Object).
+/// encoded [`crate::Reply`] out (a fetch to the Durable Object); for the
+/// accounts object, an [`crate::AccountCall`] and an [`crate::AccountReply`].
 #[allow(async_fn_in_trait)]
 pub trait Link {
     async fn call(&self, call: Vec<u8>) -> Result<Vec<u8>, CustodyError>;

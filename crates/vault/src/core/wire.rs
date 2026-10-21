@@ -66,40 +66,41 @@ const ERRORS: [CustodyError; 13] = [
     CustodyError::RandomnessUnavailable,
 ];
 
-struct Writer(Vec<u8>);
+/// Builds a message, one field after another.
+pub(crate) struct Writer(pub(crate) Vec<u8>);
 
 impl Writer {
-    fn new(tag: u8) -> Self {
+    pub(crate) fn new(tag: u8) -> Self {
         Self(vec![tag])
     }
 
-    fn bytes(&mut self, bytes: &[u8]) -> &mut Self {
+    pub(crate) fn bytes(&mut self, bytes: &[u8]) -> &mut Self {
         self.0.extend_from_slice(bytes);
         self
     }
 
-    fn byte(&mut self, byte: u8) -> &mut Self {
+    pub(crate) fn byte(&mut self, byte: u8) -> &mut Self {
         self.0.push(byte);
         self
     }
 
-    fn flag(&mut self, flag: bool) -> &mut Self {
+    pub(crate) fn flag(&mut self, flag: bool) -> &mut Self {
         self.byte(u8::from(flag))
     }
 
-    fn u16(&mut self, n: u16) -> &mut Self {
+    pub(crate) fn u16(&mut self, n: u16) -> &mut Self {
         self.bytes(&n.to_be_bytes())
     }
 
-    fn u32(&mut self, n: u32) -> &mut Self {
+    pub(crate) fn u32(&mut self, n: u32) -> &mut Self {
         self.bytes(&n.to_be_bytes())
     }
 
-    fn i64(&mut self, n: i64) -> &mut Self {
+    pub(crate) fn i64(&mut self, n: i64) -> &mut Self {
         self.bytes(&n.to_be_bytes())
     }
 
-    fn sized(&mut self, bytes: &[u8]) -> &mut Self {
+    pub(crate) fn sized(&mut self, bytes: &[u8]) -> &mut Self {
         self.u32(bytes.len() as u32).bytes(bytes)
     }
 
@@ -124,7 +125,7 @@ impl Writer {
 }
 
 impl Reader<'_> {
-    fn flag(&mut self) -> Option<bool> {
+    pub(crate) fn flag(&mut self) -> Option<bool> {
         match self.byte()? {
             0 => Some(false),
             1 => Some(true),
@@ -144,7 +145,7 @@ impl Reader<'_> {
         Some(ObjectName::from_array(self.array()?))
     }
 
-    fn sized(&mut self) -> Option<&[u8]> {
+    pub(crate) fn sized(&mut self) -> Option<&[u8]> {
         let len = self.u32()? as usize;
         self.take(len)
     }
@@ -376,7 +377,7 @@ impl Reply {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     fn id(n: u8) -> DropId {
@@ -398,7 +399,7 @@ mod tests {
         }
     }
 
-    fn calls() -> Vec<Call> {
+    pub(in crate::core) fn calls() -> Vec<Call> {
         let index = ChunkIndex::new(9).unwrap();
         let object = ObjectName::from_array([4; 16]);
         let claim = ClaimDigest::from_array([5; 32]);
@@ -432,7 +433,7 @@ mod tests {
         ]
     }
 
-    fn replies() -> Vec<Reply> {
+    pub(in crate::core) fn replies() -> Vec<Reply> {
         let object = ObjectName::from_array([4; 16]);
         let mut replies: Vec<Reply> = ERRORS.iter().map(|e| Reply::Failed(*e)).collect();
         replies.extend([

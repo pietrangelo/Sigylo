@@ -1,7 +1,9 @@
 //! The accounts ledger against the Access store contract, its ceilings and
 //! its adversaries, driven in the accounts object's own terms: one
 //! synchronous step per call, over an in-memory store with a hand-driven
-//! clock and the memory-only scratch.
+//! clock and the memory-only scratch; and last as the relay reaches it, a
+//! [`RemoteAccounts`](super::RemoteAccounts) over a loopback to
+//! [`serve_accounts`](super::serve_accounts).
 
 use access::{
     AccessError, AccountId, Keyring, KeyringSnapshot, KeyringVersion, KeyringWrite, LOGIN_WINDOW_SECONDS, LoginHandle,
@@ -972,5 +974,338 @@ mod account_adversary {
         desk.kv.tamper(&keys::keyring(&account(1)), last.encode());
         assert_eq!(desk.store(1, &ring(10, 2), u64::MAX), Err(AccessError::StoreUnavailable));
         assert_eq!(desk.kv.get_record(&keys::keyring(&account(1))), Some(last.encode()));
+    }
+}
+
+mod remote_accounts {
+    use core::future::Future;
+    use core::pin::pin;
+    use core::task::{Context, Poll, Waker};
+
+    use access::{AccountStore, Budget, DevicePass, Throttle};
+    use custody::{CustodyError, DropId, RevocationDigest};
+
+    use super::super::fakes::{AccountLoopback, block_on};
+    use super::super::{Accounts, RemoteAccounts, VaultThrottle, serve_accounts};
+    use super::*;
+    use crate::core::{AccountCall, AccountReply, Call, Reply};
+
+    type Link<'a> = AccountLoopback<'a, &'a MemoryKv, &'a ManualClock>;
+
+    fn link(desk: &Desk) -> Link<'_> {
+        AccountLoopback::new(desk.ledger())
+    }
+
+    /// Files attempts the way `throttle_bucket` does, without hashing: the
+    /// shared budget under the account, every other budget and pass apart.
+    fn toy_bucket(account: &AccountId, budget: &Budget) -> [u8; 32] {
+        let mut bucket = *account.as_bytes();
+        match budget {
+            Budget::Login => {}
+            Budget::Registration => bucket[31] ^= 0x01,
+            Budget::Device(pass) => {
+                bucket[30] ^= pass.expose()[0];
+                bucket[31] ^= 0x02;
+            }
+        }
+        bucket
+    }
+
+    fn device(n: u8) -> Budget {
+        Budget::Device(DevicePass::from_array([n; DevicePass::LEN]))
+    }
+
+    /// Polls once: a call that waits for anything but its link fails here.
+    fn ready<F: Future>(future: F) -> F::Output {
+        let mut future = pin!(future);
+        match future.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(out) => out,
+            Poll::Pending => panic!("the call waited"),
+        }
+    }
+
+    #[test]
+    fn one_port_call_is_one_request_and_answers_as_the_ledger_does() {
+        let desk = Desk::default();
+        let link = link(&desk);
+        let remote = RemoteAccounts::new(&link, toy_bucket);
+        let requests = |n: u32| assert_eq!(link.calls.get(), n);
+        assert_eq!(block_on(remote.enroll(&account(1), &record(1))), Ok(true));
+        requests(1);
+        assert_eq!(block_on(remote.enroll(&account(1), &record(2))), Ok(false));
+        requests(2);
+        assert_eq!(block_on(remote.record(&account(1))), Ok(Some(record(1))));
+        assert_eq!(block_on(remote.record(&account(2))), Ok(None));
+        requests(4);
+        assert_eq!(block_on(remote.park_login(&handle(1), &account(1), &state(1), 300, &Budget::Login)), Ok(()));
+        requests(5);
+        assert_eq!(block_on(remote.take_login(&handle(1))), Ok(Some((account(1), state(1)))));
+        assert_eq!(block_on(remote.take_login(&handle(1))), Ok(None));
+        requests(7);
+        let expires = UnixTime(desk.now() + 1000);
+        assert_eq!(block_on(remote.open_session(&digest(1), &account(1), &record(1), 1000)), Ok(Some(expires)));
+        assert_eq!(block_on(remote.open_session(&digest(2), &account(1), &record(2), 1000)), Ok(None));
+        requests(9);
+        let none = KeyringSnapshot { keyring: None, version: KeyringVersion::NONE };
+        assert_eq!(block_on(remote.keyring(&digest(1))), Ok(Some(none)));
+        assert_eq!(block_on(remote.keyring(&digest(2))), Ok(None));
+        requests(11);
+        let stored = KeyringWrite::Stored(KeyringVersion(1));
+        assert_eq!(block_on(remote.store_keyring(&digest(1), &ring(10, 1), KeyringVersion::NONE)), Ok(stored));
+        assert_eq!(
+            block_on(remote.store_keyring(&digest(1), &ring(10, 2), KeyringVersion::NONE)),
+            Ok(KeyringWrite::Stale)
+        );
+        assert_eq!(
+            block_on(remote.store_keyring(&digest(2), &ring(10, 2), KeyringVersion(1))),
+            Ok(KeyringWrite::Unauthorized)
+        );
+        requests(14);
+        let snapshot = KeyringSnapshot { keyring: Some(ring(10, 1)), version: KeyringVersion(1) };
+        assert_eq!(block_on(remote.keyring(&digest(1))), Ok(Some(snapshot)));
+        requests(15);
+        assert_eq!(block_on(remote.open_session(&digest(3), &account(1), &record(1), 1000)), Ok(Some(expires)));
+        assert_eq!(block_on(remote.close_session(&digest(3))), Ok(()));
+        assert_eq!(block_on(remote.close_sessions(&digest(3))), Ok(false));
+        requests(18);
+        assert_eq!(block_on(remote.admit(&account(1), &bucket(1), Class::Login, 1)), Ok(true));
+        assert_eq!(block_on(remote.admit(&account(1), &bucket(1), Class::Login, 1)), Ok(false));
+        requests(20);
+        assert_eq!(block_on(remote.close_account(&digest(1))), Ok(true));
+        assert_eq!(block_on(remote.close_account(&digest(1))), Ok(false));
+        assert_eq!(block_on(remote.record(&account(1))), Ok(None));
+        requests(23);
+        desk.advance(60);
+        assert_eq!(block_on(remote.purge_expired()), Ok(1), "the counter");
+        requests(24);
+    }
+
+    #[test]
+    fn logins_park_under_the_budget_their_attempt_spent() {
+        let desk = Desk::default();
+        desk.enrolled(1);
+        let link = link(&desk);
+        let remote = RemoteAccounts::new(&link, toy_bucket);
+        let park =
+            |h: u32, budget: &Budget| block_on(remote.park_login(&handle(h), &account(1), &state(1), 300, budget));
+        let taken = |h: u32| block_on(remote.take_login(&handle(h))).unwrap().is_some();
+        // A device's bucket holds one login in progress: a new one replaces it.
+        park(1, &device(1)).unwrap();
+        park(2, &device(1)).unwrap();
+        assert!(!taken(1) && taken(2));
+        // Another pass of the same account has a bucket of its own.
+        park(3, &device(1)).unwrap();
+        park(4, &device(2)).unwrap();
+        assert!(taken(3) && taken(4));
+        // The shared budget files no bucket, and keeps every login.
+        park(5, &Budget::Login).unwrap();
+        park(6, &Budget::Login).unwrap();
+        assert!(taken(5) && taken(6));
+        // A registration has no login to park, and the object hears nothing of it.
+        let requests = link.calls.get();
+        assert_eq!(park(7, &Budget::Registration), unavailable());
+        assert_eq!(link.calls.get(), requests);
+    }
+
+    #[test]
+    fn the_throttle_counts_once_per_account_and_budget_for_every_relay() {
+        assert_eq!(Class::of(&Budget::Login), Class::Login);
+        assert_eq!(Class::of(&Budget::Registration), Class::Registration);
+        assert_eq!(Class::of(&device(1)), Class::Device);
+        let desk = Desk::default();
+        let (here, there) = (link(&desk), link(&desk));
+        let (here, there) = (RemoteAccounts::new(&here, toy_bucket), RemoteAccounts::new(&there, toy_bucket));
+        let (here, there) = (VaultThrottle::new(&here, 2, toy_bucket), VaultThrottle::new(&there, 2, toy_bucket));
+        assert!(block_on(here.admit(&account(1), &Budget::Login)));
+        assert!(block_on(there.admit(&account(1), &Budget::Login)));
+        assert!(!block_on(here.admit(&account(1), &Budget::Login)));
+        assert!(!block_on(there.admit(&account(1), &Budget::Login)));
+        // Spending one budget never spends another, nor another account's.
+        for budget in [Budget::Registration, device(1), device(2)] {
+            assert!(block_on(here.admit(&account(1), &budget)));
+            assert!(block_on(there.admit(&account(1), &budget)));
+            assert!(!block_on(here.admit(&account(1), &budget)));
+        }
+        assert!(block_on(here.admit(&account(2), &Budget::Login)));
+        desk.advance(60);
+        assert!(block_on(there.admit(&account(1), &Budget::Login)));
+    }
+
+    #[test]
+    fn every_accounts_call_is_ready_on_its_first_poll() {
+        let desk = Desk::default();
+        let link = link(&desk);
+        let remote = RemoteAccounts::new(&link, toy_bucket);
+        let throttle = VaultThrottle::new(&remote, 10, toy_bucket);
+        assert_eq!(ready(remote.enroll(&account(1), &record(1))), Ok(true));
+        assert_eq!(ready(remote.record(&account(1))), Ok(Some(record(1))));
+        assert!(ready(throttle.admit(&account(1), &device(1))));
+        assert_eq!(ready(remote.admit(&account(1), &bucket(1), Class::Login, 10)), Ok(true));
+        assert_eq!(ready(remote.park_login(&handle(1), &account(1), &state(1), 300, &device(1))), Ok(()));
+        assert!(ready(remote.take_login(&handle(1))).unwrap().is_some());
+        assert!(ready(remote.open_session(&digest(1), &account(1), &record(1), 1000)).unwrap().is_some());
+        assert!(ready(remote.open_session(&digest(2), &account(1), &record(1), 1000)).unwrap().is_some());
+        assert!(ready(remote.keyring(&digest(1))).unwrap().is_some());
+        assert!(matches!(
+            ready(remote.store_keyring(&digest(1), &ring(10, 1), KeyringVersion::NONE)),
+            Ok(KeyringWrite::Stored(_))
+        ));
+        assert_eq!(ready(remote.close_session(&digest(2))), Ok(()));
+        assert_eq!(ready(remote.close_sessions(&digest(1))), Ok(true));
+        assert!(ready(remote.open_session(&digest(3), &account(1), &record(1), 1000)).unwrap().is_some());
+        assert_eq!(ready(remote.close_account(&digest(3))), Ok(true));
+        assert!(ready(remote.purge_expired()).is_ok());
+        assert_eq!(link.calls.get(), 15);
+    }
+
+    mod remote_adversary {
+        use super::*;
+
+        #[test]
+        fn a_garbled_or_mismatched_reply_is_a_fault_and_never_an_answer() {
+            let desk = Desk::default();
+            desk.enrolled(1);
+            desk.park(1, 1, 300);
+            let link = link(&desk);
+            let remote = RemoteAccounts::new(&link, toy_bucket);
+            let throttle = VaultThrottle::new(&remote, 10, toy_bucket);
+            for garble in [
+                vec![],
+                vec![0xFF],
+                AccountReply::Done.encode(),
+                AccountReply::Purged(1).encode(),
+                AccountReply::Written(KeyringWrite::Stale).encode(),
+                Reply::Flag(true).encode(),
+                Reply::Failed(CustodyError::StorageFull).encode(),
+            ] {
+                *link.garble.borrow_mut() = Some(garble);
+                assert_eq!(block_on(remote.record(&account(1))), unavailable());
+                assert_eq!(block_on(remote.take_login(&handle(1))), unavailable());
+                assert_eq!(block_on(remote.open_session(&digest(1), &account(1), &record(1), 100)), unavailable());
+                assert_eq!(block_on(remote.enroll(&account(2), &record(2))), unavailable());
+                assert!(!block_on(throttle.admit(&account(1), &Budget::Login)));
+            }
+            // An answer to another call is no answer to this one.
+            *link.garble.borrow_mut() = Some(AccountReply::Login(Some((account(1), state(9)))).encode());
+            assert_eq!(block_on(remote.record(&account(1))), unavailable());
+            *link.garble.borrow_mut() = Some(AccountReply::Flag(true).encode());
+            assert_eq!(block_on(remote.keyring(&digest(1))), unavailable());
+            // A fault the object reports arrives as it is.
+            *link.garble.borrow_mut() = Some(AccountReply::Failed(AccessError::StorageFull).encode());
+            assert_eq!(block_on(remote.enroll(&account(2), &record(2))), Err(AccessError::StorageFull));
+            assert!(!block_on(throttle.admit(&account(1), &Budget::Login)));
+        }
+
+        #[test]
+        fn a_call_that_does_not_decode_is_refused_and_changes_nothing() {
+            let desk = Desk::default();
+            desk.enrolled(1);
+            desk.open(1, 1, 1000);
+            let before = desk.kv.snapshot();
+            let ledger = desk.ledger();
+            let refused = AccountReply::Failed(AccessError::StoreUnavailable).encode();
+            let revoke = Call::Revoke {
+                id: DropId::from_slice(&[1; 16]).unwrap(),
+                digest: RevocationDigest::from_array([2; 32]),
+            };
+            for junk in [
+                vec![],
+                vec![0x41],
+                vec![0x4B, 0],
+                vec![0x4C; 68],
+                Call::PurgeExpired.encode(),
+                // As long as a keyring write: a custody call never runs here.
+                revoke.encode(),
+                AccountReply::Done.encode(),
+            ] {
+                assert_eq!(serve_accounts(&ledger, &junk), refused, "{junk:?}");
+            }
+            assert_eq!(desk.kv.snapshot(), before);
+            // Noise under every tag: never a panic, always a reply.
+            let mut seed: u64 = 0x5EED;
+            let mut next = || {
+                seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                (seed >> 33) as u32
+            };
+            for _ in 0..5000 {
+                let len = next() as usize % 300;
+                let mut junk: Vec<u8> = (0..len).map(|_| next() as u8).collect();
+                if let Some(tag) = junk.first_mut() {
+                    *tag = 0x41 + (*tag % 12);
+                }
+                let reply = serve_accounts(&ledger, &junk);
+                assert!(AccountReply::decode(&reply).is_some());
+                if AccountCall::decode(&junk).is_none() {
+                    assert_eq!(reply, refused);
+                }
+            }
+        }
+
+        #[test]
+        fn a_cut_link_or_a_store_that_is_down_answers_unavailable() {
+            let desk = Desk::default();
+            desk.enrolled(1);
+            desk.open(1, 1, 1000);
+            desk.park(1, 1, 300);
+            let link = link(&desk);
+            let remote = RemoteAccounts::new(&link, toy_bucket);
+            let ring = ring(10, 1);
+            link.cut.set(true);
+            assert_eq!(block_on(remote.enroll(&account(2), &record(2))), unavailable());
+            assert_eq!(block_on(remote.record(&account(1))), unavailable());
+            assert_eq!(
+                block_on(remote.park_login(&handle(2), &account(1), &state(1), 300, &Budget::Login)),
+                unavailable()
+            );
+            assert_eq!(block_on(remote.take_login(&handle(1))), unavailable());
+            assert_eq!(block_on(remote.open_session(&digest(2), &account(1), &record(1), 100)), unavailable());
+            assert_eq!(block_on(remote.close_session(&digest(1))), unavailable());
+            assert_eq!(block_on(remote.close_sessions(&digest(1))), unavailable());
+            assert_eq!(block_on(remote.keyring(&digest(1))), unavailable());
+            assert_eq!(block_on(remote.store_keyring(&digest(1), &ring, KeyringVersion::NONE)), unavailable());
+            assert_eq!(block_on(remote.close_account(&digest(1))), unavailable());
+            assert_eq!(block_on(remote.purge_expired()), unavailable());
+            assert_eq!(block_on(remote.admit(&account(1), &bucket(1), Class::Login, 10)), unavailable());
+            link.cut.set(false);
+            assert_eq!(block_on(remote.take_login(&handle(1))), Ok(Some((account(1), state(1)))), "nothing was lost");
+            desk.kv.down.set(true);
+            assert_eq!(block_on(remote.enroll(&account(2), &record(2))), unavailable());
+            assert_eq!(block_on(remote.record(&account(1))), unavailable());
+            assert_eq!(block_on(remote.open_session(&digest(2), &account(1), &record(1), 100)), unavailable());
+            assert_eq!(block_on(remote.close_session(&digest(1))), unavailable());
+            assert_eq!(block_on(remote.close_sessions(&digest(1))), unavailable());
+            assert_eq!(block_on(remote.keyring(&digest(1))), unavailable());
+            assert_eq!(block_on(remote.store_keyring(&digest(1), &ring, KeyringVersion::NONE)), unavailable());
+            assert_eq!(block_on(remote.close_account(&digest(1))), unavailable());
+            assert_eq!(block_on(remote.purge_expired()), unavailable());
+            // A full store says full, across the wire too.
+            desk.kv.down.set(false);
+            desk.pretend(|usage| usage.enrolls = ENROLLS_PER_DAY);
+            assert_eq!(block_on(remote.enroll(&account(2), &record(2))), Err(AccessError::StorageFull));
+        }
+
+        #[test]
+        fn the_throttle_refuses_on_every_fault() {
+            let desk = Desk::default();
+            let link = link(&desk);
+            let remote = RemoteAccounts::new(&link, toy_bucket);
+            // Limits a caller may not ask for: the object refuses them, the throttle admits nothing.
+            for limit in [0, crate::core::ATTEMPT_LIMIT_CEILING + 1] {
+                assert_eq!(block_on(remote.admit(&account(1), &bucket(1), Class::Login, limit)), unavailable());
+                assert!(!block_on(VaultThrottle::new(&remote, limit, toy_bucket).admit(&account(1), &Budget::Login)));
+            }
+            let throttle = VaultThrottle::new(&remote, 10, toy_bucket);
+            link.cut.set(true);
+            for budget in [Budget::Login, Budget::Registration, device(1)] {
+                assert!(!block_on(throttle.admit(&account(1), &budget)));
+            }
+            link.cut.set(false);
+            for fault in [AccessError::StoreUnavailable, AccessError::StorageFull, AccessError::Throttled] {
+                *link.garble.borrow_mut() = Some(AccountReply::Failed(fault).encode());
+                assert!(!block_on(throttle.admit(&account(1), &Budget::Login)));
+            }
+            *link.garble.borrow_mut() = None;
+            assert!(block_on(throttle.admit(&account(1), &Budget::Login)), "the first real attempt");
+        }
     }
 }

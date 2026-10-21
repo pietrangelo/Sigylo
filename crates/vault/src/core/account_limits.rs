@@ -3,6 +3,8 @@
 //! flood. The costs are the PostgreSQL row costs the accounts had before
 //! (`access.row_cost`), so the ceilings hold as many rows as they did.
 
+use access::Budget;
+
 use super::limits::TEARDOWN_WRITES_PER_DAY;
 
 /// What an account weighs in [`ACCOUNT_BYTES_CEILING`], its keyring apart
@@ -33,6 +35,18 @@ pub enum Class {
     Registration,
     /// Logins from a device that holds a pass.
     Device,
+}
+
+impl Class {
+    /// The class of the budget an attempt spends; a device's pass stays
+    /// with the caller.
+    pub fn of(budget: &Budget) -> Self {
+        match budget {
+            Budget::Login => Self::Login,
+            Budget::Registration => Self::Registration,
+            Budget::Device(_) => Self::Device,
+        }
+    }
 }
 
 /// Memory for the logins that spend the shared budget and their counters,

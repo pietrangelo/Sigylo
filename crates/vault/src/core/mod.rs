@@ -4,6 +4,7 @@
 pub mod account_keys;
 mod account_limits;
 mod account_records;
+mod account_wire;
 pub mod keys;
 mod limits;
 mod records;
@@ -16,6 +17,7 @@ pub use account_limits::{
     SESSION_ROWS_PER_DAY, SHARED_POOL,
 };
 pub use account_records::{AccountRecord, AccountUsage, KeyringRecord, SessionRecord, snapshot};
+pub use account_wire::{AccountCall, AccountReply};
 pub use limits::{
     INCOMPLETE_FILE_SECONDS, OBJECT_BYTES_CEILING, PURGE_BATCH, RECORD_CEILING, SECONDS_PER_DAY,
     STORING_WRITES_PER_DAY, TEARDOWN_WRITES_PER_DAY,
