@@ -60,7 +60,7 @@ fn accounts_are_filed_under_a_keyed_hash_of_the_name() {
     assert_eq!(account(&keys, "Ada"), account(&keys, "ada"));
     assert_ne!(account(&keys, "ada"), account(&keys, "bob"));
     // Another relay secret files the same name elsewhere: guessing names
-    // against a database dump needs the secret too.
+    // against a copy of the store needs the secret too.
     let other = OpaqueKeys::from_seed(&[43; 32]).unwrap();
     assert_ne!(account(&keys, "ada"), account(&other, "ada"));
 }

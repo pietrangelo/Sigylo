@@ -30,7 +30,7 @@ use std::net::IpAddr;
 pub const MAX_BODY_LEN: usize = 100 * 1024;
 
 /// Most garbage batches one cron run deletes from R2 ([`custody::GARBAGE_BATCH`]
-/// objects each): the run waits on the database and R2 and stays within the
+/// objects each): the run waits on the vault and R2 and stays within the
 /// free plan's 10 ms of CPU.
 pub const GARBAGE_ROUNDS: u32 = 5;
 /// Wall time after which a cron run starts no new garbage batch.
@@ -529,7 +529,7 @@ fn parse_account(route: &Route, body: &[u8], bearer: Option<&str>) -> Result<Acc
 }
 
 /// Everything a route needs, validated before the vault is touched: a
-/// malformed body never costs a database connection.
+/// malformed body never costs a Durable Object request.
 #[derive(Debug)]
 pub enum Command {
     Deposit(DepositCommand),
@@ -1138,7 +1138,7 @@ mod tests {
 
         #[test]
         fn payloads_and_chunks_smaller_than_the_sealer_makes_are_refused() {
-            // Each costs a database row: a flood of tiny ones would fill it
+            // Each costs a vault record: a flood of tiny ones would fill it
             // while the ceiling counted almost nothing.
             let tiny = deposit_json("").replace(&payload64(), "U0dZAQ");
             let too_small = ApiError::Custody(CustodyError::PayloadTooSmall);

@@ -1,15 +1,11 @@
 [package]
 name = "access-adapters"
-description = "Adapters for the Access ports: OPAQUE (opaque-ke, ristretto255 + SHA-512 + Argon2id) for relay and device, HKDF keyring key, random tokens, and the PostgreSQL account store"
+description = "Adapters for the Access ports: OPAQUE (opaque-ke, ristretto255 + SHA-512 + Argon2id) for relay and device, HKDF keyring key, random tokens, device passes and throttle buckets"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-
-[features]
-# The account store on PostgreSQL. Only the relay needs it; the browser does not.
-postgres = ["dep:tokio-postgres"]
 
 [dependencies]
 access.workspace = true
@@ -22,7 +18,6 @@ hkdf = "0.12.4"
 chacha20poly1305 = "0.11.0"
 rand_chacha = "0.3.1"
 getrandom = "0.4.3"
-tokio-postgres = { version = "0.7.18", default-features = false, optional = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
@@ -31,8 +26,6 @@ getrandom = { version = "0.4.3", features = ["wasm_js"] }
 # The account contract suite runs on the vault: domains only, never linked into the crate.
 vault.workspace = true
 custody.workspace = true
-tokio-postgres = { version = "0.7.18" }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 futures-util = "0.3"
 
 [lints]

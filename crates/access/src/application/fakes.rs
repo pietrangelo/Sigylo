@@ -1,5 +1,5 @@
 //! Deterministic stand-ins for the ports. They are NOT secure; they let the
-//! use cases be tested without any crypto library or database. The toy
+//! use cases be tested without any crypto library or store. The toy
 //! OPAQUE keeps the one property the use cases rely on: only the password
 //! used at registration opens the relay's answer at login.
 

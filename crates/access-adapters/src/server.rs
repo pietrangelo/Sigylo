@@ -22,11 +22,11 @@ use crate::tokens::HmacSessionDigest;
 /// The relay's OPAQUE keys, all derived from one 32-byte secret (the
 /// Worker secret `OPAQUE_SERVER_SEED`): the OPRF seed and the 3DH key pair,
 /// the key that files accounts under a hash of their name, the key that
-/// seals a login in progress while it waits in the database, the key of
-/// the session digests the database keeps instead of tokens, the key of
-/// device passes, and a public canary that names the secret. Losing or
-/// changing the secret locks every account out; leaking it together with the
-/// database lets an attacker test passwords offline, one Argon2id each.
+/// seals a login in progress while it waits in the store, the key of the
+/// session digests the store keeps instead of tokens, the key of device
+/// passes, and a public canary that names the secret. Losing or changing
+/// the secret locks every account out; leaking it together with a copy of
+/// the store lets an attacker test passwords offline, one Argon2id each.
 pub struct OpaqueKeys {
     setup: ServerSetup<Suite>,
     account_key: Zeroizing<[u8; 32]>,
@@ -77,7 +77,7 @@ impl OpaqueKeys {
     }
 
     /// The digest the store keeps for a session token, keyed by this relay's
-    /// secret: a database writer without it cannot mint a usable session.
+    /// secret: a store writer without it cannot mint a usable session.
     pub fn session_digest(&self) -> HmacSessionDigest {
         HmacSessionDigest::new(*self.session_key)
     }
@@ -97,7 +97,7 @@ impl OpaqueKeys {
     }
 
     /// Seals a raw login state to its account. Whoever can write the
-    /// database still cannot plant a state of their own, nor move one to
+    /// store still cannot plant a state of their own, nor move one to
     /// another account: only this relay's secret makes one that opens.
     fn seal_state(
         &self,

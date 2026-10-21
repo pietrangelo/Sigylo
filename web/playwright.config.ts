@@ -1,7 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
-// Runs against the real stack (Worker + static assets + PostgreSQL), started
-// by scripts/e2e.sh. Set PLAYWRIGHT_CHROMIUM to use a preinstalled browser.
+// Runs against the real stack (Worker + static assets + Durable Objects + R2),
+// started by scripts/e2e.sh. Set PLAYWRIGHT_CHROMIUM to use a preinstalled browser.
 const executablePath = process.env.PLAYWRIGHT_CHROMIUM;
 
 // The relay limits writes per client address, and the local runtime may keep

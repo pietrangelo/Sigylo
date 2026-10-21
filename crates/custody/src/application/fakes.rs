@@ -1,6 +1,6 @@
 //! A reference in-memory vault with a hand-driven clock, used to test the use
 //! cases. Single-threaded by construction, so atomicity is trivial here; the
-//! Postgres adapter proves it under real concurrency.
+//! vault's ledger keeps it with one transaction per step.
 
 use core::cell::{Cell, RefCell};
 use core::future::Future;
@@ -83,7 +83,7 @@ impl FakeVault {
         }
     }
 
-    /// Drops chunk records, their objects joining the garbage (the SQL trigger).
+    /// Drops chunk records, their objects joining the garbage (as the vault's ledger does).
     fn drop_chunks(&self, keep: impl Fn(&(DropId, ChunkIndex)) -> bool) {
         let due = self.now.get() + i64::from(GARBAGE_GRACE_SECONDS);
         let mut garbage = self.garbage.borrow_mut();
@@ -115,7 +115,7 @@ impl FakeVault {
         self.chunks_of(&deposit.id) == deposit.chunks.map_or(0, |c| c.get())
     }
 
-    /// Removes a deposit with everything hanging off it (the SQL cascade).
+    /// Removes a deposit with everything hanging off it (as the vault's ledger does).
     fn remove_deposit(&self, id: &DropId) -> Option<Deposit> {
         self.claims.borrow_mut().remove(id);
         self.drop_chunks(|(owner, _)| owner != id);
