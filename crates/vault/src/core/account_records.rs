@@ -325,7 +325,7 @@ mod tests {
             let rendered = format!("{:?} {:?} {:?}", account(), keyring(), session());
             // An account id shows its first two bytes, as everywhere in Access.
             for leak in ["a5a5", "165, 165", "6b6b", "107, 107", "5c5c5c", "92, 92"] {
-                assert!(!rendered.to_lowercase().contains(leak), "{rendered}");
+                assert!(!rendered.to_lowercase().contains(leak), "{leak}");
             }
         }
     }

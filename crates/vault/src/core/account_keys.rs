@@ -221,9 +221,9 @@ mod tests {
                 ACCOUNT_USAGE.to_string(),
                 SESSION_EXPIRY.to_string(),
             ];
-            for key in keys {
-                assert!(matches!(key.as_bytes()[0], b'a' | b'k' | b's' | b'm' | b'e' | b'w'), "{key}");
-                assert!(key.is_ascii() && !key.bytes().any(|b| b.is_ascii_uppercase()), "{key}");
+            for (i, key) in keys.iter().enumerate() {
+                assert!(matches!(key.as_bytes()[0], b'a' | b'k' | b's' | b'm' | b'e' | b'w'), "key {i}");
+                assert!(key.is_ascii() && !key.bytes().any(|b| b.is_ascii_uppercase()), "key {i}");
             }
         }
     }

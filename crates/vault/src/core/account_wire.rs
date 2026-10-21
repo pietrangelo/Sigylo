@@ -577,7 +577,7 @@ mod tests {
                     let mut flipped = bytes.clone();
                     flipped[bit / 8] ^= 1 << (bit % 8);
                     if let Some(call) = AccountCall::decode(&flipped) {
-                        assert_eq!(call.encode(), flipped, "{call:?}");
+                        assert_eq!(call.encode(), flipped, "bit {bit}");
                     }
                 }
             }
@@ -586,7 +586,7 @@ mod tests {
                     let mut flipped = bytes.clone();
                     flipped[bit / 8] ^= 1 << (bit % 8);
                     if let Some(reply) = AccountReply::decode(&flipped) {
-                        assert_eq!(reply.encode(), flipped, "{reply:?}");
+                        assert_eq!(reply.encode(), flipped, "bit {bit}");
                     }
                 }
             }
