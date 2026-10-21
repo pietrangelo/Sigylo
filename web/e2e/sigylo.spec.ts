@@ -1,6 +1,4 @@
-import { execFileSync } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
-import { readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { type Browser, type Page, type Request } from '@playwright/test';
 import { expect, test } from './fixtures';
@@ -114,11 +112,6 @@ test('a file kept until expiry can be saved more than once', async ({ page, brow
   }
 });
 
-/** One value from the e2e database (scripts/e2e.sh passes its URL). */
-function sql(query: string): string {
-  return execFileSync('psql', [process.env.SIGYLO_E2E_DATABASE_URL!, '-tAXc', query], { encoding: 'utf8' }).trim();
-}
-
 /** How many objects the local R2 bucket holds (scripts/e2e.sh passes its state directory). */
 function r2Objects(): number {
   try {
@@ -128,14 +121,12 @@ function r2Objects(): number {
   }
 }
 
-test('a file lives in R2, its records in the vault, nothing in the database; revoking empties R2', async ({ page, request }) => {
-  test.skip(!process.env.SIGYLO_E2E_DATABASE_URL, 'needs scripts/e2e.sh');
+test('a file lives in R2, its records in the vault; revoking empties R2', async ({ page, request }) => {
+  test.skip(!process.env.SIGYLO_E2E_STATE, 'needs scripts/e2e.sh');
   const before = r2Objects();
   const { revoke } = await sealFile(page, { retention: 'expiry' });
   // The sealed manifest and its three chunks.
   expect(r2Objects()).toBe(before + 4);
-  // The database that drains holds nothing new.
-  expect(sql('select (select count(*) from custody.deposits) + (select count(*) from custody.chunks)')).toBe('0');
 
   const sender = await page.context().newPage();
   await sender.goto(revoke);
@@ -161,34 +152,6 @@ test('a burned secret leaves R2 as it is read', async ({ page, browser }) => {
   await reader.getByTestId('reveal').click();
   await expect(reader.getByTestId('plaintext')).toHaveValue(SECRET);
   await expect.poll(r2Objects).toBe(before);
-});
-
-test('while the database drains, a secret sealed before the vault still opens, once', async ({ page, browser }) => {
-  test.skip(!process.env.SIGYLO_E2E_DATABASE_URL, 'needs scripts/e2e.sh');
-  // The browser seals as always; the deposit lands in the database instead, as before the vault.
-  const id = randomBytes(16);
-  await page.route('**/api/secrets', async (route) => {
-    const body = route.request().postDataJSON() as { payload: string; revocation_token: string };
-    const payload = Buffer.from(body.payload, 'base64url').toString('hex');
-    const digest = createHash('sha256').update(Buffer.from(body.revocation_token, 'base64url')).digest('hex');
-    const expires = sql(
-      `select custody.deposit('\\x${id.toString('hex')}', '\\x${payload}', true, 3600, '\\x${digest}', 0::smallint)`,
-    );
-    await route.fulfill({ status: 201, json: { id: id.toString('base64url'), expires_at: Number(expires) } });
-  });
-  const { link } = await sealSecret(page);
-  expect(sql('select count(*) from custody.deposits')).toBe('1');
-
-  const reader = await freshPage(browser);
-  await reader.goto(link);
-  await reader.getByTestId('reveal').click();
-  await expect(reader.getByTestId('plaintext')).toHaveValue(SECRET);
-  expect(sql('select count(*) from custody.deposits')).toBe('0');
-
-  const latecomer = await freshPage(browser);
-  await latecomer.goto(link);
-  await latecomer.getByTestId('reveal').click();
-  await expect(latecomer.getByTestId('open-error')).toContainText('Non c');
 });
 
 test('request mode: a file sealed to the recipient’s post-quantum key', async ({ page, browser }) => {
@@ -692,6 +655,58 @@ test('account: signing out everywhere ends every device, and the next login show
   const canary = await request.get('/api/account/canary', { headers: { 'CF-Connecting-IP': '203.0.113.73' } });
   expect(canary.status()).toBe(200);
   expect(await canary.json()).toEqual({ canary: 'voB1TN7wcGcZY8Ms-nY-RlT9xSOkkNM1KZPxcTdw61k' });
+});
+
+/** Every file the local runtime keeps: Durable Objects and R2 (scripts/e2e.sh passes the directory). */
+function stateFiles(dir = process.env.SIGYLO_E2E_STATE!): Buffer[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = `${dir}/${entry.name}`;
+    return entry.isDirectory() ? stateFiles(path) : entry.isFile() ? [readFileSync(path)] : [];
+  });
+}
+
+test('account: what the vault keeps on disk holds neither the name, the password nor the session', async ({ page }) => {
+  test.skip(!process.env.SIGYLO_E2E_STATE, 'needs scripts/e2e.sh');
+  test.setTimeout(120_000);
+  const name = `e2e-disk-${Date.now().toString(36)}`;
+  const password = 'una password lunga e mia 🔑';
+  const records: string[] = [];
+  const sessions: string[] = [];
+  page.on('request', (r: Request) => {
+    if (r.url().endsWith('/api/account/register/finish')) records.push((r.postDataJSON() as { record: string }).record);
+  });
+  page.on('response', async (r) => {
+    if (r.url().endsWith('/api/account/login/finish')) sessions.push(((await r.json()) as { session: string }).session);
+  });
+  await page.goto('/#/account');
+  await page.getByTestId('tab-sign-up').click();
+  await page.getByTestId('username').fill(name);
+  await page.getByTestId('password').fill(password);
+  await page.getByTestId('account-submit').click();
+  await expect(page.getByTestId('no-seals')).toBeVisible(ARGON);
+  // A seal while signed in, so the sealed keyring is written too.
+  await page.locator('.brand').click();
+  await page.getByTestId('secret').fill(SECRET);
+  await page.getByTestId('seal').click();
+  await expect(page.getByTestId('saved-to-account')).toBeVisible(ARGON);
+  expect(records).toHaveLength(1);
+  expect(sessions).toHaveLength(1);
+
+  const files = stateFiles();
+  const found = (needle: Buffer) => files.some((file) => file.includes(needle));
+  // The scan reaches the accounts' storage: the OPAQUE record the browser filed is there.
+  expect(found(Buffer.from(records[0]!, 'base64url'))).toBe(true);
+  const token = Buffer.from(sessions[0]!, 'base64url');
+  for (const secret of [
+    Buffer.from(name),
+    Buffer.from(password),
+    Buffer.from(password.slice(0, 16)),
+    token,
+    Buffer.from(sessions[0]!),
+    Buffer.from(token.toString('hex')),
+  ]) {
+    expect(found(secret), secret.toString('utf8')).toBe(false);
+  }
 });
 
 test('account: a relay serving an older copy of the keyring is caught, and nothing is overwritten', async ({ page }) => {

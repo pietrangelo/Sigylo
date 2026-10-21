@@ -3,9 +3,9 @@
 //! Accounts without a password on the server. Registration and login use
 //! OPAQUE (RFC 9807): the password never leaves the device, not even hashed,
 //! and the relay keeps only a registration record that is useless without
-//! both the password and the relay's OPRF key. A stolen database cannot be
-//! attacked offline; a stolen database *and* relay secret still forces one
-//! Argon2id guess per password tried, per account.
+//! both the password and the relay's OPRF key. A stolen copy of the store
+//! cannot be attacked offline; a stolen store *and* relay secret still forces
+//! one Argon2id guess per password tried, per account.
 //!
 //! A successful login gives two things:
 //!

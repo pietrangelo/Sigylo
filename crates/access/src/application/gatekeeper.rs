@@ -82,7 +82,7 @@ impl<O: OpaqueServer, S: AccountStore, T: Tokens, D: SessionDigester, R: Throttl
         }
         let (response, state) = self.opaque.begin_login(&account, record.as_ref(), request)?;
         let handle = self.tokens.login_handle()?;
-        self.store.park_login(&handle, &account, &state, LOGIN_WINDOW_SECONDS).await?;
+        self.store.park_login(&handle, &account, &state, LOGIN_WINDOW_SECONDS, &budget).await?;
         Ok(LoginChallenge { handle, response })
     }
 
@@ -98,9 +98,11 @@ impl<O: OpaqueServer, S: AccountStore, T: Tokens, D: SessionDigester, R: Throttl
         self.opaque.finish_login(&account, Some(&record), &state, finalization)?;
         let pass = self.passes.issue(&account, &record)?;
         let token = self.tokens.session()?;
+        // Only on that record: the name may change hands again before the
+        // session opens.
         let expires_at = self
             .store
-            .open_session(&self.digest.digest(&token), &account, SESSION_SECONDS)
+            .open_session(&self.digest.digest(&token), &account, &record, SESSION_SECONDS)
             .await?
             .ok_or(AccessError::NotAuthentic)?;
         Ok(Session { token, expires_at, pass })

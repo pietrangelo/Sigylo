@@ -47,8 +47,8 @@ impl fmt::Debug for Username {
     }
 }
 
-/// Where an account is filed: a keyed hash of the username, so a database
-/// dump does not reveal who has an account, not even by guessing names.
+/// Where an account is filed: a keyed hash of the username, so a copy of the
+/// store does not reveal who has an account, not even by guessing names.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AccountId([u8; 32]);
 

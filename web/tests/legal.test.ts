@@ -39,7 +39,7 @@ describe('legal', () => {
     }
   });
 
-  it('every language names the operator, the processors and the code licence', () => {
+  it('every language names the operator, the one processor and the code licence', () => {
     for (const language of languages) {
       const terms = text(legal[language].terms);
       const privacy = text(legal[language].privacy);
@@ -50,8 +50,10 @@ describe('legal', () => {
       expect(terms).toContain('Apache License 2.0');
       expect(terms).toContain('sigylo.net');
       expect(privacy).toContain('Cloudflare');
-      expect(privacy).toContain('Supabase');
-      expect(privacy).toContain('eu-central-1');
+      expect(privacy).toContain('Durable Object');
+      expect(privacy).not.toContain('Supabase');
+      expect(privacy).not.toContain('eu-central-1');
+      expect(privacy).not.toContain('PostgreSQL');
       expect(privacy).toContain('SHA-256');
       expect(privacy).toMatch(/\b7\b/);
       expect(privacy).toMatch(/2016\/679/);
@@ -71,6 +73,50 @@ describe('legal', () => {
       expect(privacy, language).toContain('/64');
       expect(privacy, language).toContain('/48');
       expect(privacy, language).toContain(halfHour[language]);
+    }
+  });
+
+  it('keeps accounts in the vault: no database, sign-ins in memory only, 30 days of recovery history', () => {
+    const words = {
+      it: { database: 'database', disk: 'su disco', history: '30 giorni', closing: 'chiusura' },
+      en: { database: 'database', disk: 'to disk', history: '30 days', closing: 'closing' },
+      fr: { database: 'base de données', disk: 'sur disque', history: '30 jours', closing: 'fermeture' },
+      es: { database: 'base de datos', disk: 'en disco', history: '30 días', closing: 'cierre' },
+      de: { database: 'Datenbank', disk: 'Datenträger', history: '30 Tage', closing: 'Schließen' },
+    };
+    for (const language of languages) {
+      const privacy = text(legal[language].privacy);
+      const { database, disk, history, closing } = words[language];
+      expect(privacy.toLowerCase(), language).not.toContain(database.toLowerCase());
+      expect(privacy, language).toContain(disk);
+      expect(privacy, language).toContain(history);
+      expect(privacy, language).toContain(closing);
+      expect(privacy, language).toContain('OPAQUE');
+    }
+  });
+
+  it('says everything the recovery history keeps, and that closing an account leaves it there', () => {
+    // Sections share their order in every language (first test), so the English headings find them.
+    const at = (heading: string) => legal.en.privacy.sections.findIndex((s) => s.heading === heading);
+    const [retention, provider, rights] = [at('For how long'), at('Provider and transfers'), at('Your rights')];
+    expect(Math.min(retention, provider, rights)).toBeGreaterThanOrEqual(0);
+    const words = {
+      it: { keys: 'chiavi pubbliche', names: 'nomi degli oggetti', history: '30 giorni' },
+      en: { keys: 'public keys', names: 'object names', history: '30 days' },
+      fr: { keys: 'clés publiques', names: 'noms des objets', history: '30 jours' },
+      es: { keys: 'claves públicas', names: 'nombres de los objetos', history: '30 días' },
+      de: { keys: 'öffentlichen Schlüssel', names: 'Objektnamen', history: '30 Tage' },
+    };
+    for (const language of languages) {
+      const sections = legal[language].privacy.sections;
+      const section = (i: number) => sections[i]!.body.join('\n');
+      const { keys, names, history } = words[language];
+      // Each request record, with the recipient's public key, sits in SigyloVault's storage.
+      expect(section(retention), language).toContain(keys);
+      expect(section(retention), language).toContain(names);
+      expect(section(provider), language).toContain(keys);
+      expect(section(provider), language).toContain(names);
+      expect(section(rights), language).toContain(history);
     }
   });
 

@@ -8,8 +8,8 @@ use super::CustodyError;
 pub const MAX_PAYLOAD_LEN: usize = 72 * 1024;
 /// Smallest payload the relay keeps: the smallest envelope a sealer makes,
 /// a 6-byte header, a 24-byte nonce, 256 bytes of padded secret and the
-/// 16-byte tag. Anything shorter is not an envelope, and every row costs
-/// the database far more than its bytes.
+/// 16-byte tag. Anything shorter is not an envelope, and every record costs
+/// the vault far more than its bytes.
 pub const MIN_PAYLOAD_LEN: usize = 6 + 24 + 256 + 16;
 /// Most chunks a file deposit can have: a 10 MiB file in 1 MiB chunks.
 pub const MAX_CHUNKS: u16 = 10;
@@ -447,7 +447,7 @@ mod tests {
 
         #[test]
         fn payloads_smaller_than_any_envelope_are_refused() {
-            // Each row costs the database far more than its bytes: tiny
+            // Each record costs the vault far more than its bytes: tiny
             // payloads would fill it while the ceiling saw almost nothing.
             assert_eq!(MIN_PAYLOAD_LEN, 6 + 24 + 256 + 16);
             for len in [1, 4, MIN_PAYLOAD_LEN - 1] {

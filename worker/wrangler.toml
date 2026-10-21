@@ -17,16 +17,6 @@ directory = "../web/dist"
 run_worker_first = ["/api/*"]
 not_found_handling = "single-page-application"
 
-# PostgreSQL (Supabase) through Hyperdrive. Create it with caching disabled:
-#   npx wrangler hyperdrive create sigylo-db --caching-disabled --connection-string="postgres://sigylo_relay:<password>@<host>:5432/postgres"
-# then paste its id here. A cached `custody.open` would hand out a burned,
-# revoked or expired secret again (CLAUDE.md §4). The local connection string
-# is used by `wrangler dev`.
-[[hyperdrive]]
-binding = "DB"
-id = "c9378333c78c410c8ceffd9b7e19488f"
-localConnectionString = "postgres://sigylo_relay:relay-test-only@127.0.0.1:55432/postgres"
-
 # The sealed chunks of files (opaque ciphertext under random names), in the EU.
 # Create the bucket once:  npx wrangler r2 bucket create sigylo-chunks --jurisdiction eu
 # The scheduled run below deletes the objects of burned, revoked and expired chunks;
@@ -49,6 +39,18 @@ class_name = "SigyloVault"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["SigyloVault"]
+
+# Sigylo's accounts: one Durable Object of a class of its own, created by name in
+# the EU jurisdiction (vault_adapters::DurableLink::named), keeps accounts,
+# sealed keyrings and sessions; logins in progress and attempt counters live
+# only in its memory. Only this Worker reaches it.
+[[durable_objects.bindings]]
+name = "ACCOUNTS"
+class_name = "SigyloAccounts"
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["SigyloAccounts"]
 
 # Throttle every API call per client address, IPv6 by /64 (kept in memory by
 # Cloudflare, never stored by us): POSTs and GETs each have their own allowance.
@@ -86,16 +88,12 @@ simple = { limit = 10, period = 60 }
 # and the deploy refuses to create a new one or to finish with a different one.
 # Recorded from the live relay on 2026-10-18. Empty would mean not recorded yet,
 # and the deploy would print the live value to paste here.
-#
-# LEGACY_VAULT = "drain": custody kept in the database before the vault is still
-# opened, revoked, answered and purged there (nothing new goes in), until the
-# last of it expires, at most 7 days after the vault went live.
 [vars]
-LEGACY_VAULT = "drain"
 OPAQUE_CANARY = "zZ3ImAHoqehSoothI6rrvwLTwKyYLznXA995E4QyYnU"
 
-# Physically delete expired records (reads already ignore them), in the vault and,
-# while it drains, in the database, then the R2 objects of everything that went.
+# Physically delete expired records (reads already ignore them) in the vault, then
+# the R2 objects of everything that went; then expired sessions, logins and
+# counters in the accounts object.
 [triggers]
 crons = ["*/15 * * * *"]
 

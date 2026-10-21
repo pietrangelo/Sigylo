@@ -41,7 +41,8 @@ jobs:
             echo "::error::app-release.yml must pass GITHUB_TOKEN to tauri-action"
             exit 1
           fi
-      # The deploy refuses the local-only switches however they are spelled.
+      # The deploy refuses the local-only switches, and anything of the database
+      # that is gone, however they are spelled.
       - name: The local-only switch check sees every spelling
         run: |
           set -euo pipefail
@@ -51,6 +52,10 @@ jobs:
           printf '[vars]\n"VAULT_PLACEMENT" = "local"\n' > "$dir/quoted.toml"
           printf 'vars.DB_TLS = "disable"\n' > "$dir/dotted.toml"
           printf '[env.staging.vars]\nVAULT_PLACEMENT = "local"\n' > "$dir/nested.toml"
+          printf '[vars]\nLEGACY_VAULT = "drain"\n' > "$dir/drain.toml"
+          printf '[[hyperdrive]]\nbinding = "DB"\nid = "x"\n' > "$dir/hyperdrive.toml"
+          printf '[[env.staging.hyperdrive]]\nbinding = "DB"\n' > "$dir/nested-hyperdrive.toml"
+          printf 'hyperdrive = [{ binding = "DB", id = "x" }]\n' > "$dir/inline-hyperdrive.toml"
           for bad in "$dir"/*.toml; do
             if python3 scripts/local-switches.py "$bad" > /dev/null; then
               echo "::error::scripts/local-switches.py missed $(basename "$bad")"
@@ -66,25 +71,6 @@ jobs:
       - run: cargo test --workspace --locked
       - name: Wasm builds
         run: cargo build -p sigylo-wasm -p sigylo-relay --target wasm32-unknown-unknown --release
-
-  database:
-    name: PostgreSQL (privileges + vault contract)
-    runs-on: ubuntu-24.04
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
-    env:
-      SIGYLO_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - run: bash supabase/tests/run.sh
 
   web:
     name: Web (types, unit tests, build)
@@ -113,7 +99,7 @@ jobs:
         working-directory: web
 
   e2e:
-    name: End-to-end (Worker + PostgreSQL + Chromium)
+    name: End-to-end (Worker + vault + Chromium)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

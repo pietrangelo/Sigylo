@@ -14,7 +14,7 @@ Specification, architecture and development rules: [CLAUDE.md](CLAUDE.md).
 - **Request, post-quantum:** the recipient creates a hybrid X25519 + ML-KEM-768 key pair on their own device; the sender seals with that key. No reading key ever travels.
 - **Files up to 10 MiB:** a manifest sealed like any secret carries the file key; the file travels in 1 MiB chunks authenticated with their position and total count, and a read-once file goes, chunk by chunk, only to whoever opened it. Chunks live on Cloudflare R2 (EU) under random names.
 - **Blind relay:** a Rust Cloudflare Worker keeps opaque envelopes: the ledger lives in a Durable Object in the EU, the envelopes on R2. Atomic burn-after-reading, expiry from 5 minutes to 7 days, revocation by the sender.
-- **Optional accounts:** OPAQUE login (the password never leaves the device), on PostgreSQL via Hyperdrive until accounts move to the vault.
+- **Optional accounts:** OPAQUE login (the password never leaves the device). Accounts, sealed keyrings and sessions live in a Durable Object of their own in the EU; logins in progress and attempt counters only in its memory. No database: everything runs on Cloudflare.
 
 ![Sigylo system and application architecture](docs/architecture.svg)
 
@@ -23,7 +23,6 @@ Specification, architecture and development rules: [CLAUDE.md](CLAUDE.md).
 ```bash
 cargo test --workspace
 cargo run -p architecture-guard
-bash supabase/tests/run.sh
 (cd web && npm ci && npm run build && npm test)
 bash scripts/e2e.sh
 ```

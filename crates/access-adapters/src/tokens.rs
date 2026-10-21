@@ -26,9 +26,9 @@ impl Tokens for RandomTokens {
 /// The digest the store keeps instead of a session token: HMAC-SHA256 under
 /// a key derived from the relay secret ([`crate::OpaqueKeys::session_digest`]).
 /// The token is uniformly random, so there is nothing to brute-force; the key
-/// is there for whoever can write the database without the relay secret (a
-/// stolen relay credential): they can file a session row, but can never hold
-/// a token whose digest matches it.
+/// is there for whoever can write the store without the relay secret: they
+/// can file a session record, but can never hold a token whose digest
+/// matches it.
 #[derive(Clone)]
 pub struct HmacSessionDigest {
     key: Zeroizing<[u8; 32]>,
@@ -83,7 +83,7 @@ mod tests {
         use super::*;
 
         #[test]
-        fn the_digest_is_not_the_plain_hash_a_database_thief_could_compute() {
+        fn the_digest_is_not_the_plain_hash_a_store_thief_could_compute() {
             let token = SessionToken::from_array([0; 32]);
             let plain = "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925";
             let hex: String =
