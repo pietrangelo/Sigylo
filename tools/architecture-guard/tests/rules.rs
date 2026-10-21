@@ -3,8 +3,13 @@ use std::path::Path;
 
 use architecture_guard::{Ring, Role, Rule, check_lib_root, check_manifest, check_source};
 
+/// Rules broken by `text` as a file one module inside its ring, like `src/core/envelope.rs`.
 fn rules_in(text: &str, ring: Ring) -> Vec<Rule> {
-    check_source(Path::new("x.rs"), text, ring).into_iter().map(|v| v.rule).collect()
+    let file = match ring {
+        Ring::Core => "src/core/x.rs",
+        Ring::Application => "src/application/x.rs",
+    };
+    check_source(Path::new(file), text, ring).into_iter().map(|v| v.rule).collect()
 }
 
 fn roles() -> HashMap<String, Role> {
@@ -194,6 +199,48 @@ mod adversary {
         assert_eq!(rules_in(text, Ring::Core), vec![Rule::RingDirection]);
         let nested = "mod inner { pub fn f() { crate::application::Sealer::touch(); } }";
         assert_eq!(rules_in(nested, Ring::Core), vec![Rule::RingDirection]);
+    }
+
+    #[test]
+    fn macros_inside_macros_are_seen() {
+        let env = "pub const X: &str = concat!(env!(\"HOME\"), \"/k\");";
+        assert_eq!(rules_in(env, Ring::Core), vec![Rule::CompileTimeIo]);
+        let dbg = "pub fn f(key: u8) { assert!(dbg!(key) > 0); }";
+        assert_eq!(rules_in(dbg, Ring::Application), vec![Rule::ConsoleIo]);
+        let deep = "pub fn f(k: u8) -> String { format!(\"{}\", vec![std::println!(\"{k}\")].len()) }";
+        assert_eq!(rules_in(deep, Ring::Core), vec![Rule::ConsoleIo]);
+        // `!=` is not a macro call.
+        assert_eq!(rules_in("pub fn f(env: u8, dbg: u8) { assert!(env != dbg); }", Ring::Core), vec![]);
+    }
+
+    #[test]
+    fn the_crate_root_cannot_be_reached_from_core_through_super_or_a_glob() {
+        let at = |file: &str, text: &str| -> Vec<Rule> {
+            check_source(Path::new(file), text, Ring::Core).into_iter().map(|v| v.rule).collect()
+        };
+        // In core/mod.rs, `super` is the crate root: its globs bring in the
+        // application ring and whatever lib.rs re-exports from it.
+        for text in [
+            "use super::*;\npub fn f() { application::Sealer::touch(); }",
+            "use super::Sealer;",
+            "pub fn f() { super::Sealer::touch(); }",
+            "use crate::*;",
+        ] {
+            assert!(at("crates/sealing/src/core/mod.rs", text).contains(&Rule::RingDirection), "{text}");
+        }
+        assert!(at("crates/sealing/src/core/file.rs", "use super::super::*;").contains(&Rule::RingDirection));
+        assert!(
+            at("crates/sealing/src/core/file.rs", "mod tests { use super::super::super::Sealer; }")
+                .contains(&Rule::RingDirection)
+        );
+        // One level down, `super` is still core: test modules keep their globs.
+        assert_eq!(at("crates/sealing/src/core/file.rs", "use super::{FileKey, Plaintext};"), vec![]);
+        assert_eq!(at("crates/sealing/src/core/file.rs", "mod tests { use super::*; }"), vec![]);
+        assert_eq!(at("crates/sealing/src/core/mod.rs", "mod tests { use super::*; }"), vec![]);
+        assert_eq!(at("crates/sealing/src/core/mod.rs", "mod file;\npub use file::FileKey;"), vec![]);
+        // The application ring may reach both rings anyway.
+        let app = check_source(Path::new("crates/sealing/src/application/mod.rs"), "use super::*;", Ring::Application);
+        assert!(app.is_empty());
     }
 
     #[test]

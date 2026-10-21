@@ -34,7 +34,7 @@ const CONSOLE_IO: &[&str] = &["print", "println", "eprint", "eprintln", "dbg"];
 
 /// Check a file of the `core` or `application` ring.
 pub fn check_source(file: &Path, text: &str, ring: Ring) -> Vec<Violation> {
-    let mut checker = Checker { file, ring: Some(ring), violations: Vec::new() };
+    let mut checker = Checker { file, ring: Some(ring), depth: module_depth(file), violations: Vec::new() };
     match syn::parse_file(text) {
         Ok(ast) => checker.visit_file(&ast),
         Err(e) => checker.push(Rule::Unparsable, e.to_string()),
@@ -45,7 +45,7 @@ pub fn check_source(file: &Path, text: &str, ring: Ring) -> Vec<Violation> {
 /// Check a domain's `lib.rs`: it must forbid unsafe code, declare only the
 /// two rings as modules, and obey the same purity rules.
 pub fn check_lib_root(file: &Path, text: &str) -> Vec<Violation> {
-    let mut checker = Checker { file, ring: None, violations: Vec::new() };
+    let mut checker = Checker { file, ring: None, depth: 0, violations: Vec::new() };
     let ast = match syn::parse_file(text) {
         Ok(ast) => ast,
         Err(e) => {
@@ -74,10 +74,22 @@ pub fn check_lib_root(file: &Path, text: &str) -> Vec<Violation> {
     checker.violations
 }
 
+/// How many modules below the crate root a ring file sits: `src/core/mod.rs`
+/// is 1, `src/core/file.rs` 2. Without a `src` component, 1: the shallowest a
+/// ring file can be, so `super` is never taken for less than it may reach.
+fn module_depth(file: &Path) -> usize {
+    let parts: Vec<String> = file.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    let Some(src) = parts.iter().rposition(|p| p == "src") else { return 1 };
+    let below = &parts[src + 1..];
+    (below.len() - usize::from(below.last().is_some_and(|f| f == "mod.rs"))).max(1)
+}
+
 struct Checker<'a> {
     file: &'a Path,
     /// `None` for lib.rs, which may re-export from both rings.
     ring: Option<Ring>,
+    /// Modules between the code being visited and the crate root.
+    depth: usize,
     violations: Vec<Violation>,
 }
 
@@ -86,8 +98,18 @@ impl Checker<'_> {
         self.violations.push(Violation { file: self.file.to_path_buf(), rule, detail });
     }
 
+    /// The path from the crate root when its `super`s climb all the way up:
+    /// `super::Sealer` in `core/mod.rs` is `crate::Sealer`.
+    fn rooted(&self, segments: &[String]) -> Option<Vec<String>> {
+        let climbs = segments.iter().take_while(|s| *s == "super").count();
+        (self.ring.is_some() && climbs > 0 && climbs >= self.depth)
+            .then(|| std::iter::once("crate".to_owned()).chain(segments[climbs..].iter().cloned()).collect())
+    }
+
     /// Judge a path given as its segments (leading `::` already stripped).
     fn check_segments(&mut self, segments: &[String]) {
+        let rooted = self.rooted(segments);
+        let segments = rooted.as_deref().unwrap_or(segments);
         let Some(first) = segments.first() else { return };
         if first == "std"
             && let Some(module) = segments.get(1).filter(|m| IMPURE_STD.contains(&m.as_str()))
@@ -134,6 +156,11 @@ impl Checker<'_> {
                 if prefix.as_slice() == ["std"] {
                     self.push(Rule::StdAlias, "glob import of `std`".into());
                 }
+                // The crate root holds the application ring and its re-exports.
+                let root = prefix.as_slice() == ["crate"] || self.rooted(prefix).is_some_and(|p| p == ["crate"]);
+                if self.ring == Some(Ring::Core) && root {
+                    self.push(Rule::RingDirection, "core ring may not glob-import the crate root".into());
+                }
                 self.check_segments(prefix);
             }
             UseTree::Group(g) => {
@@ -154,12 +181,27 @@ impl Checker<'_> {
                 continue;
             }
             let TokenTree::Ident(first) = tree else { continue };
+            // A macro called inside another one: `concat!(env!("HOME"))`.
+            if matches!(trees.get(i + 1), Some(TokenTree::Punct(p)) if p.as_char() == '!')
+                && matches!(trees.get(i + 2), Some(TokenTree::Group(_)))
+            {
+                self.check_macro_name(&first.to_string());
+            }
             let is_path_sep = |j: usize| matches!((trees.get(j), trees.get(j + 1)), (Some(TokenTree::Punct(a)), Some(TokenTree::Punct(b))) if a.as_char() == ':' && b.as_char() == ':');
             if is_path_sep(i + 1)
                 && let Some(TokenTree::Ident(second)) = trees.get(i + 3)
             {
                 self.check_segments(&[first.to_string(), second.to_string()]);
             }
+        }
+    }
+
+    fn check_macro_name(&mut self, name: &str) {
+        if COMPILE_TIME_IO.contains(&name) {
+            self.push(Rule::CompileTimeIo, format!("`{name}!` reads outside the source at compile time"));
+        }
+        if CONSOLE_IO.contains(&name) {
+            self.push(Rule::ConsoleIo, format!("`{name}!` writes to the console from a domain"));
         }
     }
 
@@ -191,18 +233,17 @@ impl<'ast> Visit<'ast> for Checker<'_> {
     }
 
     fn visit_macro(&mut self, mac: &'ast Macro) {
-        if let Some(name) = mac.path.segments.last().map(|s| s.ident.to_string())
-            && COMPILE_TIME_IO.contains(&name.as_str())
-        {
-            self.push(Rule::CompileTimeIo, format!("`{name}!` reads outside the source at compile time"));
-        }
-        if let Some(name) = mac.path.segments.last().map(|s| s.ident.to_string())
-            && CONSOLE_IO.contains(&name.as_str())
-        {
-            self.push(Rule::ConsoleIo, format!("`{name}!` writes to the console from a domain"));
+        if let Some(name) = mac.path.segments.last().map(|s| s.ident.to_string()) {
+            self.check_macro_name(&name);
         }
         self.check_tokens(mac.tokens.clone());
         visit::visit_macro(self, mac);
+    }
+
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        self.depth += 1;
+        visit::visit_item_mod(self, item);
+        self.depth -= 1;
     }
 
     fn visit_item_extern_crate(&mut self, item: &'ast ItemExternCrate) {
