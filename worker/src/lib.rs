@@ -3,9 +3,7 @@
 //! A blind relay: it receives envelopes that were sealed in the browser and
 //! hands them, via the Custody use cases, to Sigylo's own vault: one Durable
 //! Object in the EU ([`SigyloVault`](runtime::SigyloVault)) keeps the records,
-//! and R2 the sealed bytes, payloads and chunks of files alike. While the
-//! custody that used to live in PostgreSQL drains (`LEGACY_VAULT = "drain"`),
-//! whatever the vault does not know is looked for there too.
+//! and R2 the sealed bytes, payloads and chunks of files alike.
 //! It never sees a key or a plaintext and logs neither ids nor payloads.
 //! The static web client is served by Workers Static Assets on the same
 //! origin, so the browser never talks to a third party.
@@ -26,54 +24,20 @@ mod runtime {
     use access::{AccessError, AccountId, AccountStore, Budget, Gatekeeper, Throttle, UnixTime};
     use access_adapters::{OpaqueKeys, RandomTokens, throttle_bucket};
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-    use core::cell::OnceCell;
 
-    use custody::{
-        ChunkIndex, ChunkRef, ClaimDigest, Custodian, CustodyError, Deposit, DropId, ObjectName, Opened, PostedRequest,
-        Receipt, Request as Asked, RevocationDigest, Vault,
-    };
-    use custody_adapters::{PostgresVault, R2ChunkStore, RandomIds, Sha256TokenDigest};
-    use tokio_postgres::{Client, NoTls};
-    use vault::{AccountLedger, Draining, LedgerVault, RemoteAccounts, RemoteVault, Scratch, VaultThrottle};
+    use custody::{Custodian, CustodyError, Vault};
+    use custody_adapters::{R2ChunkStore, RandomIds, Sha256TokenDigest};
+    use vault::{AccountLedger, LedgerVault, RemoteAccounts, RemoteVault, Scratch, VaultThrottle};
     use vault_adapters::{
         ACCOUNTS_BINDING, ACCOUNTS_NAME, DurableKv, DurableLink, Placement, R2Payloads, VAULT_BINDING, WorkerClock,
     };
-    use worker::postgres_tls::PassthroughTls;
     use worker::{
-        Context, DurableObject, Env, Method, Request, Response, Result, ScheduleContext, ScheduledEvent,
-        SecureTransport, Socket, State, durable_object, event,
+        Context, DurableObject, Env, Method, Request, Response, Result, ScheduleContext, ScheduledEvent, State,
+        durable_object, event,
     };
     use zeroize::Zeroizing;
 
     use crate::api::{self, AccountCommand, ApiError, Command};
-
-    fn unavailable<E>(_: E) -> worker::Error {
-        worker::Error::RustError("database unavailable".into())
-    }
-
-    /// Connects through Hyperdrive with TLS. `DB_TLS = "disable"` exists only
-    /// for `wrangler dev` against a local PostgreSQL without certificates.
-    async fn connect(env: &Env) -> Result<Client> {
-        let hyperdrive = env.hyperdrive("DB")?;
-        let config: tokio_postgres::Config = hyperdrive.connection_string().parse().map_err(unavailable)?;
-        let plaintext_dev = env.var("DB_TLS").is_ok_and(|v| v.to_string() == "disable");
-        if plaintext_dev {
-            let socket = Socket::builder().connect(hyperdrive.host(), hyperdrive.port())?;
-            let (client, connection) = config.connect_raw(socket, NoTls).await.map_err(unavailable)?;
-            wasm_bindgen_futures::spawn_local(async move {
-                let _ = connection.await;
-            });
-            return Ok(client);
-        }
-        let socket = Socket::builder()
-            .secure_transport(SecureTransport::StartTls)
-            .connect(hyperdrive.host(), hyperdrive.port())?;
-        let (client, connection) = config.connect_raw(socket, PassthroughTls).await.map_err(unavailable)?;
-        wasm_bindgen_futures::spawn_local(async move {
-            let _ = connection.await;
-        });
-        Ok(client)
-    }
 
     /// The R2 bucket that holds the sealed chunks of files.
     fn chunk_store(env: &Env) -> Result<R2ChunkStore> {
@@ -244,121 +208,9 @@ mod runtime {
             .map_err(|_| AccessError::StoreUnavailable)
     }
 
-    /// Whether custody kept in PostgreSQL before the vault still drains.
-    fn draining(env: &Env) -> bool {
-        env.var("LEGACY_VAULT").is_ok_and(|v| v.to_string() == "drain")
-    }
-
-    /// The custody of PostgreSQL, connected only if the vault did not have
-    /// what was asked for, so new things never wait on the database.
-    struct Legacy<'e> {
-        env: &'e Env,
-        client: OnceCell<Client>,
-    }
-
-    impl<'e> Legacy<'e> {
-        fn new(env: &'e Env) -> Self {
-            Self { env, client: OnceCell::new() }
-        }
-
-        async fn vault(&self) -> std::result::Result<PostgresVault<'_>, CustodyError> {
-            if self.client.get().is_none() {
-                let client = connect(self.env).await.map_err(|_| CustodyError::VaultUnavailable)?;
-                let _ = self.client.set(client);
-            }
-            self.client.get().map(PostgresVault::new).ok_or(CustodyError::VaultUnavailable)
-        }
-    }
-
-    impl Vault for Legacy<'_> {
-        async fn deposit(&self, deposit: &Deposit) -> std::result::Result<custody::UnixTime, CustodyError> {
-            self.vault().await?.deposit(deposit).await
-        }
-
-        async fn open(&self, id: &DropId, claim: &ClaimDigest) -> std::result::Result<Option<Opened>, CustodyError> {
-            self.vault().await?.open(id, claim).await
-        }
-
-        async fn reserve_chunk(
-            &self,
-            id: &DropId,
-            index: ChunkIndex,
-            object: &ObjectName,
-            len: u32,
-        ) -> std::result::Result<bool, CustodyError> {
-            self.vault().await?.reserve_chunk(id, index, object, len).await
-        }
-
-        async fn put_chunk(
-            &self,
-            id: &DropId,
-            index: ChunkIndex,
-            object: &ObjectName,
-            len: u32,
-        ) -> std::result::Result<bool, CustodyError> {
-            self.vault().await?.put_chunk(id, index, object, len).await
-        }
-
-        async fn open_chunk(
-            &self,
-            id: &DropId,
-            index: ChunkIndex,
-            claim: Option<&ClaimDigest>,
-        ) -> std::result::Result<Option<ChunkRef>, CustodyError> {
-            self.vault().await?.open_chunk(id, index, claim).await
-        }
-
-        async fn burn_chunk(
-            &self,
-            id: &DropId,
-            index: ChunkIndex,
-            claim: &ClaimDigest,
-        ) -> std::result::Result<bool, CustodyError> {
-            self.vault().await?.burn_chunk(id, index, claim).await
-        }
-
-        async fn garbage(&self, limit: u16) -> std::result::Result<Vec<ObjectName>, CustodyError> {
-            self.vault().await?.garbage(limit).await
-        }
-
-        async fn forget_garbage(&self, objects: &[ObjectName]) -> std::result::Result<(), CustodyError> {
-            self.vault().await?.forget_garbage(objects).await
-        }
-
-        async fn revoke(
-            &self,
-            id: &DropId,
-            digest: &RevocationDigest,
-        ) -> std::result::Result<Option<Vec<ObjectName>>, CustodyError> {
-            self.vault().await?.revoke(id, digest).await
-        }
-
-        async fn post_request(&self, request: &Asked) -> std::result::Result<custody::UnixTime, CustodyError> {
-            self.vault().await?.post_request(request).await
-        }
-
-        async fn fetch_request(&self, id: &DropId) -> std::result::Result<Option<PostedRequest>, CustodyError> {
-            self.vault().await?.fetch_request(id).await
-        }
-
-        async fn answer_request(&self, answer: &Deposit) -> std::result::Result<Option<Receipt>, CustodyError> {
-            self.vault().await?.answer_request(answer).await
-        }
-
-        async fn purge_expired(&self) -> std::result::Result<u64, CustodyError> {
-            self.vault().await?.purge_expired().await
-        }
-    }
-
     async fn safekeeping(command: Command, env: &Env) -> std::result::Result<Reply, ApiError> {
         let store = chunk_store(env).map_err(|_| CustodyError::VaultUnavailable)?;
-        let vault = remote_vault(env)?;
-        if draining(env) {
-            let custodian = Custodian::new(Draining::new(vault, Legacy::new(env)), store, Sha256TokenDigest, RandomIds);
-            keep(command, &custodian).await
-        } else {
-            keep(command, &Custodian::new(vault, store, Sha256TokenDigest, RandomIds)).await
-        }
+        keep(command, &Custodian::new(remote_vault(env)?, store, Sha256TokenDigest, RandomIds)).await
     }
 
     async fn keep<V: Vault>(
@@ -527,12 +379,7 @@ mod runtime {
     #[event(scheduled)]
     async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
         if let (Ok(vault), Ok(store)) = (remote_vault(&env), chunk_store(&env)) {
-            if draining(&env) {
-                chores(&Custodian::new(Draining::new(vault, Legacy::new(&env)), store, Sha256TokenDigest, RandomIds))
-                    .await;
-            } else {
-                chores(&Custodian::new(vault, store, Sha256TokenDigest, RandomIds)).await;
-            }
+            chores(&Custodian::new(vault, store, Sha256TokenDigest, RandomIds)).await;
         }
         // Expired sessions, and logins and counters left in the object's memory.
         if let Ok(accounts) = remote_accounts(&env) {

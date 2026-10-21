@@ -21,6 +21,6 @@ pub use crate::core::{
     PURGE_BATCH, RECORD_CEILING, Reply, RequestRecord, STORING_WRITES_PER_DAY, Stored, TEARDOWN_WRITES_PER_DAY, Usage,
 };
 pub use application::{
-    AccountLedger, Accounts, Bucket, Clock, Draining, KeyValue, Ledger, LedgerVault, Link, PayloadStore,
-    RemoteAccounts, RemoteVault, Scratch, VaultThrottle, serve, serve_accounts,
+    AccountLedger, Accounts, Bucket, Clock, KeyValue, Ledger, LedgerVault, Link, PayloadStore, RemoteAccounts,
+    RemoteVault, Scratch, VaultThrottle, serve, serve_accounts,
 };

@@ -1,10 +1,8 @@
 //! Application ring: the ports, the ledger of custody rules, the vault that
-//! runs in the Durable Object, the relay's view of it, the drain from an
-//! older vault, and the accounts object's ledger, its memory-only scratch
-//! and the relay's view of it.
+//! runs in the Durable Object, the relay's view of it, and the accounts
+//! object's ledger, its memory-only scratch and the relay's view of it.
 
 mod accounts;
-mod draining;
 mod ledger;
 mod ledger_vault;
 mod ports;
@@ -20,7 +18,6 @@ mod fakes;
 mod tests;
 
 pub use accounts::AccountLedger;
-pub use draining::Draining;
 pub use ledger::{Committed, Entry, Found, Ledger, NewRequest};
 pub use ledger_vault::LedgerVault;
 pub use ports::{Accounts, Clock, KeyValue, Link, PayloadStore};

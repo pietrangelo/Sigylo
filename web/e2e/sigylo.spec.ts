@@ -1,5 +1,4 @@
 import { execFileSync } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
 import { readdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { type Browser, type Page, type Request } from '@playwright/test';
@@ -161,34 +160,6 @@ test('a burned secret leaves R2 as it is read', async ({ page, browser }) => {
   await reader.getByTestId('reveal').click();
   await expect(reader.getByTestId('plaintext')).toHaveValue(SECRET);
   await expect.poll(r2Objects).toBe(before);
-});
-
-test('while the database drains, a secret sealed before the vault still opens, once', async ({ page, browser }) => {
-  test.skip(!process.env.SIGYLO_E2E_DATABASE_URL, 'needs scripts/e2e.sh');
-  // The browser seals as always; the deposit lands in the database instead, as before the vault.
-  const id = randomBytes(16);
-  await page.route('**/api/secrets', async (route) => {
-    const body = route.request().postDataJSON() as { payload: string; revocation_token: string };
-    const payload = Buffer.from(body.payload, 'base64url').toString('hex');
-    const digest = createHash('sha256').update(Buffer.from(body.revocation_token, 'base64url')).digest('hex');
-    const expires = sql(
-      `select custody.deposit('\\x${id.toString('hex')}', '\\x${payload}', true, 3600, '\\x${digest}', 0::smallint)`,
-    );
-    await route.fulfill({ status: 201, json: { id: id.toString('base64url'), expires_at: Number(expires) } });
-  });
-  const { link } = await sealSecret(page);
-  expect(sql('select count(*) from custody.deposits')).toBe('1');
-
-  const reader = await freshPage(browser);
-  await reader.goto(link);
-  await reader.getByTestId('reveal').click();
-  await expect(reader.getByTestId('plaintext')).toHaveValue(SECRET);
-  expect(sql('select count(*) from custody.deposits')).toBe('0');
-
-  const latecomer = await freshPage(browser);
-  await latecomer.goto(link);
-  await latecomer.getByTestId('reveal').click();
-  await expect(latecomer.getByTestId('open-error')).toContainText('Non c');
 });
 
 test('request mode: a file sealed to the recipient’s post-quantum key', async ({ page, browser }) => {
