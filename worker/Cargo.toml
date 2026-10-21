@@ -1,6 +1,6 @@
 [package]
 name = "sigylo-relay"
-description = "Cloudflare Worker shell: the blind relay. HTTP in, Custody use cases, the vault in a Durable Object and R2 out (accounts, and custody while it drains, in PostgreSQL via Hyperdrive)"
+description = "Cloudflare Worker shell: the blind relay. HTTP in, Custody and Access use cases, the vault and the accounts in Durable Objects and R2 out (custody, while it drains, also in PostgreSQL via Hyperdrive)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

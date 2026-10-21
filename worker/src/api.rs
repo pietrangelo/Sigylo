@@ -256,6 +256,19 @@ pub fn route(method: &str, path: &str) -> Result<Route, ApiError> {
     if method == expected { Ok(route) } else { Err(ApiError::MethodNotAllowed) }
 }
 
+/// What the accounts' Durable Object lets in: only the relay's link, a POST
+/// to `/call` (`vault_adapters::DurableLink`). Anything else never reaches
+/// the ledger.
+pub fn accounts_door(method: &str, path: &str) -> Result<(), ApiError> {
+    if method != "POST" {
+        return Err(ApiError::MethodNotAllowed);
+    }
+    if path != "/call" {
+        return Err(ApiError::NotFound);
+    }
+    Ok(())
+}
+
 fn decode(field: &str) -> Result<Vec<u8>, ApiError> {
     URL_SAFE_NO_PAD.decode(field).map_err(|_| ApiError::InvalidEncoding)
 }
@@ -990,6 +1003,19 @@ mod tests {
                 &format!("/api/secrets/{ID}/chunks/0/revoke"),
             ] {
                 assert_eq!(route("POST", path), Err(ApiError::NotFound), "{path}");
+            }
+        }
+
+        #[test]
+        fn the_accounts_object_answers_only_a_post_to_call() {
+            assert_eq!(accounts_door("POST", "/call"), Ok(()));
+            for method in ["GET", "HEAD", "OPTIONS", "PUT", "DELETE", "PATCH", "post", ""] {
+                assert_eq!(accounts_door(method, "/call"), Err(ApiError::MethodNotAllowed), "{method}");
+            }
+            for path in
+                ["", "/", "/call/", "/Call", "/calls", "//call", "/vault/call", "/call/../call", "/api/account/keyring"]
+            {
+                assert_eq!(accounts_door("POST", path), Err(ApiError::NotFound), "{path}");
             }
         }
 

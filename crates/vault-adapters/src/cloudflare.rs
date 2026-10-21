@@ -159,7 +159,8 @@ impl PayloadStore for R2Payloads {
 }
 
 /// The relay's line to the vault: the Durable Object named [`VAULT_NAME`]
-/// in the [`JURISDICTION`], so its records never leave the EU.
+/// (or, through [`DurableLink::named`], the accounts' one) in the
+/// [`JURISDICTION`], so its records never leave the EU.
 #[derive(Debug)]
 pub struct DurableLink {
     stub: Stub,
@@ -177,6 +178,11 @@ pub enum Placement {
 
 impl DurableLink {
     pub fn new(env: &Env, binding: &str, placement: Placement) -> worker::Result<Self> {
+        Self::named(env, binding, VAULT_NAME, placement)
+    }
+
+    /// The Durable Object `name` of the class behind `binding`.
+    pub fn named(env: &Env, binding: &str, name: &str, placement: Placement) -> worker::Result<Self> {
         let namespace = env.durable_object(binding)?;
         let stub = match placement {
             Placement::Jurisdiction => {
@@ -184,9 +190,9 @@ impl DurableLink {
                 let restricted = jurisdiction
                     .unchecked_into::<js_sys::Function>()
                     .call1(namespace.as_ref(), &JURISDICTION.into())?;
-                restricted.unchecked_into::<ObjectNamespace>().get_by_name(VAULT_NAME)?
+                restricted.unchecked_into::<ObjectNamespace>().get_by_name(name)?
             }
-            Placement::Local => namespace.get_by_name(VAULT_NAME)?,
+            Placement::Local => namespace.get_by_name(name)?,
         };
         Ok(Self { stub })
     }

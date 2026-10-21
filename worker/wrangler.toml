@@ -50,6 +50,18 @@ class_name = "SigyloVault"
 tag = "v1"
 new_sqlite_classes = ["SigyloVault"]
 
+# Sigylo's accounts: one Durable Object of a class of its own, created by name in
+# the EU jurisdiction (vault_adapters::DurableLink::named), keeps accounts,
+# sealed keyrings and sessions; logins in progress and attempt counters live
+# only in its memory. Only this Worker reaches it.
+[[durable_objects.bindings]]
+name = "ACCOUNTS"
+class_name = "SigyloAccounts"
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["SigyloAccounts"]
+
 # Throttle every API call per client address, IPv6 by /64 (kept in memory by
 # Cloudflare, never stored by us): POSTs and GETs each have their own allowance.
 [[ratelimits]]
@@ -95,7 +107,8 @@ LEGACY_VAULT = "drain"
 OPAQUE_CANARY = "zZ3ImAHoqehSoothI6rrvwLTwKyYLznXA995E4QyYnU"
 
 # Physically delete expired records (reads already ignore them), in the vault and,
-# while it drains, in the database, then the R2 objects of everything that went.
+# while it drains, in the database, then the R2 objects of everything that went;
+# then expired sessions, logins and counters in the accounts object.
 [triggers]
 crons = ["*/15 * * * *"]
 

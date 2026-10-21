@@ -12,8 +12,10 @@
 //!
 //! Accounts use OPAQUE through the Access use cases: the relay's OPAQUE keys
 //! come from the Worker secret `OPAQUE_SERVER_SEED` (32 bytes, base64url),
-//! and logins and registrations are throttled per account and budget by the
-//! `LOGIN_LIMITER` binding and the database. When `OPAQUE_CANARY` is set,
+//! accounts, keyrings and sessions live in a Durable Object of their own in
+//! the EU ([`SigyloAccounts`](runtime::SigyloAccounts)), and logins and
+//! registrations are throttled per account and budget by the
+//! `LOGIN_LIMITER` binding and that object. When `OPAQUE_CANARY` is set,
 //! accounts answer only if the secret is the one it names.
 #![forbid(unsafe_code)]
 
@@ -21,8 +23,8 @@ pub mod api;
 
 #[cfg(target_arch = "wasm32")]
 mod runtime {
-    use access::{AccessError, AccountId, Budget, Gatekeeper, Throttle, UnixTime};
-    use access_adapters::{OpaqueKeys, PostgresAccounts, PostgresThrottle, RandomTokens, throttle_bucket};
+    use access::{AccessError, AccountId, AccountStore, Budget, Gatekeeper, Throttle, UnixTime};
+    use access_adapters::{OpaqueKeys, RandomTokens, throttle_bucket};
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     use core::cell::OnceCell;
 
@@ -32,8 +34,10 @@ mod runtime {
     };
     use custody_adapters::{PostgresVault, R2ChunkStore, RandomIds, Sha256TokenDigest};
     use tokio_postgres::{Client, NoTls};
-    use vault::{Draining, LedgerVault, RemoteVault};
-    use vault_adapters::{DurableKv, DurableLink, Placement, R2Payloads, WorkerClock};
+    use vault::{AccountLedger, Draining, LedgerVault, RemoteAccounts, RemoteVault, Scratch, VaultThrottle};
+    use vault_adapters::{
+        ACCOUNTS_BINDING, ACCOUNTS_NAME, DurableKv, DurableLink, Placement, R2Payloads, VAULT_BINDING, WorkerClock,
+    };
     use worker::postgres_tls::PassthroughTls;
     use worker::{
         Context, DurableObject, Env, Method, Request, Response, Result, ScheduleContext, ScheduledEvent,
@@ -129,14 +133,14 @@ mod runtime {
     }
 
     /// Login and registration attempts per account and per minute, counted
-    /// in the database for the whole world (`access.admit`), behind the
-    /// same limit in `LOGIN_LIMITER` (wrangler.toml).
+    /// in the accounts object for the whole world ([`VaultThrottle`]),
+    /// behind the same limit in `LOGIN_LIMITER` (wrangler.toml).
     const LOGIN_ATTEMPTS_PER_MINUTE: u16 = 10;
 
     /// Login and registration attempts per account and budget in Cloudflare's
     /// memory, keyed by a prefix of the budget's bucket. Its count is per
-    /// Cloudflare location, so it only spares the database the obvious
-    /// floods. Fails closed: without a working limiter, no guessing.
+    /// Cloudflare location, so it only spares the accounts object the
+    /// obvious floods. Fails closed: without a working limiter, no guessing.
     struct LoginLimiter<'a>(&'a Env);
 
     impl Throttle for LoginLimiter<'_> {
@@ -167,12 +171,12 @@ mod runtime {
         }
         let expected = env.var("OPAQUE_CANARY").ok().map(|v| v.to_string());
         api::check_canary(expected.as_deref(), &canary)?;
-        let client = connect(env).await.map_err(|_| AccessError::StoreUnavailable)?;
+        let accounts = remote_accounts(env)?;
         let digest = keys.session_digest();
         let passes = keys.passes(now());
-        // The binding is a cheap first filter; the database holds the one global count.
-        let throttle = (LoginLimiter(env), PostgresThrottle::new(&client, LOGIN_ATTEMPTS_PER_MINUTE));
-        let gatekeeper = Gatekeeper::new(keys, PostgresAccounts::new(&client), RandomTokens, digest, throttle, passes);
+        // The binding is a cheap first filter; the accounts object holds the one global count.
+        let throttle = (LoginLimiter(env), VaultThrottle::new(&accounts, LOGIN_ATTEMPTS_PER_MINUTE, throttle_bucket));
+        let gatekeeper = Gatekeeper::new(keys, &accounts, RandomTokens, digest, throttle, passes);
         Ok(match command {
             AccountCommand::RegisterStart(username, request) => Reply::Json(
                 200,
@@ -218,12 +222,26 @@ mod runtime {
         }
     }
 
-    /// The vault in its Durable Object, in the EU. `VAULT_PLACEMENT = "local"`
+    /// Where the Durable Objects live: in the EU. `VAULT_PLACEMENT = "local"`
     /// exists only for `wrangler dev`, whose runtime has no jurisdictions.
-    fn remote_vault(env: &Env) -> std::result::Result<RemoteVault<DurableLink>, CustodyError> {
+    fn placement(env: &Env) -> Placement {
         let local = env.var("VAULT_PLACEMENT").is_ok_and(|v| v.to_string() == "local");
-        let placement = if local { Placement::Local } else { Placement::Jurisdiction };
-        DurableLink::new(env, "VAULT", placement).map(RemoteVault::new).map_err(|_| CustodyError::VaultUnavailable)
+        if local { Placement::Local } else { Placement::Jurisdiction }
+    }
+
+    /// The vault in its Durable Object.
+    fn remote_vault(env: &Env) -> std::result::Result<RemoteVault<DurableLink>, CustodyError> {
+        DurableLink::new(env, VAULT_BINDING, placement(env))
+            .map(RemoteVault::new)
+            .map_err(|_| CustodyError::VaultUnavailable)
+    }
+
+    /// The accounts in their Durable Object, which counts attempts under the
+    /// same buckets as `LOGIN_LIMITER`.
+    fn remote_accounts(env: &Env) -> std::result::Result<RemoteAccounts<DurableLink>, AccessError> {
+        DurableLink::named(env, ACCOUNTS_BINDING, ACCOUNTS_NAME, placement(env))
+            .map(|link| RemoteAccounts::new(link, throttle_bucket))
+            .map_err(|_| AccessError::StoreUnavailable)
     }
 
     /// Whether custody kept in PostgreSQL before the vault still drains.
@@ -417,6 +435,40 @@ mod runtime {
         }
     }
 
+    /// Sigylo's accounts: one Durable Object of its own class (in the EU, by
+    /// name, see `vault_adapters::DurableLink::named`) that runs every
+    /// [`vault::AccountCall`] on its own storage, one synchronous step at a
+    /// time. Logins in progress and attempt counters live only in its
+    /// memory ([`Scratch`]), never on disk. Only this Worker can reach it,
+    /// through its binding, and only with a POST to `/call`.
+    #[durable_object(fetch)]
+    pub struct SigyloAccounts {
+        state: State,
+        scratch: Scratch,
+    }
+
+    impl core::fmt::Debug for SigyloAccounts {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str("SigyloAccounts")
+        }
+    }
+
+    impl DurableObject for SigyloAccounts {
+        fn new(state: State, _env: Env) -> Self {
+            Self { state, scratch: Scratch::default() }
+        }
+
+        async fn fetch(&self, mut req: Request) -> Result<Response> {
+            if let Err(error) = api::accounts_door(req.method().as_ref(), &req.path()) {
+                return Response::error("", error.status());
+            }
+            let call = req.bytes().await?;
+            // From here to the reply nothing awaits: one call, one step.
+            let ledger = AccountLedger::new(DurableKv::new(&self.state), &self.scratch, WorkerClock);
+            Response::from_bytes(vault::serve_accounts(&ledger, &call))
+        }
+    }
+
     #[event(fetch)]
     async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
         let method = req.method().to_string();
@@ -428,7 +480,7 @@ mod runtime {
         if let Err(error) = api::check_origin(req.headers().get("Origin")?.as_deref(), &own_origin) {
             return fail(error);
         }
-        // Every call costs a database query, reads included: all of them are throttled.
+        // Every call costs a Durable Object request, reads included: all of them are throttled.
         if rate_limited(&env, &req).await {
             return respond(429, r#"{"error":"RateLimited"}"#.into());
         }
@@ -482,12 +534,9 @@ mod runtime {
                 chores(&Custodian::new(vault, store, Sha256TokenDigest, RandomIds)).await;
             }
         }
-        if let (Ok(client), Ok(keys)) = (connect(&env).await, opaque_keys(&env)) {
-            let store = PostgresAccounts::new(&client);
-            let digest = keys.session_digest();
-            let passes = keys.passes(now());
-            let gatekeeper = Gatekeeper::new(keys, store, RandomTokens, digest, LoginLimiter(&env), passes);
-            let _ = gatekeeper.purge_expired().await;
+        // Expired sessions, and logins and counters left in the object's memory.
+        if let Ok(accounts) = remote_accounts(&env) {
+            let _ = accounts.purge_expired().await;
         }
     }
 }
