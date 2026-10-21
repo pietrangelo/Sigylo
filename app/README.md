@@ -28,6 +28,8 @@ On Linux the webview libraries are needed: `libwebkit2gtk-4.1-dev build-essentia
 
 `.github/workflows/app-release.yml` builds the installers for Linux, macOS (Apple silicon and Intel) and Windows and attaches them to a draft GitHub release, on an `app-v*` tag or by hand. The builds are unsigned: macOS and Windows will show a warning until the certificates (Apple Developer ID, Windows code signing) are added as repository secrets.
 
+The Windows build also gives `Sigylo_<version>.0_x64.msix` for the Microsoft Store (workflow artifact `sigylo-msix`, built by `msix/pack.ps1` from `msix/AppxManifest.xml`). It carries the identity Partner Center reserved for Sigylo and is uploaded there unsigned: the Store signs it. It is not attached to the release, since an unsigned MSIX does not install.
+
 ## Mobile
 
 The crate is already set up for iOS and Android (`#[tauri::mobile_entry_point]`, `staticlib`/`cdylib`). Generating the native projects needs the platform toolchain: `cargo tauri android init` (Android SDK and NDK) or `cargo tauri ios init` (macOS with Xcode), then `cargo tauri android dev` / `cargo tauri ios dev`. Publishing to the stores requires the owner's developer accounts.

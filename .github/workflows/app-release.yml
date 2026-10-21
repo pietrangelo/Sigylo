@@ -5,7 +5,9 @@ name: App release
 # matches the version in app/tauri.conf.json, or by hand from main, never for
 # a pull request. The builds are not signed yet: signing
 # (Apple Developer ID, Windows code signing) needs the owner's accounts and
-# goes in through repository secrets.
+# goes in through repository secrets. The Windows leg also packs an MSIX for
+# the Microsoft Store (app/msix), kept as a workflow artifact, never attached
+# to the release: the Store signs it on upload, unsigned it does not install.
 
 on:
   push:
@@ -99,3 +101,14 @@ jobs:
           releaseBody: Installers of the Sigylo app, built from this tag by GitHub Actions. Not signed yet.
           releaseDraft: true
           prerelease: true
+      - name: Microsoft Store package (Windows)
+        if: runner.os == 'Windows'
+        working-directory: app
+        shell: pwsh
+        run: ./msix/pack.ps1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: runner.os == 'Windows'
+        with:
+          name: sigylo-msix
+          path: app/target/msix/*.msix
+          if-no-files-found: error
