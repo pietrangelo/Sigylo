@@ -1,0 +1,8 @@
+# cc: begin (Claude Code configuration, encrypted with sec)
+.claude/** filter=sec diff=sec
+.claude/settings.json !filter !diff
+.claude/cc/** !filter !diff
+CLAUDE.md filter=sec diff=sec
+CLAUDE.local.md filter=sec diff=sec
+/CLAUDE.md !filter !diff
+# cc: end
