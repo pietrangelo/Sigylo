@@ -1,0 +1,11 @@
+name: Encrypted Claude configuration
+
+on: [push, pull_request]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check that the Claude configuration is encrypted
+        run: .claude/cc/cc check
