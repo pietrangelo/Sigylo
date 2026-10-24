@@ -150,7 +150,7 @@ must_encrypt() {
 			.claude/*) printf '%s\0' "$path" ;;
 			CLAUDE.md) ;;
 			*/CLAUDE.md | CLAUDE.local.md | */CLAUDE.local.md) printf '%s\0' "$path" ;;
-			*) [ "$val" = sec ] && printf '%s\0' "$path" ;;
+			*) if [ "$val" = sec ]; then printf '%s\0' "$path"; fi ;;
 			esac
 		done
 	return 0
