@@ -362,6 +362,24 @@ describe('accounts', () => {
       expect(readWatermark(store, await watermarkSlot(session.value.keyringKey))).toBe(2);
     });
 
+    it('a change the strict parser would not read back is never stored, so the keyring stays readable', async () => {
+      const calls: Call[] = [];
+      const { relay, state } = toyRelay(calls);
+      const accounts = new Accounts(toyEngine(), relay, new MemoryStore());
+      const session = await accounts.register('ada', 'correct horse battery');
+      if (!session.ok) throw new Error('no session');
+      await accounts.update(session.value, (k) => addSeal(k, seal(1)));
+      const before = state.keyring;
+      // A fractional expiry (say from a hostile receipt) would poison the keyring for good.
+      for (const bad of [{ ...seal(2), expires: 1.5 }, { ...seal(2), sealed: Number.NaN }, { ...seal(2), id: 'short' }]) {
+        calls.length = 0;
+        expect(await accounts.update(session.value, (k) => addSeal(k, bad))).toEqual({ ok: false, error: 'Unexpected' });
+        expect(calls.filter((c) => c.init.method === 'POST')).toEqual([]);
+        expect(state.keyring).toBe(before);
+      }
+      expect(await accounts.keyring(session.value)).toEqual({ ok: true, value: { data: { ...addSeal(EMPTY, seal(1)), gen: 1 }, version: 1 } });
+    });
+
     it('a relay claiming there is no keyring, once one was seen, is caught too', async () => {
       const { relay, state } = toyRelay([]);
       const accounts = new Accounts(toyEngine(), relay, new MemoryStore());

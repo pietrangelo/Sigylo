@@ -181,6 +181,25 @@ describe('relay client', () => {
       }
     });
 
+    it('refuses an expiry that is not a whole positive number of seconds, from every reader', async () => {
+      // A fractional or out-of-range expiry would be written into the account
+      // keyring, whose strict parser would then refuse the keyring for good.
+      const token = new Uint8Array(32).fill(4);
+      for (const expires_at of [1.5, 0, -1, 2 ** 53, 1e300, '42', null, true]) {
+        const unexpected = { ok: false, error: 'Unexpected' };
+        const receipt = { id: encode(id), inbox: encode(inbox), expires_at };
+        expect(await fakeRelay(201, receipt).deposit(Uint8Array.of(1), 'until_expiry', 300, new Uint8Array(32)), `deposit ${expires_at}`).toEqual(unexpected);
+        expect(await fakeRelay(201, receipt).answer(id, Uint8Array.of(1), 'until_expiry', 300), `answer ${expires_at}`).toEqual(unexpected);
+        expect(await fakeRelay(201, receipt).postRequest(Uint8Array.of(9), 3600), `request ${expires_at}`).toEqual(unexpected);
+        expect(await fakeRelay(200, { recipient_key: 'CQ', expires_at }).fetchRequest(id), `fetch ${expires_at}`).toEqual(unexpected);
+        const session = { session: encode(token), expires_at };
+        expect(await fakeRelay(200, session).loginFinish(new Uint8Array(16), new Uint8Array(64)), `login ${expires_at}`).toEqual(unexpected);
+      }
+      // The largest safe integer is still a valid expiry.
+      const far = await fakeRelay(200, { recipient_key: 'CQ', expires_at: Number.MAX_SAFE_INTEGER }).fetchRequest(id);
+      expect(far).toEqual({ ok: true, value: { publicKey: Uint8Array.of(9), expiresAt: Number.MAX_SAFE_INTEGER } });
+    });
+
     it('refuses opened files whose count or claim is malformed', async () => {
       for (const body of [
         { payload: 'AQI', burned: true, chunks: 0 },

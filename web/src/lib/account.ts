@@ -159,9 +159,13 @@ export class Accounts {
       const current = await this.keyring(session);
       if (!current.ok) return current;
       const next = { ...change(pruneExpired(current.value.data, pruneBefore(session))), gen: current.value.data.gen + 1 };
+      const text = serializeKeyring(next);
+      // A keyring the strict parser would refuse could never be read again, on any
+      // device: refuse to store it, and keep the one already stored.
+      if (parseKeyring(text) === null) return { ok: false, error: 'Unexpected' };
       let sealed: Uint8Array;
       try {
-        sealed = this.engine.sealWithKey(textBytes(serializeKeyring(next)), session.keyringKey);
+        sealed = this.engine.sealWithKey(textBytes(text), session.keyringKey);
       } catch {
         return { ok: false, error: 'Unexpected' };
       }
