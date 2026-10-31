@@ -217,6 +217,15 @@ pub fn network_binding(write: bool) -> &'static str {
     if write { "NETWORK_WRITE_LIMITER" } else { "NETWORK_READ_LIMITER" }
 }
 
+/// The binding (wrangler.toml) that counts login and registration attempts
+/// per account and budget in Cloudflare's memory, per location. Fails closed.
+pub const LOGIN_BINDING: &str = "LOGIN_LIMITER";
+
+/// Login and registration attempts per account and per minute, counted in
+/// the accounts object for the whole world, behind the same limit in
+/// [`LOGIN_BINDING`].
+pub const LOGIN_ATTEMPTS_PER_MINUTE: u16 = 10;
+
 /// Whether a call waits, given the limiter's verdict (`None` when it did not
 /// answer). Writes fail closed: they fill the vault and spend its daily
 /// allowance of rows. Reads fail open, so a broken limiter never keeps a
@@ -1271,6 +1280,10 @@ mod tests {
             // Ten clients' worth per /48, for reads as for writes.
             assert_eq!(limit("READ_LIMITER").map(|n| n * 10), limit(network_binding(false)));
             assert_eq!(limit("WRITE_LIMITER").map(|n| n * 10), limit(network_binding(true)));
+            // Logins fail closed too: without this binding no one signs in or
+            // registers. It counts per location what the accounts object
+            // counts for the whole world, so the two limits agree.
+            assert_eq!(limit(LOGIN_BINDING), Some(u32::from(LOGIN_ATTEMPTS_PER_MINUTE)));
         }
 
         #[test]
