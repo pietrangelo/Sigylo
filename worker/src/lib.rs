@@ -90,16 +90,12 @@ mod runtime {
         if api::throttled(write, limiter.limit(api::limiter_key(&address)).await.ok().map(|o| o.success)) {
             return true;
         }
-        // Writes from IPv6 also spend their /48's allowance, closed like the first.
-        let Some(network) = api::network_key(&address).filter(|_| write) else { return false };
-        let Ok(limiter) = env.rate_limiter("NETWORK_WRITE_LIMITER") else { return true };
-        api::throttled(true, limiter.limit(network).await.ok().map(|o| o.success))
+        // Calls from IPv6 also spend their /48's allowance, writes and reads
+        // apart, with the same failure policy as the first.
+        let Some(network) = api::network_key(&address) else { return false };
+        let Ok(limiter) = env.rate_limiter(api::network_binding(write)) else { return api::throttled(write, None) };
+        api::throttled(write, limiter.limit(network).await.ok().map(|o| o.success))
     }
-
-    /// Login and registration attempts per account and per minute, counted
-    /// in the accounts object for the whole world ([`VaultThrottle`]),
-    /// behind the same limit in `LOGIN_LIMITER` (wrangler.toml).
-    const LOGIN_ATTEMPTS_PER_MINUTE: u16 = 10;
 
     /// Login and registration attempts per account and budget in Cloudflare's
     /// memory, keyed by a prefix of the budget's bucket. Its count is per
@@ -109,14 +105,17 @@ mod runtime {
 
     impl Throttle for LoginLimiter<'_> {
         async fn admit(&self, account: &AccountId, budget: &Budget) -> bool {
-            let Ok(limiter) = self.0.rate_limiter("LOGIN_LIMITER") else { return false };
+            let Ok(limiter) = self.0.rate_limiter(api::LOGIN_BINDING) else { return false };
             let key: String = throttle_bucket(account, budget)[..16].iter().map(|b| format!("{b:02x}")).collect();
             limiter.limit(key).await.map(|o| o.success).unwrap_or(false)
         }
     }
 
     fn opaque_keys(env: &Env) -> std::result::Result<OpaqueKeys, AccessError> {
-        let secret = env.secret("OPAQUE_SERVER_SEED").map_err(|_| AccessError::NotConfigured)?.to_string();
+        // Straight from the JS string into the one `String` that is wiped:
+        // `to_string()` would go through `Display`, whose own copy is never wiped.
+        let binding = env.secret("OPAQUE_SERVER_SEED").map_err(|_| AccessError::NotConfigured)?;
+        let secret = Zeroizing::new(binding.as_ref().as_string().ok_or(AccessError::NotConfigured)?);
         let seed = Zeroizing::new(URL_SAFE_NO_PAD.decode(secret.trim()).map_err(|_| AccessError::NotConfigured)?);
         OpaqueKeys::from_seed(&seed)
     }
@@ -139,7 +138,8 @@ mod runtime {
         let digest = keys.session_digest();
         let passes = keys.passes(now());
         // The binding is a cheap first filter; the accounts object holds the one global count.
-        let throttle = (LoginLimiter(env), VaultThrottle::new(&accounts, LOGIN_ATTEMPTS_PER_MINUTE, throttle_bucket));
+        let throttle =
+            (LoginLimiter(env), VaultThrottle::new(&accounts, api::LOGIN_ATTEMPTS_PER_MINUTE, throttle_bucket));
         let gatekeeper = Gatekeeper::new(keys, &accounts, RandomTokens, digest, throttle, passes);
         Ok(match command {
             AccountCommand::RegisterStart(username, request) => Reply::Json(
@@ -329,7 +329,9 @@ mod runtime {
             Err(error) => return fail(error),
         };
         let own_origin = req.url()?.origin().ascii_serialization();
-        if let Err(error) = api::check_origin(req.headers().get("Origin")?.as_deref(), &own_origin) {
+        let headers = req.headers();
+        let (origin, fetch_site) = (headers.get("Origin")?, headers.get("Sec-Fetch-Site")?);
+        if let Err(error) = api::check_origin(origin.as_deref(), fetch_site.as_deref(), &own_origin) {
             return fail(error);
         }
         // Every call costs a Durable Object request, reads included: all of them are throttled.

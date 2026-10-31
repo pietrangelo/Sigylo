@@ -7,17 +7,39 @@ use access::Budget;
 
 use super::limits::TEARDOWN_WRITES_PER_DAY;
 
-/// What an account weighs in [`ACCOUNT_BYTES_CEILING`], its keyring apart
-/// (which weighs its length).
+/// What an account weighs in [`ACCOUNT_BYTES_CEILING`].
 pub const ACCOUNT_COST: u64 = 512;
-/// Accounts and keyrings together. Accounts do not expire, so they have a
-/// ceiling of their own.
+/// Accounts alone. Accounts do not expire, so they have a ceiling of their
+/// own; keyrings have another ([`KEYRING_BYTES_CEILING`]), so that large
+/// keyrings can never stop registration.
 pub const ACCOUNT_BYTES_CEILING: u64 = 64 * 1024 * 1024;
+/// Keyrings alone, each weighing its length. Only a keyring that grows
+/// checks it.
+pub const KEYRING_BYTES_CEILING: u64 = 64 * 1024 * 1024;
+/// Bytes keyrings may grow by in one day (UTC), all accounts together, past
+/// which no keyring grows until the next: filling [`KEYRING_BYTES_CEILING`]
+/// for good takes 13 days or more. The day counts net growth: a keyring is
+/// charged what it grows by, and what it shrinks by, or its length when its
+/// account closes, is given back (down to zero), so keyrings held never grow
+/// by more than this in a day, and one account shrinking and growing its
+/// keyring again cannot spend the day for everyone.
+pub const KEYRING_GROWTH_BYTES_PER_DAY: u32 = (KEYRING_BYTES_CEILING / 13) as u32;
 
 /// What a session weighs in [`SESSION_BYTES_CEILING`].
 pub const SESSION_COST: u64 = 192;
-/// Live sessions of every account together.
-pub const SESSION_BYTES_CEILING: u64 = 16 * 1024 * 1024;
+/// Fewest rows opening a session writes: the session, its two index entries
+/// and the usage record (pinned by the ledger's tests).
+pub const SESSION_OPEN_ROWS: u32 = 4;
+/// Most sessions [`SESSION_ROWS_PER_DAY`] lets one day open.
+pub const SESSIONS_PER_DAY: u32 = SESSION_ROWS_PER_DAY.div_ceil(SESSION_OPEN_ROWS);
+/// Live sessions of every account together. A session lives 12 hours, so the
+/// live ones were opened over two UTC days at most: the ceiling holds two
+/// days of sessions, and the day's [`SESSION_ROWS_PER_DAY`] always stops a
+/// flood of sign-ins before it, so self-registered accounts can never fill
+/// it and lock everyone else out.
+pub const SESSION_BYTES_CEILING: u64 = 96 * 1024 * 1024;
+const _: () = assert!(SESSION_BYTES_CEILING >= 2 * SESSIONS_PER_DAY as u64 * SESSION_COST);
+const _: () = assert!(KEYRING_GROWTH_BYTES_PER_DAY as u64 * 13 <= KEYRING_BYTES_CEILING);
 
 /// What an attempt counter weighs in the memory pools.
 pub const COUNTER_COST: u64 = 128;
@@ -56,11 +78,20 @@ pub const SHARED_POOL: u64 = 16 * 1024 * 1024;
 /// stop registrations.
 pub const REGISTRATION_RESERVE: u64 = 1024 * 1024;
 /// Memory for device logins and their counters first, so a flood of guesses
-/// does not lock the owners' devices out.
+/// does not lock the owners' devices out. Each account holds at most
+/// [`DEVICE_SHARE_PER_ACCOUNT`] of it.
 pub const DEVICE_RESERVE: u64 = 8 * 1024 * 1024;
-/// Live device budgets one account may have counted at once: a stolen pass
-/// takes one of them, never all.
+/// Device buckets one account may hold at once, a bucket held while its
+/// counter or its parked login lives: a stolen pass takes one of them, never
+/// all, and an account rotating passes holds at most this many parked logins.
 pub const DEVICE_BUCKETS_PER_ACCOUNT: u8 = 16;
+/// What one account may hold of [`DEVICE_RESERVE`]: one device bucket's
+/// worth, its counter and its parked login. The account's other buckets are
+/// charged to [`SHARED_POOL`], so accounts an attacker registers hold one
+/// bucket each of the reserve, never sixteen, and a day of registrations
+/// ([`ENROLLS_PER_DAY`]) cannot fill it.
+pub const DEVICE_SHARE_PER_ACCOUNT: u64 = COUNTER_COST + PARKED_LOGIN_COST;
+const _: () = assert!(DEVICE_RESERVE / DEVICE_SHARE_PER_ACCOUNT > ENROLLS_PER_DAY as u64);
 
 /// How long an attempt counter counts.
 pub const ATTEMPT_WINDOW_SECONDS: u32 = 60;
@@ -80,6 +111,7 @@ pub const KEYRING_ROWS_PER_DAY: u32 = 250_000;
 /// Accounts created in one day past which registration waits for the next:
 /// filling [`ACCOUNT_BYTES_CEILING`] for good takes 13 days or more.
 pub const ENROLLS_PER_DAY: u32 = 10_000;
+const _: () = assert!(ENROLLS_PER_DAY as u64 * ACCOUNT_COST * 13 <= ACCOUNT_BYTES_CEILING);
 /// Rows written in one day past which purging waits for the next day.
 /// Closing a session or an account never waits.
 pub const ACCOUNT_TEARDOWN_ROWS_PER_DAY: u32 = TEARDOWN_WRITES_PER_DAY;

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { t } from '../lib/i18n';
+  import { dropKeyFromAddress } from '../lib/links';
   import { relayMessage } from '../lib/messages';
   import { Relay } from '../lib/relay';
   import { relayFetch } from '../lib/platform';
@@ -17,8 +18,9 @@
     const result = await relay.revoke(id, token);
     busy = false;
     if (result.ok) {
+      // The token has done its job: drop it from the address bar and history entry.
+      dropKeyFromAddress();
       done = true;
-      history.replaceState(null, '', location.pathname);
     } else {
       error = relayMessage(result.error);
     }

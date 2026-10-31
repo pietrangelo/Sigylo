@@ -16,12 +16,22 @@ fn allowed(url: &str) -> bool {
     allows(&Url::parse(url).unwrap())
 }
 
+/// Where Tauri serves the bundle on this platform, and the origins it uses on
+/// the others (or with `useHttpsScheme`, which the app leaves off).
+#[cfg(any(windows, target_os = "android"))]
+const APP: &str = "http://tauri.localhost";
+#[cfg(any(windows, target_os = "android"))]
+const OTHER_PLATFORMS: [&str; 2] = ["tauri://localhost", "https://tauri.localhost"];
+#[cfg(not(any(windows, target_os = "android")))]
+const APP: &str = "tauri://localhost";
+#[cfg(not(any(windows, target_os = "android")))]
+const OTHER_PLATFORMS: [&str; 2] = ["http://tauri.localhost", "https://tauri.localhost"];
+
 #[test]
 fn the_webview_stays_on_the_bundled_app() {
-    assert!(allowed("tauri://localhost/"));
-    assert!(allowed("tauri://localhost/#/s/a/b"));
-    assert!(allowed("http://tauri.localhost/index.html"));
-    assert!(allowed("https://tauri.localhost/"));
+    assert!(allowed(&format!("{APP}/")));
+    assert!(allowed(&format!("{APP}/#/s/a/b")));
+    assert!(allowed(&format!("{APP}/index.html")));
 }
 
 fn saved(url: &str) -> bool {
@@ -30,11 +40,10 @@ fn saved(url: &str) -> bool {
 
 #[test]
 fn files_the_page_saves_go_to_the_downloads() {
-    assert!(saved("blob:tauri://localhost/0b6e8f4a-6a43-4c55-9a8e-2f1d3c9e5b10"));
-    assert!(saved("blob:http://tauri.localhost/0b6e8f4a-6a43-4c55-9a8e-2f1d3c9e5b10"));
-    assert!(saved("blob:https://tauri.localhost/0b6e8f4a-6a43-4c55-9a8e-2f1d3c9e5b10"));
+    let blob = format!("blob:{APP}/0b6e8f4a-6a43-4c55-9a8e-2f1d3c9e5b10");
+    assert!(saved(&blob));
     // Saving follows the blob, so the navigation policy lets exactly these through.
-    assert!(allowed("blob:tauri://localhost/0b6e8f4a-6a43-4c55-9a8e-2f1d3c9e5b10"));
+    assert!(allowed(&blob));
 }
 
 #[test]
@@ -76,6 +85,42 @@ mod adversary {
         ] {
             assert!(!allowed(url), "{url}");
         }
+    }
+
+    /// Another platform's origin is not the bundle here: on Linux nothing
+    /// serves `http://tauri.localhost`, so a page there is not the app's.
+    #[test]
+    fn another_platform_s_origin_is_refused() {
+        for origin in OTHER_PLATFORMS {
+            assert!(!allowed(&format!("{origin}/")), "{origin}");
+            assert!(!allowed(&format!("{origin}/index.html")), "{origin}");
+            assert!(!saved(&format!("blob:{origin}/0b6e8f4a-6a43-4c55-9a8e-2f1d3c9e5b10")), "{origin}");
+        }
+    }
+
+    #[test]
+    fn the_app_origin_with_a_port_or_a_user_is_refused() {
+        let (scheme, host) = APP.split_once("://").unwrap();
+        for url in [
+            format!("{APP}:1/"),
+            format!("{APP}:8080/"),
+            format!("{scheme}://user@{host}/"),
+            format!("{scheme}://user:pass@{host}/"),
+            format!("blob:{APP}:1/0b6e8f4a"),
+            format!("blob:{scheme}://user@{host}/0b6e8f4a"),
+        ] {
+            assert!(!allowed(&url), "{url}");
+            assert!(!saved(&url), "{url}");
+        }
+    }
+
+    /// `tauri:` has no default port, so `:80` is another origin; `http:`
+    /// drops its default `:80` when parsed, so there it is the app itself.
+    #[cfg(not(any(windows, target_os = "android")))]
+    #[test]
+    fn the_app_origin_on_port_80_is_refused() {
+        assert!(!allowed(&format!("{APP}:80/")));
+        assert!(!saved(&format!("blob:{APP}:80/0b6e8f4a")));
     }
 
     #[test]

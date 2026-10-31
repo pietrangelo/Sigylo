@@ -22,8 +22,9 @@ use super::scratch::Scratch;
 use crate::core::account_keys as keys;
 use crate::core::{
     ACCOUNT_BYTES_CEILING, ACCOUNT_COST, ACCOUNT_PURGE_BATCHES, ACCOUNT_TEARDOWN_ROWS_PER_DAY, AccountRecord,
-    AccountUsage, Class, ENROLLS_PER_DAY, KEYRING_ROWS_PER_DAY, KeyringRecord, PURGE_BATCH, SECONDS_PER_DAY,
-    SESSION_BYTES_CEILING, SESSION_COST, SESSION_ROWS_PER_DAY, SessionRecord, snapshot,
+    AccountUsage, Class, ENROLLS_PER_DAY, KEYRING_BYTES_CEILING, KEYRING_GROWTH_BYTES_PER_DAY, KEYRING_ROWS_PER_DAY,
+    KeyringRecord, PURGE_BATCH, SECONDS_PER_DAY, SESSION_BYTES_CEILING, SESSION_COST, SESSION_ROWS_PER_DAY,
+    SessionRecord, snapshot,
 };
 
 /// Index entries one account's sessions may have: [`MAX_SESSIONS`], and one
@@ -243,7 +244,8 @@ impl<'s, K: KeyValue, C: Clock> AccountLedger<'s, K, C> {
     // ---- use cases -----------------------------------------------------
 
     /// False when the name is taken: that answer comes before any ceiling,
-    /// so a taken name says taken even on a full store.
+    /// so a taken name says taken even on a full store. Only the accounts'
+    /// own ceiling counts: keyrings, however large, never stop registration.
     pub fn enroll(&self, account: &AccountId, record: &RegistrationRecord) -> Result<bool, AccessError> {
         let now = self.now();
         self.step(now, Rows::Others, |usage| {
@@ -254,11 +256,11 @@ impl<'s, K: KeyValue, C: Clock> AccountLedger<'s, K, C> {
             if self.kv.get(&keys::keyring(account))?.is_some() {
                 return Err(damaged());
             }
-            if usage.enrolls >= ENROLLS_PER_DAY || usage.stored.saturating_add(ACCOUNT_COST) > ACCOUNT_BYTES_CEILING {
+            if usage.enrolls >= ENROLLS_PER_DAY || usage.accounts.saturating_add(ACCOUNT_COST) > ACCOUNT_BYTES_CEILING {
                 return Err(CustodyError::StorageFull);
             }
             self.put(&keys::account(account), &AccountRecord { record: record.clone() }.encode())?;
-            usage.stored = usage.stored.saturating_add(ACCOUNT_COST);
+            usage.accounts = usage.accounts.saturating_add(ACCOUNT_COST);
             usage.enrolls = usage.enrolls.saturating_add(1);
             Ok(true)
         })
@@ -379,9 +381,13 @@ impl<'s, K: KeyValue, C: Clock> AccountLedger<'s, K, C> {
     }
 
     /// Writes the keyring over version `expected` only. A stale write says
-    /// so before any ceiling; past the day's keyring rows nothing is written,
-    /// and otherwise a full store still takes a keyring no larger than the
-    /// one it replaces.
+    /// so before any ceiling; past the day's keyring rows nothing is written.
+    /// A keyring that grows spends what it grows by from the day's
+    /// [`KEYRING_GROWTH_BYTES_PER_DAY`] and must fit [`KEYRING_BYTES_CEILING`];
+    /// one no larger than the one it replaces is written whatever both say,
+    /// and one smaller gives what it shrank by back to the day's growth (down
+    /// to zero), so the day counts net growth: a keyring shrinking and growing
+    /// again all day spends nothing.
     pub fn store_keyring(
         &self,
         digest: &SessionDigest,
@@ -400,13 +406,19 @@ impl<'s, K: KeyValue, C: Clock> AccountLedger<'s, K, C> {
                 return Err(CustodyError::StorageFull);
             }
             let (old_len, new_len) = (old_len as u64, keyring.as_bytes().len() as u64);
-            let freed = usage.stored.saturating_sub(old_len);
-            if new_len > old_len && freed.saturating_add(new_len) > ACCOUNT_BYTES_CEILING {
+            let freed = usage.keyrings.saturating_sub(old_len);
+            let growth = u32::try_from(new_len.saturating_sub(old_len)).unwrap_or(u32::MAX);
+            let shrink = u32::try_from(old_len.saturating_sub(new_len)).unwrap_or(u32::MAX);
+            let grown = usage.keyring_growth.saturating_add(growth).saturating_sub(shrink);
+            if growth > 0
+                && (grown > KEYRING_GROWTH_BYTES_PER_DAY || freed.saturating_add(new_len) > KEYRING_BYTES_CEILING)
+            {
                 return Err(CustodyError::StorageFull);
             }
             let next = KeyringVersion(version.0.checked_add(1).ok_or_else(damaged)?);
             self.put(&keys::keyring(&account), &KeyringRecord { version: next, keyring: keyring.clone() }.encode())?;
-            usage.stored = freed.saturating_add(new_len);
+            usage.keyrings = freed.saturating_add(new_len);
+            usage.keyring_growth = grown;
             Ok(KeyringWrite::Stored(next))
         })
         .map_err(fault)
@@ -414,7 +426,8 @@ impl<'s, K: KeyValue, C: Clock> AccountLedger<'s, K, C> {
 
     /// Removes the account behind a live session whole: its record, its
     /// keyring, every session and, once that is committed, its logins in
-    /// progress. The name is free again. Never refused.
+    /// progress. The name is free again, and the keyring's length goes back
+    /// to the day's growth (down to zero). Never refused.
     pub fn close_account(&self, digest: &SessionDigest) -> Result<bool, AccessError> {
         let now = self.now();
         let closed = self
@@ -425,10 +438,14 @@ impl<'s, K: KeyValue, C: Clock> AccountLedger<'s, K, C> {
                 }
                 if let Some(old) = self.keyring_record(&account)? {
                     self.delete(&keys::keyring(&account))?;
-                    usage.stored = usage.stored.saturating_sub(old.keyring.as_bytes().len() as u64);
+                    let len = old.keyring.as_bytes().len();
+                    usage.keyrings = usage.keyrings.saturating_sub(len as u64);
+                    // The day counts net growth: the bytes deleted come back.
+                    let len = u32::try_from(len).unwrap_or(u32::MAX);
+                    usage.keyring_growth = usage.keyring_growth.saturating_sub(len);
                 }
                 self.delete(&keys::account(&account))?;
-                usage.stored = usage.stored.saturating_sub(ACCOUNT_COST);
+                usage.accounts = usage.accounts.saturating_sub(ACCOUNT_COST);
                 Ok(Some(account))
             })
             .map_err(fault)?;

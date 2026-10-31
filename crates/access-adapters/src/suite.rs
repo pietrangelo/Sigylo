@@ -1,8 +1,9 @@
-use argon2::{Algorithm, Argon2, Params, Version};
+use argon2::{Algorithm, Argon2, Block, Params, Version};
 use opaque_ke::errors::InternalError;
 use opaque_ke::generic_array::{ArrayLength, GenericArray};
 use opaque_ke::ksf::Ksf;
 use opaque_ke::{CipherSuite, Ristretto255, TripleDh};
+use zeroize::Zeroizing;
 
 /// Argon2id cost of the password hardening: the same as a sealed passphrase.
 pub const HARDENING_MEMORY_KIB: u32 = 64 * 1024;
@@ -30,10 +31,25 @@ impl Ksf for Hardening {
     fn hash<L: ArrayLength<u8>>(&self, input: GenericArray<u8, L>) -> Result<GenericArray<u8, L>, InternalError> {
         let params = Params::new(HARDENING_MEMORY_KIB, HARDENING_PASSES, HARDENING_LANES, Some(L::USIZE))
             .map_err(|_| InternalError::KsfError)?;
+        let mut memory = wiped_blocks(&params).ok_or(InternalError::KsfError)?;
         let mut output = GenericArray::default();
         Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
-            .hash_password_into(&input, &[0; 16], &mut output)
+            .hash_password_into_with_memory(&input, &[0; 16], &mut output, memory.as_mut_slice())
             .map_err(|_| InternalError::KsfError)?;
         Ok(output)
     }
+}
+
+/// The Argon2id working memory, allocated here rather than inside `argon2`:
+/// its own buffer is freed without being wiped, and in Wasm `dlmalloc` never
+/// gives memory back, so the blocks (a key-equivalent of the hardened
+/// password) would stay readable. `Zeroizing` wipes every block on drop. The
+/// allocation is fallible: a device without the memory gets a KSF error, it
+/// does not abort.
+fn wiped_blocks(params: &Params) -> Option<Zeroizing<Vec<Block>>> {
+    let count = params.block_count();
+    let mut blocks = Vec::new();
+    blocks.try_reserve_exact(count).ok()?;
+    blocks.resize(count, Block::default());
+    Some(Zeroizing::new(blocks))
 }

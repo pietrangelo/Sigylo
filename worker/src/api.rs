@@ -165,13 +165,17 @@ pub fn check_declared_length(route: &Route, content_length: Option<&str>) -> Res
     }
 }
 
-/// Refuse calls from pages of other origins. Browsers attach `Origin` to every
-/// cross-origin request (and to same-origin POSTs), so a page elsewhere cannot
-/// use its visitors' browsers as a botnet against the relay. Clients that send
-/// no `Origin`, such as the app's shell, are not browsers acting for a page.
-pub fn check_origin(origin: Option<&str>, own_origin: &str) -> Result<(), ApiError> {
-    match origin {
-        Some(origin) if origin != own_origin => Err(ApiError::CrossOrigin),
+/// Refuse calls from pages of other origins, so a page elsewhere cannot use
+/// its visitors' browsers as a botnet against the relay. Browsers attach
+/// `Origin` to cross-origin `fetch` calls and to POSTs, but not to no-cors
+/// GETs such as `<img src>` or a prefetch: for those, `Sec-Fetch-Site` still
+/// tells who asked, and anything but `same-origin` or `none` (an address the
+/// user typed) is refused. Clients that send neither header, such as the
+/// app's shell or curl, are not browsers acting for a page.
+pub fn check_origin(origin: Option<&str>, fetch_site: Option<&str>, own_origin: &str) -> Result<(), ApiError> {
+    match (origin, fetch_site) {
+        (Some(origin), _) if origin != own_origin => Err(ApiError::CrossOrigin),
+        (_, Some(site)) if site != "same-origin" && site != "none" => Err(ApiError::CrossOrigin),
         _ => Ok(()),
     }
 }
@@ -195,8 +199,9 @@ pub fn limiter_key(address: &str) -> String {
 }
 
 /// The /48 an IPv6 client sits in, counted against a second, larger
-/// allowance: one site, or one free tunnel, holds 65 536 /64s. None for
-/// IPv4 and anything unparsable, which have only [`limiter_key`].
+/// allowance for writes and for reads alike: one site, or one free tunnel,
+/// holds 65 536 /64s. None for IPv4 and anything unparsable, which have only
+/// [`limiter_key`].
 pub fn network_key(address: &str) -> Option<String> {
     let v6 = match address.trim().parse::<IpAddr>() {
         Ok(IpAddr::V6(v6)) if v6.to_ipv4_mapped().is_none() => v6,
@@ -205,6 +210,21 @@ pub fn network_key(address: &str) -> Option<String> {
     let s = v6.segments();
     Some(format!("{:x}:{:x}:{:x}::/48", s[0], s[1], s[2]))
 }
+
+/// The binding (wrangler.toml) that counts a [`network_key`]: writes and
+/// reads each have their own /48 allowance, as they have per address.
+pub fn network_binding(write: bool) -> &'static str {
+    if write { "NETWORK_WRITE_LIMITER" } else { "NETWORK_READ_LIMITER" }
+}
+
+/// The binding (wrangler.toml) that counts login and registration attempts
+/// per account and budget in Cloudflare's memory, per location. Fails closed.
+pub const LOGIN_BINDING: &str = "LOGIN_LIMITER";
+
+/// Login and registration attempts per account and per minute, counted in
+/// the accounts object for the whole world, behind the same limit in
+/// [`LOGIN_BINDING`].
+pub const LOGIN_ATTEMPTS_PER_MINUTE: u16 = 10;
 
 /// Whether a call waits, given the limiter's verdict (`None` when it did not
 /// answer). Writes fail closed: they fill the vault and spend its daily
@@ -1174,12 +1194,27 @@ mod tests {
             // junk from thousands of addresses, past the per-address limit.
             let own = "https://sigylo.net";
             for origin in ["https://evil.example", "null", "http://sigylo.net", "https://sigylo.net.evil.example"] {
-                assert_eq!(check_origin(Some(origin), own), Err(ApiError::CrossOrigin), "{origin}");
+                assert_eq!(check_origin(Some(origin), None, own), Err(ApiError::CrossOrigin), "{origin}");
             }
             assert_eq!(ApiError::CrossOrigin.status(), 403);
             // Our own pages, and clients that send no Origin (the app's shell), pass.
-            assert_eq!(check_origin(Some(own), own), Ok(()));
-            assert_eq!(check_origin(None, own), Ok(()));
+            assert_eq!(check_origin(Some(own), None, own), Ok(()));
+            assert_eq!(check_origin(None, None, own), Ok(()));
+            // An <img src> or a prefetch of /api/requests/{id} carries no Origin,
+            // but the browser still says who asked in Sec-Fetch-Site.
+            for site in ["cross-site", "same-site", "CROSS-SITE", ""] {
+                assert_eq!(check_origin(None, Some(site), own), Err(ApiError::CrossOrigin), "{site}");
+            }
+            // A forged Origin is refused even next to a same-origin claim.
+            assert_eq!(
+                check_origin(Some("https://evil.example"), Some("same-origin"), own),
+                Err(ApiError::CrossOrigin)
+            );
+            // Our pages, a typed address, and clients that send neither header
+            // (the app's shell, curl) pass.
+            assert_eq!(check_origin(Some(own), Some("same-origin"), own), Ok(()));
+            assert_eq!(check_origin(None, Some("same-origin"), own), Ok(()));
+            assert_eq!(check_origin(None, Some("none"), own), Ok(()));
         }
 
         #[test]
@@ -1210,6 +1245,45 @@ mod tests {
             for address in ["203.0.113.7", "::ffff:203.0.113.7", "", "not an address"] {
                 assert_eq!(network_key(address), None, "{address}");
             }
+        }
+
+        #[test]
+        fn a_whole_ipv6_site_shares_a_read_allowance() {
+            // GETs cost a Durable Object request too: 65 536 /64s reading at
+            // their own pace would flood the one vault and the one accounts object.
+            assert_eq!(network_binding(true), "NETWORK_WRITE_LIMITER");
+            assert_eq!(network_binding(false), "NETWORK_READ_LIMITER");
+            // The /48 key depends only on the address, never on the method.
+            for address in ["2001:db8:1:2::3", "2001:db8:1:ffff::9"] {
+                assert_eq!(network_key(address).as_deref(), Some("2001:db8:1::/48"), "{address}");
+            }
+            // IPv4 (mapped or not) and garbled headers have only their own key.
+            for address in ["198.51.100.7", "::ffff:198.51.100.7", "", "not an address", "2001:db8::1::2"] {
+                assert_eq!(network_key(address), None, "{address}");
+            }
+        }
+
+        #[test]
+        fn every_limiter_the_relay_calls_is_declared() {
+            // A binding missing from wrangler.toml would silently let reads
+            // through (they fail open) or stop every write (they fail closed).
+            let toml = include_str!("../wrangler.toml");
+            let limit = |name: &str| {
+                let start = toml.find(&format!("name = \"{name}\""))?;
+                let rest = &toml[start..];
+                let table = &rest[..rest.find("[[").unwrap_or(rest.len())];
+                let at = table.find("limit = ")? + "limit = ".len();
+                table[at..].split(|c: char| !c.is_ascii_digit()).next()?.parse::<u32>().ok()
+            };
+            assert_eq!(limit(network_binding(true)), Some(300));
+            assert_eq!(limit(network_binding(false)), Some(600));
+            // Ten clients' worth per /48, for reads as for writes.
+            assert_eq!(limit("READ_LIMITER").map(|n| n * 10), limit(network_binding(false)));
+            assert_eq!(limit("WRITE_LIMITER").map(|n| n * 10), limit(network_binding(true)));
+            // Logins fail closed too: without this binding no one signs in or
+            // registers. It counts per location what the accounts object
+            // counts for the whole world, so the two limits agree.
+            assert_eq!(limit(LOGIN_BINDING), Some(u32::from(LOGIN_ATTEMPTS_PER_MINUTE)));
         }
 
         #[test]

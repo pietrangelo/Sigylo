@@ -64,6 +64,7 @@ describe('legal', () => {
     const toml = readFileSync(new URL('../../worker/wrangler.toml', import.meta.url), 'utf8');
     const limit = (name: string) => toml.match(new RegExp(`name = "${name}"[\\s\\S]*?limit = (\\d+)`))?.[1];
     expect([limit('WRITE_LIMITER'), limit('READ_LIMITER')]).toEqual(['30', '60']);
+    expect([limit('NETWORK_WRITE_LIMITER'), limit('NETWORK_READ_LIMITER')]).toEqual(['300', '600']);
     // A cron every 15 minutes, and garbage waits 5 minutes for the next one: up to 30.
     expect(toml).toContain('crons = ["*/15 * * * *"]');
     const halfHour = { it: "mezz'ora", en: 'half an hour', fr: 'demi-heure', es: 'media hora', de: 'halben Stunde' };
@@ -72,6 +73,8 @@ describe('legal', () => {
       expect(privacy, language).toMatch(/\b30\b[^.]*\b60\b/);
       expect(privacy, language).toContain('/64');
       expect(privacy, language).toContain('/48');
+      // The /48 block has allowances of its own, ten addresses' worth, for writes and reads.
+      expect(privacy, language).toMatch(/\b300\b[^.]*\b600\b[^.]*\/48/);
       expect(privacy, language).toContain(halfHour[language]);
     }
   });
@@ -117,6 +120,28 @@ describe('legal', () => {
       expect(section(provider), language).toContain(keys);
       expect(section(provider), language).toContain(names);
       expect(section(rights), language).toContain(history);
+    }
+  });
+
+  it('never claims there is no creation time: the expiry and the storage provider give it away', () => {
+    // The expiry is kept to the second and the interface offers a handful of
+    // lifetimes, so the sealing time follows; R2 and the Durable Objects'
+    // recovery history also date every write.
+    const absolute = {
+      it: /né orario di creazione|nessun orario di creazione/i,
+      en: /no creation time/i,
+      fr: /ni heure de création|aucune heure de création/i,
+      es: /ni hora de creación|ninguna hora de creación/i,
+      de: /keine Erstellungszeit/i,
+    };
+    const derived = { it: 'ricavare', en: 'worked out', fr: 'déduire', es: 'deducirse', de: 'ableiten' };
+    const at = legal.en.privacy.sections.findIndex((s) => s.heading === 'What we keep');
+    expect(at).toBeGreaterThanOrEqual(0);
+    for (const language of languages) {
+      expect(text(legal[language].privacy), language).not.toMatch(absolute[language]);
+      const kept = legal[language].privacy.sections[at]!.body.join('\n');
+      expect(kept, language).toContain(derived[language]);
+      expect(kept, language).toContain('Cloudflare');
     }
   });
 

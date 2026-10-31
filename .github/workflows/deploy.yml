@@ -6,6 +6,14 @@ name: Deploy
 # or fork ever sees it. Secrets: CLOUDFLARE_API_TOKEN ("Edit Cloudflare
 # Workers", scoped to this account and the sigylo.net zone) and
 # CLOUDFLARE_ACCOUNT_ID.
+#
+# Two jobs. `build` has no environment and no secret: every crate build script
+# and proc macro, every npm package of the web client, worker-build and the
+# tools it runs execute there. `deploy` holds the token and builds nothing: it
+# installs the locked wrangler without install scripts and publishes the
+# artifact of `build` with worker/wrangler.toml minus its [build] table
+# (scripts/deploy-config.py). CI checks that it stays so
+# (scripts/check-workflows.py).
 on:
   workflow_run:
     workflows: [CI]
@@ -26,25 +34,112 @@ env:
   CARGO_TERM_COLOR: always
   WASM_BINDGEN_VERSION: 0.2.129
   WORKER_BUILD_VERSION: 0.8.7
-  WRANGLER_VERSION: 4.151.1
+  # The wasm-opt (binaryen) and esbuild that worker-build 0.8.7 would download
+  # with TLS as the only check: binaryen comes from its release with this
+  # sha256, esbuild from worker/package-lock.json.
+  BINARYEN_VERSION: "132"
+  BINARYEN_SHA256: 195ddc94f9bc89f45abdabb0b9eea86023d727ba90eac8b35b80f2544fc30572
+  ESBUILD_VERSION: 0.28.2
 
 jobs:
-  deploy:
-    name: Deploy to sigylo.net
+  build:
+    name: Build the page and the Worker
     # `event == 'push'` matters: a pull request from a fork whose branch is also
     # called main would otherwise pass the branch filter above.
     if: >-
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-24.04
+    steps:
+      # The default checkout: the tip of main when this run started (a run by
+      # hand only goes on from main). It must be the commit CI just passed;
+      # if main has moved on, its own run builds and deploys it.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: The commit CI passed
+        if: github.event_name == 'workflow_run'
+        env:
+          COMMIT: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [[ "$(git rev-parse HEAD)" != "$COMMIT" ]]; then
+            echo "::error::main moved on from $COMMIT; its own run deploys it"
+            exit 1
+          fi
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: wasm32-unknown-unknown
+      # No cache, restored or saved: what gets published is built from the
+      # commit and the lock files alone, and this job, which runs every build
+      # script, never writes a cache a later run on main would restore.
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        with:
+          tool: wasm-bindgen@${{ env.WASM_BINDGEN_VERSION }}
+      - run: cargo install worker-build@${{ env.WORKER_BUILD_VERSION }} --locked
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - run: npm ci && npm run build
+        working-directory: web
+      - run: npm ci --ignore-scripts
+        working-directory: worker
+      - name: wasm-opt, checked
+        run: |
+          set -euo pipefail
+          archive="binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/$archive"
+          echo "$BINARYEN_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check --strict
+          mkdir "$RUNNER_TEMP/binaryen"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/binaryen" --strip-components 1
+      # worker-build takes each tool from <TOOL>_BIN, else from its cache, else
+      # downloads it; and a <TOOL>_BIN it cannot find falls back to the
+      # download. So the cache must be empty before and still empty after.
+      - name: Build the Worker
+        working-directory: worker
+        run: |
+          set -euo pipefail
+          cache="${XDG_CACHE_HOME:-$HOME/.cache}/worker-build"
+          nothing_downloaded() {
+            if [[ -n "$(ls -A "$cache" 2>/dev/null)" ]]; then
+              echo "::error::worker-build fetched a tool of its own: $(ls -A "$cache" | tr '\n' ' ')"
+              exit 1
+            fi
+          }
+          nothing_downloaded
+          WASM_BINDGEN_BIN="$(command -v wasm-bindgen)"
+          WASM_OPT_BIN="$RUNNER_TEMP/binaryen/bin/wasm-opt"
+          ESBUILD_BIN="$PWD/node_modules/@esbuild/linux-x64/bin/esbuild"
+          export WASM_BINDGEN_BIN WASM_OPT_BIN ESBUILD_BIN
+          [[ "$("$WASM_BINDGEN_BIN" --version)" == "wasm-bindgen $WASM_BINDGEN_VERSION" ]]
+          [[ "$("$WASM_OPT_BIN" --version)" == "wasm-opt version $BINARYEN_VERSION "* ]]
+          [[ "$("$ESBUILD_BIN" --version)" == "$ESBUILD_VERSION" ]]
+          worker-build --release
+          nothing_downloaded
+          test -f build/worker/shim.mjs
+      # Hidden files included: the page ships .well-known/security.txt.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sigylo-build
+          path: |
+            web/dist
+            worker/build
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    name: Deploy to sigylo.net
+    needs: build
+    runs-on: ubuntu-24.04
     # The Cloudflare secrets live in this environment, which only main may
     # use: a workflow pushed on any other branch, or this one dispatched from
-    # there, never sees them.
+    # there, never sees them. Nothing in this job compiles, bundles or runs an
+    # install script.
     environment: production
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       # CI runs finish in any order: an older commit must never replace a newer
       # one, which may carry a security fix.
@@ -52,6 +147,10 @@ jobs:
         env:
           COMMIT: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
+          if [[ "$(git rev-parse HEAD)" != "$COMMIT" ]]; then
+            echo "::error::main moved on from $COMMIT; its own run deploys it"
+            exit 1
+          fi
           tip="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}" refs/heads/main | cut -f1)"
           if [[ "$tip" != "$COMMIT" ]]; then
             echo "::error::main moved on to $tip; its own run deploys it"
@@ -71,28 +170,45 @@ jobs:
             echo "::error::CI has not passed on $COMMIT (failed, still running or never run): nothing to deploy"
             exit 1
           fi
+      # What is published is wrangler.toml without [build]: wrangler would
+      # otherwise run the build here, next to the token.
+      - name: The configuration to deploy
+        run: python3 -I scripts/deploy-config.py worker/wrangler.toml worker/wrangler.deploy.toml
       # The switch for the local runtime only (scripts/e2e.sh passes it to
       # wrangler dev) never ships: production keeps the Durable Objects in the
       # EU. Nor does anything of the database that is gone (Hyperdrive, the drain).
       - name: No local-only switch
-        run: python3 scripts/local-switches.py worker/wrangler.toml
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
-        with:
-          tool: wasm-bindgen@${{ env.WASM_BINDGEN_VERSION }}
-      - run: cargo install worker-build@${{ env.WORKER_BUILD_VERSION }} --locked
+        run: python3 -I scripts/local-switches.py worker/wrangler.deploy.toml
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci && npm run build
-        working-directory: web
+      # The exact wrangler of worker/package-lock.json, every package checked
+      # against its integrity, and none of their install scripts run.
+      - run: npm ci --ignore-scripts
+        working-directory: worker
+      # Unpacked aside, and only its two directories taken: the artifact must
+      # not replace a lock file, a script or a configuration of the checkout.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sigylo-build
+          path: ${{ runner.temp }}/sigylo-build
+      - name: The page and the Worker as built
+        env:
+          BUILT: ${{ runner.temp }}/sigylo-build
+        run: |
+          set -euo pipefail
+          for dir in web/dist worker/build; do
+            if [[ -n "$(find "$BUILT/$dir" ! -type f ! -type d)" ]]; then
+              echo "::error::$dir holds something other than files and directories"
+              exit 1
+            fi
+            rm -rf "$dir"
+            cp -R "$BUILT/$dir" "$dir"
+          done
+          test -f worker/build/worker/shim.mjs
+          test -f web/dist/index.html
       - name: Deploy
-        run: npx --yes wrangler@${{ env.WRANGLER_VERSION }} deploy
+        run: ./node_modules/.bin/wrangler deploy --config wrangler.deploy.toml
         working-directory: worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -111,14 +227,15 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          names="$(npx --yes wrangler@${{ env.WRANGLER_VERSION }} secret list --format json | jq -r '.[].name')"
+          wrangler() { ./node_modules/.bin/wrangler "$@" --config wrangler.deploy.toml; }
+          names="$(wrangler secret list --format json | jq -r '.[].name')"
           if ! grep -qx OPAQUE_SERVER_SEED <<<"$names"; then
-            if [[ -n "$(sed -n 's/^OPAQUE_CANARY = "\(.*\)"$/\1/p' wrangler.toml)" ]]; then
+            if [[ -n "$(sed -n 's/^OPAQUE_CANARY = "\(.*\)"$/\1/p' wrangler.deploy.toml)" ]]; then
               echo "::error file=worker/wrangler.toml::OPAQUE_SERVER_SEED is gone but OPAQUE_CANARY records it: a new secret would lock every account out. Restore it, or empty OPAQUE_CANARY to start over on purpose."
               exit 1
             fi
             openssl rand 32 | basenc --base64url | tr -d '=\n' \
-              | npx --yes wrangler@${{ env.WRANGLER_VERSION }} secret put OPAQUE_SERVER_SEED
+              | wrangler secret put OPAQUE_SERVER_SEED
           fi
       # Rocket Loader, Email Obfuscation or an analytics beacon would rewrite the
       # page and break CSP and SRI (CLAUDE.md §6): the zone must serve the page
@@ -140,7 +257,7 @@ jobs:
         run: |
           set -euo pipefail
           live="$(curl -fsS https://sigylo.net/api/account/canary | jq -er .canary)"
-          expected="$(sed -n 's/^OPAQUE_CANARY = "\(.*\)"$/\1/p' worker/wrangler.toml)"
+          expected="$(sed -n 's/^OPAQUE_CANARY = "\(.*\)"$/\1/p' worker/wrangler.deploy.toml)"
           if [[ -z "$expected" ]]; then
             echo "::warning file=worker/wrangler.toml::OPAQUE_CANARY is not recorded yet; set it to \"$live\""
           elif [[ "$live" != "$expected" ]]; then
@@ -157,7 +274,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          r2() { npx --yes wrangler@${{ env.WRANGLER_VERSION }} r2 bucket lifecycle "$@" --jurisdiction eu; }
+          r2() { ./node_modules/.bin/wrangler r2 bucket lifecycle "$@" --jurisdiction eu --config wrangler.deploy.toml; }
           rules="$(r2 list sigylo-chunks)"
           if ! grep -qw backstop <<<"$rules"; then
             r2 add sigylo-chunks backstop --expire-days 8 --force

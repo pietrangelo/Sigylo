@@ -2,12 +2,17 @@ name: App release
 
 # Builds the installable app for Linux, macOS and Windows and attaches the
 # installers to a draft GitHub release. Runs only for a tag `app-v*` that
-# matches the version in app/tauri.conf.json, or by hand from main, never for
-# a pull request. The builds are not signed yet: signing
-# (Apple Developer ID, Windows code signing) needs the owner's accounts and
-# goes in through repository secrets. The Windows leg also packs an MSIX for
-# the Microsoft Store (app/msix), kept as a workflow artifact, never attached
-# to the release: the Store signs it on upload, unsigned it does not install.
+# matches the version in app/tauri.conf.json, on a commit of main whose CI
+# passed (waiting up to an hour for a CI run still going), or by hand from
+# main, never for a pull request. The builds are not
+# signed yet: signing (Apple Developer ID, Windows code signing) needs the
+# owner's accounts and goes in through repository secrets. The Windows leg
+# also packs an MSIX for the Microsoft Store (app/msix), kept as a workflow
+# artifact, never attached to the release: the Store signs it on upload,
+# unsigned it does not install.
+#
+# The builds run with a read-only token they are never handed; only the last
+# job, which builds nothing, may write the release.
 
 on:
   push:
@@ -15,7 +20,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   WASM_BINDGEN_VERSION: 0.2.129
@@ -28,18 +33,83 @@ jobs:
     # By hand only from main: a dispatch from another branch would put an
     # unreviewed build into the release draft.
     if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    # The wait for CI below gives up after an hour.
+    timeout-minutes: 70
+    permissions:
+      contents: read
+      # To read whether CI passed on the commit.
+      actions: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Version
+        id: version
+        run: echo "version=$(jq -r .version app/tauri.conf.json)" >> "$GITHUB_OUTPUT"
       # The draft is named after tauri.conf.json: a tag for another version
       # would fill the wrong draft.
       - name: The tag names the version being built
         if: github.event_name == 'push'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          version="$(jq -r .version app/tauri.conf.json)"
-          if [[ "$GITHUB_REF_NAME" != "app-v$version" ]]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match version $version in app/tauri.conf.json"
+          if [[ "$GITHUB_REF_NAME" != "app-v$VERSION" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match version $VERSION in app/tauri.conf.json"
             exit 1
           fi
+      # A tag can sit on any commit, even one never reviewed: only what main
+      # holds is built.
+      - name: The tagged commit is on main
+        if: github.event_name == 'push'
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_SHA is not on main: tag a commit of main"
+            exit 1
+          fi
+      # A tag pushed together with its commit (`git push origin main app-vX`,
+      # --follow-tags) starts this run while CI on that commit is still going:
+      # wait for it, failing closed. Done as soon as a CI push run on main has
+      # passed for this commit; failed once every such run has completed and
+      # none passed, if none starts within 5 minutes, or after an hour.
+      - name: CI passed on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          runs="repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&event=push&branch=main&per_page=100"
+          counts='[.total_count, (.workflow_runs | length),
+            ([.workflow_runs[] | select(.conclusion == "success")] | length),
+            ([.workflow_runs[] | select(.status != "completed")] | length)] | @tsv'
+          interval=30
+          start_attempts=10
+          max_attempts=120
+          for (( attempt = 1; attempt <= max_attempts; attempt++ )); do
+            if answer="$(gh api "$runs" --jq "$counts")"; then
+              read -r total listed passed running <<< "$answer"
+              if (( passed > 0 )); then
+                echo "CI passed on $GITHUB_SHA"
+                exit 0
+              fi
+              # Only a full page can show that every run has completed.
+              if (( total > 0 && listed == total && running == 0 )); then
+                echo "::error::CI did not pass on $GITHUB_SHA pushed to main"
+                exit 1
+              fi
+              if (( total == 0 && attempt > start_attempts )); then
+                echo "::error::CI never ran on $GITHUB_SHA pushed to main"
+                exit 1
+              fi
+              echo "attempt $attempt: $total CI runs, $running still going"
+            else
+              echo "::warning::attempt $attempt: could not read the CI runs of $GITHUB_SHA"
+            fi
+            sleep "$interval"
+          done
+          echo "::error::CI has not passed on $GITHUB_SHA pushed to main within an hour"
+          exit 1
 
   build:
     name: ${{ matrix.name }}
@@ -49,20 +119,32 @@ jobs:
       matrix:
         include:
           - name: Linux
+            key: linux
             os: ubuntu-22.04
             args: ""
+            bundle: target/release/bundle
           - name: macOS (Apple silicon)
+            key: macos-aarch64
             os: macos-latest
             args: --target aarch64-apple-darwin
+            bundle: target/aarch64-apple-darwin/release/bundle
+            arch: aarch64
           - name: macOS (Intel)
+            key: macos-x64
             os: macos-latest
             args: --target x86_64-apple-darwin
+            bundle: target/x86_64-apple-darwin/release/bundle
+            arch: x64
           - name: Windows
+            key: windows
             os: windows-latest
             args: ""
+            bundle: target/release/bundle
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: System webview (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -89,18 +171,48 @@ jobs:
       - run: npm ci && npm run build:app
         working-directory: web
         shell: bash
-      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
+      # --locked: the app is built from app/Cargo.lock as committed. On macOS
+      # the DMG is made without driving Finder, as tauri-action did.
+      - name: Build the installers
+        working-directory: app
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_BUNDLER_DMG_IGNORE_CI: "true"
+          ARGS: ${{ matrix.args }}
+        run: cargo tauri build $ARGS -- --locked
+      # The names tauri-action gave the release assets: the bundler's file
+      # names, and the macOS .app packed as <name>_<arch>.app.tar.gz.
+      - name: Collect the installers
+        working-directory: app
+        shell: bash
+        env:
+          BUNDLE: ${{ matrix.bundle }}
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          out=target/installers
+          rm -rf "$out" && mkdir -p "$out"
+          for file in "$BUNDLE"/deb/*_"$VERSION"_*.deb "$BUNDLE"/rpm/*-"$VERSION"-*.rpm \
+            "$BUNDLE"/appimage/*_"$VERSION"_*.AppImage "$BUNDLE"/msi/*_"$VERSION"_*.msi \
+            "$BUNDLE"/nsis/*_"$VERSION"_*-setup.exe "$BUNDLE"/dmg/*_"$VERSION"_*.dmg; do
+            cp "$file" "$out/"
+          done
+          for app in "$BUNDLE"/macos/*.app; do
+            name="$(basename "$app" .app)"
+            tar -czf "$out/${name}_${ARCH}.app.tar.gz" -C "$(dirname "$app")" "$(basename "$app")"
+          done
+          ls -l "$out"
+          if [[ -z "$(ls -A "$out")" ]]; then
+            echo "::error::no installer in $BUNDLE"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          projectPath: app
-          tauriScript: cargo tauri
-          args: ${{ matrix.args }}
-          tagName: app-v__VERSION__
-          releaseName: Sigylo app __VERSION__
-          releaseBody: Installers of the Sigylo app, built from this tag by GitHub Actions. Not signed yet.
-          releaseDraft: true
-          prerelease: true
+          name: installers-${{ matrix.key }}
+          path: app/target/installers/*
+          if-no-files-found: error
       - name: Microsoft Store package (Windows)
         if: runner.os == 'Windows'
         working-directory: app
@@ -112,3 +224,35 @@ jobs:
           name: sigylo-msix
           path: app/target/msix/*.msix
           if-no-files-found: error
+
+  release:
+    name: Draft release
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    # The only job that may write: it builds and installs nothing, it only
+    # attaches what the builds uploaded to the draft pre-release.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: installers-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/installers
+      # Like tauri-action: the draft for the tag is reused (gh finds drafts
+      # too), or made on this commit; an asset of the same name is replaced.
+      - name: Attach the installers to the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.check.outputs.version }}
+          INSTALLERS: ${{ runner.temp }}/installers
+        run: |
+          set -euo pipefail
+          tag="app-v$VERSION"
+          if ! gh release view "$tag" > /dev/null; then
+            gh release create "$tag" --draft --prerelease --target "$GITHUB_SHA" \
+              --title "Sigylo app $VERSION" \
+              --notes "Installers of the Sigylo app, built from this tag by GitHub Actions. Not signed yet."
+          fi
+          gh release upload "$tag" "$INSTALLERS"/* --clobber

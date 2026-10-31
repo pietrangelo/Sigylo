@@ -12,8 +12,9 @@ use super::Clock;
 use super::fakes::{Loopback, ManualClock, MemoryBucket, MemoryKv, SequentialIds, ToyDigest, block_on};
 use super::{LedgerVault, RemoteVault};
 use crate::core::{
-    INCOMPLETE_FILE_SECONDS, OBJECT_BYTES_CEILING, PURGE_BATCH, RECORD_CEILING, STORING_WRITES_PER_DAY,
-    TEARDOWN_WRITES_PER_DAY, Usage, keys,
+    DEPOSIT_RECORD_RESERVE, DEPOSIT_WRITES_RESERVE, ENVELOPE_BYTES_RESERVE, INCOMPLETE_FILE_SECONDS,
+    OBJECT_BYTES_CEILING, PURGE_BATCH, RECORD_CEILING, REQUEST_RECORD_CEILING, REQUEST_ROWS_PER_DAY,
+    STORING_WRITES_PER_DAY, TEARDOWN_WRITES_PER_DAY, Usage, keys,
 };
 
 #[derive(Debug, Default)]
@@ -56,7 +57,7 @@ impl World {
         let records: Vec<String> = self.kv.keys().into_iter().filter(|k| k != keys::USAGE).collect();
         assert_eq!(records, Vec::<String>::new(), "records left");
         let usage = self.usage();
-        assert_eq!((usage.object_bytes, usage.records), (0, 0));
+        assert_eq!((usage.object_bytes, usage.records, usage.requests), (0, 0, 0));
     }
 }
 
@@ -521,6 +522,153 @@ mod ceilings {
         assert_eq!(w.bucket.len(), 1);
         assert!(w.usage().object_bytes > 0, "its bytes count against the ceiling while it waits");
         w.bucket.fail_deletes.set(false);
+        w.assert_empty();
+    }
+    // ---- per-class limits: one class cannot starve the others ----------
+
+    fn answer() -> Answer {
+        Answer { payload: sealed(2), retention: BURN, lifetime: Lifetime::ONE_HOUR, chunks: None }
+    }
+
+    /// A file of one short chunk, its chunk not yet uploaded.
+    fn pending_file(relay: &Relay<'_>) -> DropId {
+        let count = ChunkCount::new(1).unwrap();
+        block_on(relay.deposit_file(sealed(3), count, KEEP, Lifetime::ONE_DAY, None)).unwrap().id
+    }
+
+    /// Plain secrets and answers to requests already posted still go in.
+    fn envelopes_still_go_in(relay: &Relay<'_>, posted: DropId) {
+        assert!(block_on(relay.deposit(sealed(4), KEEP, Lifetime::ONE_DAY, None)).is_ok(), "a plain deposit");
+        assert!(block_on(relay.answer_request(posted, answer())).is_ok(), "an answer");
+    }
+
+    #[test]
+    fn a_day_of_request_rows_stops_requests_only_until_the_next_day() {
+        let w = World::default();
+        let relay = w.relay();
+        let posted = block_on(relay.post_request(key(), Lifetime::ONE_DAY)).unwrap().id;
+        pretend(&w, Usage { request_writes: REQUEST_ROWS_PER_DAY, ..w.usage() });
+        let before = w.kv.snapshot();
+        assert_eq!(block_on(relay.post_request(key(), Lifetime::ONE_DAY)), Err(CustodyError::StorageFull));
+        assert_eq!(w.kv.snapshot(), before, "a refused request writes nothing");
+        envelopes_still_go_in(&relay, posted);
+        w.clock.advance(86_400 - w.clock.0.get().rem_euclid(86_400));
+        assert_eq!(w.usage().request_writes, 0);
+        assert!(block_on(relay.post_request(key(), Lifetime::ONE_DAY)).is_ok());
+    }
+
+    #[test]
+    fn request_rows_are_counted_as_they_happen_and_only_for_requests() {
+        let w = World::default();
+        let relay = w.relay();
+        let start = w.kv.writes.get();
+        block_on(relay.post_request(key(), Lifetime::ONE_DAY)).unwrap();
+        block_on(relay.post_request(key(), Lifetime::ONE_DAY)).unwrap();
+        let requested = w.kv.writes.get() - start;
+        assert_eq!(u64::from(w.usage().request_writes), requested);
+        block_on(relay.deposit(sealed(1), KEEP, Lifetime::ONE_DAY, None)).unwrap();
+        assert_eq!(u64::from(w.usage().request_writes), requested, "a deposit spends no request rows");
+        assert_eq!(w.usage().requests, 2);
+    }
+
+    #[test]
+    fn a_full_request_ceiling_stops_requests_only_and_an_answer_frees_a_place() {
+        let w = World::default();
+        let relay = w.relay();
+        let posted = block_on(relay.post_request(key(), Lifetime::ONE_DAY)).unwrap().id;
+        pretend(&w, Usage { requests: REQUEST_RECORD_CEILING, ..w.usage() });
+        assert_eq!(block_on(relay.post_request(key(), Lifetime::ONE_DAY)), Err(CustodyError::StorageFull));
+        envelopes_still_go_in(&relay, posted);
+        assert_eq!(w.usage().requests, REQUEST_RECORD_CEILING - 1);
+        assert!(block_on(relay.post_request(key(), Lifetime::ONE_DAY)).is_ok());
+    }
+
+    #[test]
+    fn expired_requests_make_room_under_the_request_ceiling() {
+        let w = World::default();
+        let relay = w.relay();
+        let old = block_on(relay.post_request(key(), Lifetime::MIN)).unwrap().id;
+        pretend(&w, Usage { requests: REQUEST_RECORD_CEILING, ..w.usage() });
+        w.advance(Lifetime::MIN.seconds());
+        assert!(block_on(relay.post_request(key(), Lifetime::ONE_DAY)).is_ok());
+        assert!(w.kv.get_record(&keys::request(&old)).is_none(), "the expired request was purged first");
+        assert_eq!(w.usage().requests, REQUEST_RECORD_CEILING);
+    }
+
+    #[test]
+    fn chunks_cannot_take_the_bytes_kept_for_envelopes() {
+        let w = World::default();
+        let relay = w.relay();
+        let file = pending_file(&relay);
+        let posted = block_on(relay.post_request(key(), Lifetime::ONE_DAY)).unwrap().id;
+        let len = MIN_CHUNK_LEN as u64;
+        // One byte short of room for the chunk below the reserve.
+        pretend(&w, Usage { object_bytes: OBJECT_BYTES_CEILING - ENVELOPE_BYTES_RESERVE - len + 1, ..w.usage() });
+        let before = w.kv.snapshot();
+        let objects = w.bucket.len();
+        assert_eq!(block_on(relay.put_chunk(&file, at(0), chunk(1, MIN_CHUNK_LEN))), Err(CustodyError::StorageFull));
+        assert_eq!(w.kv.snapshot(), before);
+        assert_eq!(w.bucket.len(), objects, "nothing reached the bucket");
+        envelopes_still_go_in(&relay, posted);
+        // Right up to the reserve, a chunk still goes in.
+        pretend(&w, Usage { object_bytes: OBJECT_BYTES_CEILING - ENVELOPE_BYTES_RESERVE - len, ..w.usage() });
+        assert!(block_on(relay.put_chunk(&file, at(0), chunk(1, MIN_CHUNK_LEN))).is_ok());
+    }
+
+    #[test]
+    fn requests_and_chunks_leave_the_last_writes_of_the_day_to_deposits() {
+        let w = World::default();
+        let relay = w.relay();
+        let file = pending_file(&relay);
+        let posted = block_on(relay.post_request(key(), Lifetime::ONE_DAY)).unwrap().id;
+        pretend(&w, Usage { writes: STORING_WRITES_PER_DAY - DEPOSIT_WRITES_RESERVE, ..w.usage() });
+        assert_eq!(block_on(relay.post_request(key(), Lifetime::ONE_DAY)), Err(CustodyError::StorageFull));
+        assert_eq!(block_on(relay.put_chunk(&file, at(0), chunk(1, MIN_CHUNK_LEN))), Err(CustodyError::StorageFull));
+        envelopes_still_go_in(&relay, posted);
+    }
+
+    #[test]
+    fn requests_and_chunks_leave_the_last_records_to_deposits() {
+        let w = World::default();
+        let relay = w.relay();
+        let file = pending_file(&relay);
+        let posted = block_on(relay.post_request(key(), Lifetime::ONE_DAY)).unwrap().id;
+        pretend(&w, Usage { records: RECORD_CEILING - DEPOSIT_RECORD_RESERVE, ..w.usage() });
+        assert_eq!(block_on(relay.post_request(key(), Lifetime::ONE_DAY)), Err(CustodyError::StorageFull));
+        assert_eq!(block_on(relay.put_chunk(&file, at(0), chunk(1, MIN_CHUNK_LEN))), Err(CustodyError::StorageFull));
+        envelopes_still_go_in(&relay, posted);
+    }
+
+    /// The usage record as version 1 wrote it: no request counters.
+    fn first_version(usage: Usage) -> Vec<u8> {
+        let mut bytes = vec![1];
+        bytes.extend_from_slice(&usage.object_bytes.to_be_bytes());
+        bytes.extend_from_slice(&usage.records.to_be_bytes());
+        bytes.extend_from_slice(&usage.day.to_be_bytes());
+        bytes.extend_from_slice(&usage.writes.to_be_bytes());
+        bytes
+    }
+
+    #[test]
+    fn requests_from_before_the_upgrade_never_underflow_the_request_counter() {
+        let w = World::default();
+        let relay = w.relay();
+        let expiring = block_on(relay.post_request(key(), Lifetime::MIN)).unwrap().id;
+        let answered = block_on(relay.post_request(key(), Lifetime::ONE_DAY)).unwrap().id;
+        let held = w.usage();
+        w.kv.tamper(keys::USAGE, first_version(held));
+        let upgraded = w.usage();
+        assert_eq!((upgraded.requests, upgraded.request_writes), (0, 0));
+        assert_eq!(upgraded, Usage { requests: 0, request_writes: 0, ..held });
+        // Answering and purging requests the counter never saw leave it at zero.
+        block_on(relay.answer_request(answered, answer())).unwrap();
+        assert_eq!(w.usage().requests, 0);
+        w.advance(Lifetime::MIN.seconds());
+        assert_eq!(block_on(relay.purge_expired()).unwrap(), 1);
+        assert!(w.kv.get_record(&keys::request(&expiring)).is_none());
+        assert_eq!(w.usage().requests, 0);
+        block_on(relay.post_request(key(), Lifetime::ONE_DAY)).unwrap();
+        assert_eq!(w.usage().requests, 1);
         w.assert_empty();
     }
 }

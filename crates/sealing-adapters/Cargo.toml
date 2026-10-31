@@ -14,7 +14,7 @@ ml-kem = { version = "0.3.2", features = ["hazmat", "zeroize"] }
 x25519-dalek = { version = "3.0.0", features = ["static_secrets", "zeroize"] }
 ed25519-dalek = { version = "3.0.0", default-features = false, features = ["zeroize"] }
 ml-dsa = { version = "0.1.1", default-features = false, features = ["alloc", "zeroize"] }
-chacha20poly1305 = "0.11.0"
+chacha20poly1305 = { version = "0.11.0", features = ["zeroize"] }
 hkdf = "0.13.0"
 sha3 = "0.11.0"
 argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "zeroize"] }
@@ -22,6 +22,10 @@ getrandom = "0.4.3"
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
+
+[dev-dependencies]
+# Test-only allocator that checks the Argon2id memory is wiped before it is freed.
+heap-probe.workspace = true
 
 [lints]
 workspace = true

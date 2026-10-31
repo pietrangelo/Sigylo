@@ -8,6 +8,7 @@
   import { downloadChunks, saveFile } from '../lib/files';
   import { t } from '../lib/i18n';
   import { formatSize, relayMessage, sealMessage } from '../lib/messages';
+  import { dropKeyFromAddress } from '../lib/links';
   import { Relay, type Opened } from '../lib/relay';
   import { relayFetch } from '../lib/platform';
 
@@ -100,7 +101,7 @@
       if (plaintext === null && file === null) return;
       opened = null;
       // The key has done its job: drop it from the address bar and history entry.
-      history.replaceState(null, '', location.pathname);
+      dropKeyFromAddress();
     } catch (e) {
       error = sealMessage(errorCode(e));
     } finally {
@@ -142,7 +143,7 @@
       <p class="notice" data-testid="unsigned">{t.unsigned}</p>
     {/if}
     {#if visible}
-      <textarea readonly data-testid="plaintext" value={plaintext}></textarea>
+      <textarea readonly autocomplete="off" spellcheck="false" data-testid="plaintext" value={plaintext}></textarea>
     {:else}
       <p class="muted">••••••••</p>
     {/if}

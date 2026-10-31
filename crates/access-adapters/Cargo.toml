@@ -15,7 +15,7 @@ argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "ze
 sha2 = "0.10.9"
 hmac = "0.12.1"
 hkdf = "0.12.4"
-chacha20poly1305 = "0.11.0"
+chacha20poly1305 = { version = "0.11.0", features = ["zeroize"] }
 rand_chacha = "0.3.1"
 getrandom = "0.4.3"
 
@@ -27,6 +27,8 @@ getrandom = { version = "0.4.3", features = ["wasm_js"] }
 vault.workspace = true
 custody.workspace = true
 futures-util = "0.3"
+# Test-only allocator that checks the Argon2id memory is wiped before it is freed.
+heap-probe.workspace = true
 
 [lints]
 workspace = true

@@ -8,6 +8,9 @@ compatibility_date = "2026-10-01"
 routes = [{ pattern = "sigylo.net", custom_domain = true }]
 workers_dev = false
 
+# For `wrangler dev` (scripts/e2e.sh) and a deploy by hand. The deploy workflow
+# builds in a job without secrets and publishes with this file minus [build]
+# (scripts/deploy-config.py), so keep the whole build in this one table.
 [build]
 command = "cargo install -q worker-build@0.8.7 --locked && worker-build --release"
 
@@ -18,10 +21,11 @@ run_worker_first = ["/api/*"]
 not_found_handling = "single-page-application"
 
 # The sealed chunks of files (opaque ciphertext under random names), in the EU.
-# Create the bucket once:  npx wrangler r2 bucket create sigylo-chunks --jurisdiction eu
+# Create the bucket once (after `npm ci --ignore-scripts` here):
+#   npx --no-install wrangler r2 bucket create sigylo-chunks --jurisdiction eu
 # The scheduled run below deletes the objects of burned, revoked and expired chunks;
 # as a backstop the bucket also gets a lifecycle rule:
-#   npx wrangler r2 bucket lifecycle add sigylo-chunks backstop --expire-days 8 --jurisdiction eu
+#   npx --no-install wrangler r2 bucket lifecycle add sigylo-chunks backstop --expire-days 8 --jurisdiction eu
 [[r2_buckets]]
 binding = "CHUNKS"
 bucket_name = "sigylo-chunks"
@@ -70,6 +74,13 @@ simple = { limit = 300, period = 60 }
 name = "READ_LIMITER"
 namespace_id = "7303"
 simple = { limit = 60, period = 60 }
+
+# IPv6 GETs also count per /48, ten clients' worth: each read costs a request
+# to the one vault or accounts object, and a /48 holds 65 536 /64s.
+[[ratelimits]]
+name = "NETWORK_READ_LIMITER"
+namespace_id = "7305"
+simple = { limit = 600, period = 60 }
 
 # Throttles login attempts per account, from any address, so a botnet cannot
 # guess one account's password at leisure. Keyed by a prefix of the account's

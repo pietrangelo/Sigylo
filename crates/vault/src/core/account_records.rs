@@ -9,6 +9,11 @@ use access::{AccountId, Keyring, KeyringSnapshot, KeyringVersion, MAX_KEYRING_LE
 use super::records::Reader;
 
 const VERSION: u8 = 1;
+/// The usage record's own version: 2 since keyrings have a ceiling and a
+/// daily growth of their own.
+const USAGE_VERSION: u8 = 2;
+/// The usage record before that, which weighed accounts and keyrings as one.
+const USAGE_ONE_WEIGHT: u8 = 1;
 
 /// An account: its OPAQUE registration record, and nothing else, so reading
 /// it costs the same whatever the account keeps.
@@ -112,15 +117,16 @@ impl SessionRecord {
 }
 
 /// What the accounts object holds, kept up to date by every write so that
-/// checking a ceiling never scans, and the rows it wrote today by class.
+/// checking a ceiling never scans, and what it wrote today by class.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AccountUsage {
-    /// Weight of accounts and keyrings ([`super::ACCOUNT_COST`] each, plus
-    /// the keyring's length).
-    pub stored: u64,
+    /// Weight of accounts ([`super::ACCOUNT_COST`] each).
+    pub accounts: u64,
+    /// Weight of keyrings (each its length).
+    pub keyrings: u64,
     /// Weight of sessions ([`super::SESSION_COST`] each).
     pub sessions: u64,
-    /// The day (days since the epoch) the row counts below count.
+    /// The day (days since the epoch) the counts below count.
     pub day: u32,
     /// Every row written today.
     pub rows: u32,
@@ -128,43 +134,71 @@ pub struct AccountUsage {
     pub keyring_rows: u32,
     /// Accounts created today.
     pub enrolls: u32,
+    /// Bytes keyrings grew by today, net of what they shrank by or their
+    /// accounts' closing deleted (never below zero).
+    pub keyring_growth: u32,
 }
 
 impl AccountUsage {
-    /// The usage as of `day`: on a new day the row counts start from zero,
+    /// The usage as of `day`: on a new day the daily counts start from zero,
     /// while what is held stays.
     pub fn on(self, day: u32) -> Self {
         if self.day == day {
             self
         } else {
-            Self { stored: self.stored, sessions: self.sessions, day, ..Self::default() }
+            Self { accounts: self.accounts, keyrings: self.keyrings, sessions: self.sessions, day, ..Self::default() }
         }
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(37);
-        out.push(VERSION);
-        out.extend_from_slice(&self.stored.to_be_bytes());
-        out.extend_from_slice(&self.sessions.to_be_bytes());
-        for count in [self.day, self.rows, self.session_rows, self.keyring_rows, self.enrolls] {
+        let mut out = Vec::with_capacity(49);
+        out.push(USAGE_VERSION);
+        for weight in [self.accounts, self.keyrings, self.sessions] {
+            out.extend_from_slice(&weight.to_be_bytes());
+        }
+        for count in [self.day, self.rows, self.session_rows, self.keyring_rows, self.enrolls, self.keyring_growth] {
             out.extend_from_slice(&count.to_be_bytes());
         }
         out
     }
 
+    /// Reads version 2, and version 1 as written before keyrings had a
+    /// ceiling of their own. Version 1's one weight held accounts and
+    /// keyrings together and cannot be split without a scan, so each counter
+    /// takes it whole: neither ever counts less than is held, and every
+    /// decrement saturates at zero. The over-count stays for good: the
+    /// keyrings' bytes held when version 2 first wrote, in the accounts'
+    /// weight, and the accounts' in the keyrings'. Its keyring growth starts
+    /// at zero.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         let mut r = Reader(bytes);
-        if r.byte()? != VERSION {
-            return None;
-        }
-        let usage = Self {
-            stored: r.u64()?,
-            sessions: r.u64()?,
-            day: r.u32()?,
-            rows: r.u32()?,
-            session_rows: r.u32()?,
-            keyring_rows: r.u32()?,
-            enrolls: r.u32()?,
+        let usage = match r.byte()? {
+            USAGE_VERSION => Self {
+                accounts: r.u64()?,
+                keyrings: r.u64()?,
+                sessions: r.u64()?,
+                day: r.u32()?,
+                rows: r.u32()?,
+                session_rows: r.u32()?,
+                keyring_rows: r.u32()?,
+                enrolls: r.u32()?,
+                keyring_growth: r.u32()?,
+            },
+            USAGE_ONE_WEIGHT => {
+                let stored = r.u64()?;
+                Self {
+                    accounts: stored,
+                    keyrings: stored,
+                    sessions: r.u64()?,
+                    day: r.u32()?,
+                    rows: r.u32()?,
+                    session_rows: r.u32()?,
+                    keyring_rows: r.u32()?,
+                    enrolls: r.u32()?,
+                    keyring_growth: 0,
+                }
+            }
+            _ => return None,
         };
         r.end()?;
         Some(usage)
@@ -189,14 +223,28 @@ mod tests {
 
     fn usage() -> AccountUsage {
         AccountUsage {
-            stored: 1 << 26,
+            accounts: 1 << 26,
+            keyrings: 1 << 25,
             sessions: 192 * 16,
             day: 20_000,
             rows: 1_000_001,
             session_rows: 999_999,
             keyring_rows: 1,
             enrolls: 10_000,
+            keyring_growth: 73_728,
         }
+    }
+
+    /// A usage record as version 1 wrote it: accounts and keyrings in one
+    /// weight, and no keyring growth.
+    fn usage_v1(stored: u64, sessions: u64, counts: [u32; 5]) -> Vec<u8> {
+        let mut bytes = vec![1];
+        bytes.extend_from_slice(&stored.to_be_bytes());
+        bytes.extend_from_slice(&sessions.to_be_bytes());
+        for count in counts {
+            bytes.extend_from_slice(&count.to_be_bytes());
+        }
+        bytes
     }
 
     #[test]
@@ -226,7 +274,15 @@ mod tests {
         let tomorrow = today.on(20_001);
         assert_eq!(
             tomorrow,
-            AccountUsage { day: 20_001, rows: 0, session_rows: 0, keyring_rows: 0, enrolls: 0, ..today }
+            AccountUsage {
+                day: 20_001,
+                rows: 0,
+                session_rows: 0,
+                keyring_rows: 0,
+                enrolls: 0,
+                keyring_growth: 0,
+                ..today
+            }
         );
         assert_eq!(AccountUsage::default().on(5).day, 5);
     }
@@ -249,14 +305,58 @@ mod tests {
         assert_eq!(bytes[1..33], [0x5C; 32]);
         assert_eq!(bytes[33..], 1_800_000_000i64.to_be_bytes());
         assert_eq!(bytes.len(), 41);
-        let small =
-            AccountUsage { stored: 1, sessions: 2, day: 3, rows: 4, session_rows: 5, keyring_rows: 6, enrolls: 7 };
-        let mut expected = vec![1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2];
-        for n in 3..=7u8 {
+        let small = AccountUsage {
+            accounts: 1,
+            keyrings: 2,
+            sessions: 3,
+            day: 4,
+            rows: 5,
+            session_rows: 6,
+            keyring_rows: 7,
+            enrolls: 8,
+            keyring_growth: 9,
+        };
+        let mut expected = vec![2];
+        for n in 1..=3u8 {
+            expected.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, n]);
+        }
+        for n in 4..=9u8 {
             expected.extend_from_slice(&[0, 0, 0, n]);
         }
         assert_eq!(small.encode(), expected);
-        assert_eq!(expected.len(), 37);
+        assert_eq!(expected.len(), 49);
+    }
+
+    /// Usage records written before keyrings had a ceiling of their own still
+    /// read. Their one weight held accounts and keyrings together, so it is
+    /// taken whole for each: neither ceiling ever counts less than is held.
+    #[test]
+    fn a_version_one_usage_still_reads() {
+        let old = usage_v1(1 << 20, 192 * 3, [20_000, 50, 12, 6, 2]);
+        assert_eq!(old.len(), 37);
+        let read = AccountUsage::decode(&old).unwrap();
+        assert_eq!(
+            read,
+            AccountUsage {
+                accounts: 1 << 20,
+                keyrings: 1 << 20,
+                sessions: 192 * 3,
+                day: 20_000,
+                rows: 50,
+                session_rows: 12,
+                keyring_rows: 6,
+                enrolls: 2,
+                keyring_growth: 0,
+            }
+        );
+        assert_eq!(read.encode()[0], 2, "written back as version 2");
+        assert_eq!(AccountUsage::decode(&read.encode()), Some(read));
+        for cut in 0..old.len() {
+            assert!(AccountUsage::decode(&old[..cut]).is_none(), "cut at {cut}");
+        }
+        let mut longer = old;
+        longer.extend_from_slice(&[0; 12]);
+        assert!(AccountUsage::decode(&longer).is_none(), "a version 1 with version 2's length");
     }
 
     mod adversary {
@@ -280,16 +380,19 @@ mod tests {
 
         #[test]
         fn unknown_versions_are_refused() {
-            fn refused<T>(mut bytes: Vec<u8>, decode: impl Fn(&[u8]) -> Option<T>) {
-                for version in [0, 2, 0xFF] {
+            fn refused<T>(mut bytes: Vec<u8>, decode: impl Fn(&[u8]) -> Option<T>, versions: &[u8]) {
+                for &version in versions {
                     bytes[0] = version;
                     assert!(decode(&bytes).is_none(), "version {version}");
                 }
             }
-            refused(account().encode(), AccountRecord::decode);
-            refused(keyring().encode(), KeyringRecord::decode);
-            refused(session().encode(), SessionRecord::decode);
-            refused(usage().encode(), AccountUsage::decode);
+            refused(account().encode(), AccountRecord::decode, &[0, 2, 0xFF]);
+            refused(keyring().encode(), KeyringRecord::decode, &[0, 2, 0xFF]);
+            refused(session().encode(), SessionRecord::decode, &[0, 2, 0xFF]);
+            // Version 1 is the old usage layout, shorter: a version 2 record
+            // relabelled as 1 does not read as one.
+            refused(usage().encode(), AccountUsage::decode, &[0, 1, 3, 0xFF]);
+            refused(usage_v1(1, 2, [3, 4, 5, 6, 7]), AccountUsage::decode, &[0, 2, 3, 0xFF]);
         }
 
         #[test]
