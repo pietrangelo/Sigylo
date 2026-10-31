@@ -26,8 +26,8 @@ use custody::CustodyError;
 use futures_util::future::join_all;
 use vault::core::account_keys;
 use vault::core::{
-    ACCOUNT_BYTES_CEILING, ACCOUNT_COST, AccountUsage, COUNTER_COST, KeyringRecord, PARKED_LOGIN_COST,
-    REGISTRATION_RESERVE, SESSION_COST, SHARED_POOL, SessionRecord,
+    ACCOUNT_BYTES_CEILING, ACCOUNT_COST, AccountUsage, COUNTER_COST, KEYRING_BYTES_CEILING, KeyringRecord,
+    PARKED_LOGIN_COST, REGISTRATION_RESERVE, SESSION_COST, SHARED_POOL, SessionRecord,
 };
 use vault::{
     AccountCall, AccountLedger, Accounts, Class, Clock, KeyValue, Link, RemoteAccounts, Scratch, VaultThrottle,
@@ -586,7 +586,7 @@ fn each_use_case_costs_the_accounts_object_a_fixed_number_of_requests() {
         let session = login(&relay, &name).await;
         assert_eq!(counted(&link, relay.close_account(&session.token)).await.1, 1);
         assert_eq!(counted(&link, relay.purge_expired()).await.1, 1);
-        assert_eq!(world.usage().stored, 0);
+        assert_eq!((world.usage().accounts, world.usage().keyrings), (0, 0));
     });
 }
 
@@ -683,7 +683,7 @@ mod adversary {
             register(&relay, &name).await;
             let session = login(&relay, &name).await;
             let v1 = relay.store_keyring(&session.token, &keyring(1), KeyringVersion::NONE).await.unwrap();
-            world.pretend(|usage| usage.stored = ACCOUNT_BYTES_CEILING);
+            world.pretend(|usage| (usage.accounts, usage.keyrings) = (ACCOUNT_BYTES_CEILING, KEYRING_BYTES_CEILING));
             let newcomer = fresh_name();
             let (request, pending) = device().begin_registration(pw()).unwrap();
             let response = relay.registration_response(&newcomer, &request).await.unwrap();
@@ -771,17 +771,18 @@ mod adversary {
             relay.sign_out(&session.token).await.unwrap();
             login(&relay, &name).await;
 
-            let (mut stored, mut sessions) = (0, 0);
+            let (mut accounts, mut keyrings, mut sessions) = (0, 0, 0);
             for (key, value) in world.kv.entries() {
                 match key.as_bytes()[0] {
-                    b'a' => stored += ACCOUNT_COST,
-                    b'k' => stored += KeyringRecord::decode(&value).unwrap().keyring.as_bytes().len() as u64,
+                    b'a' => accounts += ACCOUNT_COST,
+                    b'k' => keyrings += KeyringRecord::decode(&value).unwrap().keyring.as_bytes().len() as u64,
                     b's' => sessions += SESSION_COST,
                     _ => {}
                 }
             }
             let usage = world.usage();
-            assert_eq!(usage.stored, stored, "stored bytes drifted from accounts and keyrings");
+            assert_eq!(usage.accounts, accounts, "account bytes drifted from the accounts");
+            assert_eq!(usage.keyrings, keyrings, "keyring bytes drifted from the keyrings");
             assert_eq!(usage.sessions, sessions, "session bytes drifted from the sessions");
             let (logins, counters, units) = world.memory();
             assert_eq!((logins, counters), (1, 1));
