@@ -51,10 +51,21 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-24.04
     steps:
+      # The default checkout: the tip of main when this run started (a run by
+      # hand only goes on from main). It must be the commit CI just passed;
+      # if main has moved on, its own run builds and deploys it.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
+      - name: The commit CI passed
+        if: github.event_name == 'workflow_run'
+        env:
+          COMMIT: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [[ "$(git rev-parse HEAD)" != "$COMMIT" ]]; then
+            echo "::error::main moved on from $COMMIT; its own run deploys it"
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: wasm32-unknown-unknown
@@ -129,7 +140,6 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       # CI runs finish in any order: an older commit must never replace a newer
       # one, which may carry a security fix.
@@ -137,6 +147,10 @@ jobs:
         env:
           COMMIT: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
+          if [[ "$(git rev-parse HEAD)" != "$COMMIT" ]]; then
+            echo "::error::main moved on from $COMMIT; its own run deploys it"
+            exit 1
+          fi
           tip="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}" refs/heads/main | cut -f1)"
           if [[ "$tip" != "$COMMIT" ]]; then
             echo "::error::main moved on to $tip; its own run deploys it"
