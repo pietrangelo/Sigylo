@@ -12,7 +12,7 @@ export const operator = {
 } as const;
 
 /** Date of the last change to any of these texts (ISO 8601). */
-export const LEGAL_UPDATED = '2026-10-21';
+export const LEGAL_UPDATED = '2026-10-31';
 
 export interface LegalSection {
   heading: string;
@@ -109,7 +109,7 @@ const it: LegalTexts = {
         heading: `Cosa conserviamo`,
         body: [
           `Per ogni segreto: la busta cifrata, la scadenza, la regola di distruzione e l'impronta SHA-256 del codice di revoca. Per ogni richiesta: la chiave pubblica di chi la crea e, se arriva, la risposta cifrata. Per un file, in più: i suoi pezzi cifrati (su Cloudflare R2, nell'Unione europea, sotto nomi casuali), quanti sono e, dopo l'apertura, l'impronta SHA-256 del codice che li consegna solo a chi l'ha aperto.`,
-          `Niente altro: né orario di creazione, né indirizzo IP, né identità. Anche se un segreto contiene dati personali, per noi resta illeggibile.`,
+          `Niente altro: né indirizzo IP, né identità. Non registriamo l'ora di creazione, ma si può ricavare dalla scadenza e dalla durata che hai scelto, e il nostro fornitore di archiviazione, Cloudflare, registra quando è stato scritto ogni oggetto cifrato e ogni modifica. Anche se un segreto contiene dati personali, per noi resta illeggibile.`,
         ],
       },
       {
@@ -242,7 +242,7 @@ const en: LegalTexts = {
         heading: `What we keep`,
         body: [
           `For each secret: the encrypted envelope, its expiry, its destruction rule and the SHA-256 digest of the revocation code. For each request: the public key of whoever creates it and, once it arrives, the encrypted answer. For a file, in addition: its encrypted pieces (on Cloudflare R2, in the European Union, under random names), how many there are and, once opened, the SHA-256 digest of the code that releases them only to whoever opened it.`,
-          `Nothing else: no creation time, no IP address, no identity. Even if a secret contains personal data, it stays unreadable to us.`,
+          `Nothing else: no IP address, no identity. We do not store a creation time, but it can be worked out from the expiry and the lifetime you chose, and our storage provider, Cloudflare, records when each encrypted object and each change was written. Even if a secret contains personal data, it stays unreadable to us.`,
         ],
       },
       {
@@ -375,7 +375,7 @@ const fr: LegalTexts = {
         heading: `Ce que nous conservons`,
         body: [
           `Pour chaque secret : l'enveloppe chiffrée, son expiration, sa règle de destruction et l'empreinte SHA-256 du code de révocation. Pour chaque demande : la clé publique de son auteur et, si elle arrive, la réponse chiffrée. Pour un fichier, en plus : ses morceaux chiffrés (sur Cloudflare R2, dans l'Union européenne, sous des noms aléatoires), leur nombre et, après l'ouverture, l'empreinte SHA-256 du code qui ne les remet qu'à la personne qui l'a ouvert.`,
-          `Rien d'autre : ni heure de création, ni adresse IP, ni identité. Même si un secret contient des données personnelles, il reste illisible pour nous.`,
+          `Rien d'autre : ni adresse IP, ni identité. Nous n'enregistrons pas l'heure de création, mais on peut la déduire de l'expiration et de la durée que vous avez choisie, et notre fournisseur de stockage, Cloudflare, enregistre le moment où chaque objet chiffré et chaque modification ont été écrits. Même si un secret contient des données personnelles, il reste illisible pour nous.`,
         ],
       },
       {
@@ -508,7 +508,7 @@ const es: LegalTexts = {
         heading: `Qué guardamos`,
         body: [
           `Para cada secreto: el sobre cifrado, su vencimiento, su regla de destrucción y la huella SHA-256 del código de revocación. Para cada solicitud: la clave pública de quien la crea y, si llega, la respuesta cifrada. Para un archivo, además: sus fragmentos cifrados (en Cloudflare R2, en la Unión Europea, con nombres aleatorios), cuántos son y, tras abrirlo, la huella SHA-256 del código que solo se los entrega a quien lo abrió.`,
-          `Nada más: ni hora de creación, ni dirección IP, ni identidad. Aunque un secreto contenga datos personales, para nosotros sigue siendo ilegible.`,
+          `Nada más: ni dirección IP, ni identidad. No guardamos la hora de creación, pero puede deducirse del vencimiento y de la duración que elegiste, y nuestro proveedor de almacenamiento, Cloudflare, registra cuándo se escribió cada objeto cifrado y cada cambio. Aunque un secreto contenga datos personales, para nosotros sigue siendo ilegible.`,
         ],
       },
       {
@@ -641,7 +641,7 @@ const de: LegalTexts = {
         heading: `Was wir speichern`,
         body: [
           `Für jedes Geheimnis: den verschlüsselten Umschlag, den Ablauf, die Vernichtungsregel und den SHA-256-Fingerabdruck des Widerrufscodes. Für jede Anfrage: den öffentlichen Schlüssel der Person, die sie erstellt, und, falls sie eintrifft, die verschlüsselte Antwort. Bei einer Datei zusätzlich: ihre verschlüsselten Teile (auf Cloudflare R2, in der Europäischen Union, unter zufälligen Namen), deren Anzahl und, nach dem Öffnen, den SHA-256-Fingerabdruck des Codes, der sie nur an die Person ausgibt, die sie geöffnet hat.`,
-          `Sonst nichts: keine Erstellungszeit, keine IP-Adresse, keine Identität. Selbst wenn ein Geheimnis personenbezogene Daten enthält, bleibt es für uns unlesbar.`,
+          `Sonst nichts: keine IP-Adresse, keine Identität. Den Erstellungszeitpunkt speichern wir nicht, er lässt sich aber aus dem Ablauf und der gewählten Laufzeit ableiten, und unser Speicheranbieter Cloudflare hält fest, wann jedes verschlüsselte Objekt und jede Änderung geschrieben wurde. Selbst wenn ein Geheimnis personenbezogene Daten enthält, bleibt es für uns unlesbar.`,
         ],
       },
       {
