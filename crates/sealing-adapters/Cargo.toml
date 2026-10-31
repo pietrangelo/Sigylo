@@ -23,6 +23,10 @@ getrandom = "0.4.3"
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
 
+[dev-dependencies]
+# Test-only allocator that checks the Argon2id memory is wiped before it is freed.
+heap-probe.workspace = true
+
 [lints]
 workspace = true
 

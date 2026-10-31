@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/sealing", "crates/sealing-adapters", "crates/custody", "crates/custody-adapters", "crates/vault", "crates/vault-adapters", "crates/access", "crates/access-adapters", "crates/sigylo-wasm", "worker", "tools/architecture-guard"]
+members = ["crates/sealing", "crates/sealing-adapters", "crates/custody", "crates/custody-adapters", "crates/vault", "crates/vault-adapters", "crates/access", "crates/access-adapters", "crates/sigylo-wasm", "worker", "tools/architecture-guard", "tools/heap-probe"]
 # The Tauri app is its own workspace (it needs the system webview); the guard checks it too.
 exclude = ["app"]
 
@@ -20,6 +20,7 @@ vault = { path = "crates/vault" }
 vault-adapters = { path = "crates/vault-adapters" }
 access = { path = "crates/access" }
 access-adapters = { path = "crates/access-adapters" }
+heap-probe = { path = "tools/heap-probe" }
 zeroize = { version = "1.9.1", features = ["derive"] }
 
 [workspace.lints.rust]

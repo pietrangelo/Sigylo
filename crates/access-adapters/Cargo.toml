@@ -27,6 +27,8 @@ getrandom = { version = "0.4.3", features = ["wasm_js"] }
 vault.workspace = true
 custody.workspace = true
 futures-util = "0.3"
+# Test-only allocator that checks the Argon2id memory is wiped before it is freed.
+heap-probe.workspace = true
 
 [lints]
 workspace = true

@@ -1,0 +1,26 @@
+[package]
+name = "heap-probe"
+description = "Test-only global allocator that checks large blocks were wiped before they were freed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.rosette]
+role = "tool"
+
+[dev-dependencies]
+zeroize.workspace = true
+
+# The workspace lints forbid unsafe code, and a global allocator cannot be
+# written without it. This crate keeps the workspace lints but only denies
+# unsafe code, so the one `unsafe impl GlobalAlloc` can opt out explicitly.
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
