@@ -3,7 +3,8 @@ name: App release
 # Builds the installable app for Linux, macOS and Windows and attaches the
 # installers to a draft GitHub release. Runs only for a tag `app-v*` that
 # matches the version in app/tauri.conf.json, on a commit of main whose CI
-# passed, or by hand from main, never for a pull request. The builds are not
+# passed (waiting up to an hour for a CI run still going), or by hand from
+# main, never for a pull request. The builds are not
 # signed yet: signing (Apple Developer ID, Windows code signing) needs the
 # owner's accounts and goes in through repository secrets. The Windows leg
 # also packs an MSIX for the Microsoft Store (app/msix), kept as a workflow
@@ -32,6 +33,8 @@ jobs:
     # By hand only from main: a dispatch from another branch would put an
     # unreviewed build into the release draft.
     if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    # The wait for CI below gives up after an hour.
+    timeout-minutes: 70
     permissions:
       contents: read
       # To read whether CI passed on the commit.
@@ -66,16 +69,47 @@ jobs:
             echo "::error::$GITHUB_SHA is not on main: tag a commit of main"
             exit 1
           fi
+      # A tag pushed together with its commit (`git push origin main app-vX`,
+      # --follow-tags) starts this run while CI on that commit is still going:
+      # wait for it, failing closed. Done as soon as a CI push run on main has
+      # passed for this commit; failed once every such run has completed and
+      # none passed, if none starts within 5 minutes, or after an hour.
       - name: CI passed on this commit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          passed="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&event=push&branch=main&status=success" --jq '.total_count')"
-          if [[ "$passed" -lt 1 ]]; then
-            echo "::error::CI has not passed on $GITHUB_SHA pushed to main (failed, still running or never run)"
-            exit 1
-          fi
+          runs="repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&event=push&branch=main&per_page=100"
+          counts='[.total_count, (.workflow_runs | length),
+            ([.workflow_runs[] | select(.conclusion == "success")] | length),
+            ([.workflow_runs[] | select(.status != "completed")] | length)] | @tsv'
+          interval=30
+          start_attempts=10
+          max_attempts=120
+          for (( attempt = 1; attempt <= max_attempts; attempt++ )); do
+            if answer="$(gh api "$runs" --jq "$counts")"; then
+              read -r total listed passed running <<< "$answer"
+              if (( passed > 0 )); then
+                echo "CI passed on $GITHUB_SHA"
+                exit 0
+              fi
+              # Only a full page can show that every run has completed.
+              if (( total > 0 && listed == total && running == 0 )); then
+                echo "::error::CI did not pass on $GITHUB_SHA pushed to main"
+                exit 1
+              fi
+              if (( total == 0 && attempt > start_attempts )); then
+                echo "::error::CI never ran on $GITHUB_SHA pushed to main"
+                exit 1
+              fi
+              echo "attempt $attempt: $total CI runs, $running still going"
+            else
+              echo "::warning::attempt $attempt: could not read the CI runs of $GITHUB_SHA"
+            fi
+            sleep "$interval"
+          done
+          echo "::error::CI has not passed on $GITHUB_SHA pushed to main within an hour"
+          exit 1
 
   build:
     name: ${{ matrix.name }}
