@@ -144,7 +144,8 @@ struct Inner {
     counters: BTreeMap<(Class, [u8; 32]), Counter>,
     expiries: BTreeSet<(i64, Slot)>,
     used: Used,
-    /// Live device buckets counted for each account.
+    /// Device buckets each account holds: a bucket is held while its
+    /// counter or its parked login lives, and counts once if both do.
     device_buckets: BTreeMap<[u8; 32], u8>,
 }
 
@@ -152,11 +153,13 @@ impl Inner {
     fn remove_login(&mut self, handle: &[u8; 16]) -> Option<Parked> {
         let parked = self.logins.remove(handle)?;
         self.expiries.remove(&(parked.expires_at, Slot::Login(*handle)));
-        self.of_account.remove(&(*parked.account.as_bytes(), *handle));
+        let account = *parked.account.as_bytes();
+        self.of_account.remove(&(account, *handle));
         if let Some(bucket) = parked.bucket
             && self.by_bucket.get(&bucket) == Some(handle)
         {
             self.by_bucket.remove(&bucket);
+            self.release_bucket(&account, &bucket);
         }
         self.used.refund(parked.charged, PARKED_LOGIN_COST);
         Some(parked)
@@ -166,15 +169,59 @@ impl Inner {
         let counter = self.counters.remove(key)?;
         self.expiries.remove(&(counter.expires_at(), Slot::Counter(key.0, key.1)));
         self.used.refund(counter.charged, COUNTER_COST);
-        if let Some(account) = counter.device_of
-            && let Some(tally) = self.device_buckets.get_mut(&account)
+        if let Some(account) = counter.device_of {
+            self.release_bucket(&account, &key.1);
+        }
+        Some(counter)
+    }
+
+    /// Whether `account` holds device `bucket`: its counter or its parked
+    /// login is that account's.
+    fn holds(&self, account: &[u8; 32], bucket: &[u8; 32]) -> bool {
+        let by_counter = self
+            .counters
+            .get(&(Class::Device, *bucket))
+            .is_some_and(|counter| counter.device_of.as_ref() == Some(account));
+        let by_login = self
+            .by_bucket
+            .get(bucket)
+            .and_then(|handle| self.logins.get(handle))
+            .is_some_and(|parked| parked.account.as_bytes() == account);
+        by_counter || by_login
+    }
+
+    /// Counts `bucket` for `account`, if nothing held it yet. Call before
+    /// filing what will hold it.
+    fn hold_bucket(&mut self, account: &[u8; 32], bucket: &[u8; 32]) {
+        if !self.holds(account, bucket) {
+            let tally = self.device_buckets.entry(*account).or_insert(0);
+            *tally = tally.saturating_add(1);
+        }
+    }
+
+    /// Stops counting `bucket` for `account` once nothing holds it. Call
+    /// after removing what held it.
+    fn release_bucket(&mut self, account: &[u8; 32], bucket: &[u8; 32]) {
+        if !self.holds(account, bucket)
+            && let Some(tally) = self.device_buckets.get_mut(account)
         {
             *tally = tally.saturating_sub(1);
             if *tally == 0 {
-                self.device_buckets.remove(&account);
+                self.device_buckets.remove(account);
             }
         }
-        Some(counter)
+    }
+
+    /// Whether `account` may hold `bucket`: it holds it already, or holds
+    /// fewer than [`DEVICE_BUCKETS_PER_ACCOUNT`] (after sweeping everything
+    /// expired once, if not).
+    fn may_hold(&mut self, account: &AccountId, bucket: &[u8; 32], now: i64) -> bool {
+        let id = account.as_bytes();
+        if self.holds(id, bucket) || self.device_tally(account) < DEVICE_BUCKETS_PER_ACCOUNT {
+            return true;
+        }
+        self.sweep(now, usize::MAX);
+        self.holds(id, bucket) || self.device_tally(account) < DEVICE_BUCKETS_PER_ACCOUNT
     }
 
     /// Removes up to `limit` entries expired at `now`, earliest first.
@@ -264,26 +311,24 @@ impl Scratch {
             return Ok(counter.attempts <= u32::from(limit));
         }
         let device_of = (class == Class::Device).then_some(*account.as_bytes());
-        if device_of.is_some() && inner.device_tally(account) >= DEVICE_BUCKETS_PER_ACCOUNT {
-            inner.sweep(now, usize::MAX);
-            if inner.device_tally(account) >= DEVICE_BUCKETS_PER_ACCOUNT {
-                return Ok(false);
-            }
+        if device_of.is_some() && !inner.may_hold(account, bucket, now) {
+            return Ok(false);
         }
         let Some(charged) = inner.used.charge(class, COUNTER_COST) else { return Ok(false) };
+        if let Some(account) = device_of {
+            inner.hold_bucket(&account, bucket);
+        }
         let counter = Counter { window_start: now, attempts: 1, charged, device_of };
         inner.expiries.insert((counter.expires_at(), Slot::Counter(class, *bucket)));
         inner.counters.insert(key, counter);
-        if let Some(account) = device_of {
-            let tally = inner.device_buckets.entry(account).or_insert(0);
-            *tally = tally.saturating_add(1);
-        }
         Ok(true)
     }
 
     /// Parks a login until `expires_at`, charged to `class`'s pools. A login
-    /// that spent a device budget names its `bucket`, and replaces the one
-    /// the bucket held; a shared one names none. Registrations park nothing.
+    /// that spent a device budget names its `bucket`, replaces the one the
+    /// bucket held, and holds the bucket for its account until it leaves: a
+    /// new bucket past the account's [`DEVICE_BUCKETS_PER_ACCOUNT`] is
+    /// refused. A shared one names none. Registrations park nothing.
     #[allow(clippy::too_many_arguments)] // a login, whose, until when, under which budget, and the time now
     pub fn park(
         &self,
@@ -312,18 +357,24 @@ impl Scratch {
         {
             inner.remove_login(&old);
         }
+        if let Some(bucket) = bucket
+            && !inner.may_hold(account, &bucket, now)
+        {
+            return Err(AccessError::StorageFull);
+        }
         if inner.room(class, PARKED_LOGIN_COST, now).is_none() {
             return Err(AccessError::StorageFull);
         }
         let Some(charged) = inner.used.charge(class, PARKED_LOGIN_COST) else {
             return Err(AccessError::StorageFull);
         };
+        if let Some(bucket) = bucket {
+            inner.hold_bucket(account.as_bytes(), &bucket);
+            inner.by_bucket.insert(bucket, handle);
+        }
         let parked = Parked { account: *account, expires_at: expires_at.0, charged, bucket, state: state.clone() };
         inner.expiries.insert((parked.expires_at, Slot::Login(handle)));
         inner.of_account.insert((*account.as_bytes(), handle));
-        if let Some(bucket) = bucket {
-            inner.by_bucket.insert(bucket, handle);
-        }
         inner.logins.insert(handle, parked);
         Ok(())
     }
@@ -700,6 +751,59 @@ mod tests {
             assert_eq!(admit(&bob, 17, 1), Ok(true), "another account is untouched");
             assert_eq!(admit(&ada, 16, 60), Ok(true), "the old windows are over");
             assert_eq!(scratch.0.borrow().device_buckets.get(ada.as_bytes()), Some(&1));
+        }
+
+        #[test]
+        fn parked_device_logins_count_against_their_account_after_the_counters_go() {
+            // A counter lives 60 s, a parked login 300 s: if only counters
+            // counted, one account rotating passes would hold a parked login
+            // for every pass it ever used, and fill the Device reserve alone.
+            let scratch = Scratch::default();
+            let (ada, bob) = (account(1), account(2));
+            let passes = u32::from(DEVICE_BUCKETS_PER_ACCOUNT);
+            for pass in 0..passes {
+                assert!(attempt(&scratch, pass, &ada, Class::Device, &bucket(pass), 0), "pass {pass}");
+            }
+            assert_eq!(scratch.sweep(at(61), usize::MAX), Ok(u64::from(passes)), "every counter went");
+            assert_eq!(scratch.0.borrow().logins.len(), passes as usize, "every login is still parked");
+            assert!(!attempt(&scratch, 100, &ada, Class::Device, &bucket(100), 61), "a seventeenth pass");
+            let parked = (DEVICE_BUCKETS_PER_ACCOUNT, passes as usize);
+            assert_eq!(scratch.0.borrow().device_buckets.get(ada.as_bytes()).copied(), Some(parked.0));
+            assert_eq!(scratch.0.borrow().logins.len(), parked.1, "the refusal parked nothing");
+            // Parking under a pass with no counter is refused the same way.
+            let stray = scratch.park(&handle(101), &ada, &state(1), at(361), Class::Device, Some(&bucket(101)), at(61));
+            assert_eq!(stray, Err(AccessError::StorageFull));
+            // The sixteen passes the account holds still work, each counted once.
+            for pass in 0..passes {
+                assert!(attempt(&scratch, 200 + pass, &ada, Class::Device, &bucket(pass), 61), "pass {pass} again");
+                assert_eq!(scratch.take(&handle(200 + pass), at(62)), Ok(Some((ada, state(1)))));
+            }
+            assert_eq!(scratch.0.borrow().device_buckets.get(ada.as_bytes()).copied(), Some(parked.0));
+            assert!(attempt(&scratch, 300, &bob, Class::Device, &bucket(300), 61), "another account is untouched");
+            // Once a pass's counter and login are both gone, its place is free.
+            assert!(attempt(&scratch, 301, &ada, Class::Device, &bucket(100), 121), "the old windows are over");
+            assert_eq!(scratch.0.borrow().device_buckets.get(ada.as_bytes()).copied(), Some(1));
+        }
+
+        #[test]
+        fn a_device_bucket_is_counted_once_whatever_holds_it() {
+            let scratch = Scratch::default();
+            let ada = account(1);
+            let tally = || scratch.0.borrow().device_buckets.get(ada.as_bytes()).copied();
+            assert!(attempt(&scratch, 1, &ada, Class::Device, &bucket(1), 0));
+            assert_eq!(tally(), Some(1), "a counter and a login in one bucket");
+            assert!(attempt(&scratch, 2, &ada, Class::Device, &bucket(1), 1), "the login replaced");
+            assert_eq!(tally(), Some(1));
+            assert_eq!(scratch.sweep(at(60), usize::MAX), Ok(1), "the counter goes, the login stays");
+            assert_eq!(tally(), Some(1));
+            assert_eq!(scratch.take(&handle(2), at(61)), Ok(Some((ada, state(1)))));
+            assert_eq!(tally(), None, "nothing holds the bucket");
+            assert!(attempt(&scratch, 3, &ada, Class::Device, &bucket(2), 61));
+            assert_eq!(scratch.forget_account(&ada), Ok(()));
+            assert_eq!(tally(), Some(1), "the counter still holds its bucket");
+            assert_eq!(scratch.sweep(at(121), usize::MAX), Ok(1));
+            assert_eq!(tally(), None);
+            assert!(scratch.0.borrow().device_buckets.is_empty());
         }
 
         #[test]
