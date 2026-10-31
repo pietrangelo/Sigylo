@@ -64,6 +64,7 @@ describe('legal', () => {
     const toml = readFileSync(new URL('../../worker/wrangler.toml', import.meta.url), 'utf8');
     const limit = (name: string) => toml.match(new RegExp(`name = "${name}"[\\s\\S]*?limit = (\\d+)`))?.[1];
     expect([limit('WRITE_LIMITER'), limit('READ_LIMITER')]).toEqual(['30', '60']);
+    expect([limit('NETWORK_WRITE_LIMITER'), limit('NETWORK_READ_LIMITER')]).toEqual(['300', '600']);
     // A cron every 15 minutes, and garbage waits 5 minutes for the next one: up to 30.
     expect(toml).toContain('crons = ["*/15 * * * *"]');
     const halfHour = { it: "mezz'ora", en: 'half an hour', fr: 'demi-heure', es: 'media hora', de: 'halben Stunde' };
@@ -72,6 +73,8 @@ describe('legal', () => {
       expect(privacy, language).toMatch(/\b30\b[^.]*\b60\b/);
       expect(privacy, language).toContain('/64');
       expect(privacy, language).toContain('/48');
+      // The /48 block has allowances of its own, ten addresses' worth, for writes and reads.
+      expect(privacy, language).toMatch(/\b300\b[^.]*\b600\b[^.]*\/48/);
       expect(privacy, language).toContain(halfHour[language]);
     }
   });
