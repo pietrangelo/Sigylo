@@ -1,8 +1,11 @@
 # Served by Workers Static Assets (or Cloudflare Pages). Every response of the
 # web client carries a strict policy: only our own scripts and Wasm, network
 # only to our own origin, no framing, no referrer, no third parties at all.
+# Trusted Types: the DOM's script sinks (innerHTML, script src, ...) take only
+# values made by a named policy, and the one policy allowed is the one the
+# Svelte runtime creates for its own compiled templates.
 /*
-  Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests; require-trusted-types-for 'script'; trusted-types svelte-trusted-html
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY

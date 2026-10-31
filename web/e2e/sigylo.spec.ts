@@ -49,6 +49,11 @@ test('burn after reading: opens once with the passphrase, then is gone', async (
   await expect(reader.getByTestId('plaintext')).toHaveValue(SECRET);
   await expect(reader.getByTestId('retention-note')).toHaveClass(/notice/);
   expect(new URL(reader.url()).hash).toBe('');
+  // Neither the secret nor the links are kept by the browser's form memory (Firefox's session store).
+  for (const field of [reader.getByTestId('plaintext'), page.getByTestId('secret-link'), page.getByTestId('revoke-link')]) {
+    await expect(field).toHaveAttribute('autocomplete', 'off');
+    await expect(field).toHaveAttribute('spellcheck', 'false');
+  }
 
   const latecomer = await freshPage(browser);
   await latecomer.goto(link);
@@ -400,19 +405,85 @@ test.describe('adversary', () => {
     expect(responses).toHaveLength(1);
   });
 
-  test('the page runs under the strict policy without violations', async ({ page }) => {
+  test('the page runs under the strict policy without violations', async ({ page, browser }) => {
     const violations: string[] = [];
-    page.on('console', (m) => m.text().includes('Content Security Policy') && violations.push(m.text()));
+    // Every violation (Trusted Types included) is reported on the page, and a
+    // refused sink throws: either way it ends up here.
+    const watch = async (p: Page) => {
+      await p.addInitScript(() =>
+        document.addEventListener('securitypolicyviolation', (e) => console.error(`Content Security Policy: ${e.violatedDirective} ${e.blockedURI}`)),
+      );
+      p.on('console', (m) => /Content Security Policy|TrustedHTML|TrustedScript/.test(m.text()) && violations.push(m.text()));
+      p.on('pageerror', (e) => violations.push(e.message));
+    };
+    await watch(page);
     const response = await page.goto('/');
     const csp = response!.headers()['content-security-policy'] ?? '';
     expect(csp).toContain("script-src 'self' 'wasm-unsafe-eval'");
     expect(csp).toContain("connect-src 'self'");
     expect(csp).not.toContain('unsafe-inline');
-    await sealSecret(page);
+    // Trusted Types: script sinks take only what the Svelte runtime's own policy makes.
+    expect(csp).toContain("require-trusted-types-for 'script'");
+    expect(csp).toMatch(/trusted-types svelte-trusted-html(;|$)/);
+    expect(await page.evaluate(() => 'trustedTypes' in window)).toBe(true);
+    const { link } = await sealSecret(page);
+    // The recipient's side too: the engine, the opened secret, then other pages.
+    const reader = await freshPage(browser);
+    await watch(reader);
+    await reader.goto(link);
+    await reader.getByTestId('reveal').click();
+    await expect(reader.getByTestId('plaintext')).toHaveValue(SECRET);
+    for (const route of ['#/account', '#/me', '#/privacy']) {
+      await reader.goto(`/${route}`);
+      await expect(reader.locator('main h1, main h2').first()).toBeVisible();
+    }
     expect(violations).toEqual([]);
+    // A sink fed a plain string is refused: the policy is really enforced.
+    const sink = await page.evaluate(() => {
+      try {
+        document.createElement('div').innerHTML = '<b>x</b>';
+        return 'accepted';
+      } catch {
+        return 'refused';
+      }
+    });
+    expect(sink).toBe('refused');
     for (const tag of await page.locator('script[src], link[rel=stylesheet]').all()) {
       expect(await tag.getAttribute('integrity')).toMatch(/^sha384-/);
     }
+  });
+
+  test('a link reached through a path that reads as another host still loses its key', async ({ page, browser }) => {
+    // The SPA fallback serves the page at //x.example/: replacing the entry
+    // with that pathname would resolve to https://x.example/ and throw.
+    const { link, revoke } = await sealSecret(page, { retention: 'expiry' });
+    const origin = new URL(link).origin;
+    const hostile = (l: string) => `${origin}//x.example/${new URL(l).hash}`;
+    const errors: string[] = [];
+    // The local runtime folds the slashes with a redirect; the edge may serve the
+    // page there as it is, so the page is served the way that fallback would.
+    const served = async (p: Page) => {
+      await p.route((url) => url.pathname === '//x.example/', async (route) => route.fulfill({ response: await route.fetch({ url: `${origin}/` }) }));
+      p.on('pageerror', (e) => errors.push(e.message));
+      return p;
+    };
+
+    const reader = await served(await freshPage(browser));
+    await reader.goto(hostile(link));
+    expect(new URL(reader.url()).pathname).toBe('//x.example/');
+    await reader.getByTestId('reveal').click();
+    await expect(reader.getByTestId('plaintext')).toHaveValue(SECRET);
+    await expect(reader.getByTestId('open-error')).toHaveCount(0);
+    expect(new URL(reader.url()).hash).toBe('');
+    expect(new URL(reader.url()).origin).toBe(origin);
+
+    const sender = await served(await freshPage(browser));
+    await sender.goto(hostile(revoke));
+    expect(new URL(sender.url()).pathname).toBe('//x.example/');
+    await sender.getByTestId('revoke').click();
+    await expect(sender.getByTestId('revoked')).toBeVisible();
+    expect(new URL(sender.url()).hash).toBe('');
+    expect(errors).toEqual([]);
   });
 
   test('whoever burns a secret cannot refill its link', async ({ page, request, browser }) => {
