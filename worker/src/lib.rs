@@ -97,11 +97,6 @@ mod runtime {
         api::throttled(write, limiter.limit(network).await.ok().map(|o| o.success))
     }
 
-    /// Login and registration attempts per account and per minute, counted
-    /// in the accounts object for the whole world ([`VaultThrottle`]),
-    /// behind the same limit in `LOGIN_LIMITER` (wrangler.toml).
-    const LOGIN_ATTEMPTS_PER_MINUTE: u16 = 10;
-
     /// Login and registration attempts per account and budget in Cloudflare's
     /// memory, keyed by a prefix of the budget's bucket. Its count is per
     /// Cloudflare location, so it only spares the accounts object the
@@ -110,7 +105,7 @@ mod runtime {
 
     impl Throttle for LoginLimiter<'_> {
         async fn admit(&self, account: &AccountId, budget: &Budget) -> bool {
-            let Ok(limiter) = self.0.rate_limiter("LOGIN_LIMITER") else { return false };
+            let Ok(limiter) = self.0.rate_limiter(api::LOGIN_BINDING) else { return false };
             let key: String = throttle_bucket(account, budget)[..16].iter().map(|b| format!("{b:02x}")).collect();
             limiter.limit(key).await.map(|o| o.success).unwrap_or(false)
         }
@@ -141,7 +136,8 @@ mod runtime {
         let digest = keys.session_digest();
         let passes = keys.passes(now());
         // The binding is a cheap first filter; the accounts object holds the one global count.
-        let throttle = (LoginLimiter(env), VaultThrottle::new(&accounts, LOGIN_ATTEMPTS_PER_MINUTE, throttle_bucket));
+        let throttle =
+            (LoginLimiter(env), VaultThrottle::new(&accounts, api::LOGIN_ATTEMPTS_PER_MINUTE, throttle_bucket));
         let gatekeeper = Gatekeeper::new(keys, &accounts, RandomTokens, digest, throttle, passes);
         Ok(match command {
             AccountCommand::RegisterStart(username, request) => Reply::Json(
