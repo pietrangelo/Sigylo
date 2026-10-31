@@ -19,7 +19,8 @@ pub use account_limits::{
 pub use account_records::{AccountRecord, AccountUsage, KeyringRecord, SessionRecord, snapshot};
 pub use account_wire::{AccountCall, AccountReply};
 pub use limits::{
-    INCOMPLETE_FILE_SECONDS, OBJECT_BYTES_CEILING, PURGE_BATCH, RECORD_CEILING, SECONDS_PER_DAY,
+    DEPOSIT_RECORD_RESERVE, DEPOSIT_WRITES_RESERVE, ENVELOPE_BYTES_RESERVE, INCOMPLETE_FILE_SECONDS,
+    OBJECT_BYTES_CEILING, PURGE_BATCH, RECORD_CEILING, REQUEST_RECORD_CEILING, REQUEST_ROWS_PER_DAY, SECONDS_PER_DAY,
     STORING_WRITES_PER_DAY, TEARDOWN_WRITES_PER_DAY,
 };
 pub use records::{DepositRecord, GarbageEntry, RequestRecord, Stored, Usage, chunk_len};

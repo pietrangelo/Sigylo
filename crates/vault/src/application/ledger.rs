@@ -14,8 +14,10 @@ use custody::{
 use super::ports::KeyValue;
 use crate::core::keys::{self, Kind};
 use crate::core::{
-    DepositRecord, GarbageEntry, INCOMPLETE_FILE_SECONDS, OBJECT_BYTES_CEILING, PURGE_BATCH, RECORD_CEILING,
-    RequestRecord, SECONDS_PER_DAY, STORING_WRITES_PER_DAY, Stored, TEARDOWN_WRITES_PER_DAY, Usage, chunk_len,
+    DEPOSIT_RECORD_RESERVE, DEPOSIT_WRITES_RESERVE, DepositRecord, ENVELOPE_BYTES_RESERVE, GarbageEntry,
+    INCOMPLETE_FILE_SECONDS, OBJECT_BYTES_CEILING, PURGE_BATCH, RECORD_CEILING, REQUEST_RECORD_CEILING,
+    REQUEST_ROWS_PER_DAY, RequestRecord, SECONDS_PER_DAY, STORING_WRITES_PER_DAY, Stored, TEARDOWN_WRITES_PER_DAY,
+    Usage, chunk_len,
 };
 
 /// A deposit whose payload is already in the object store.
@@ -52,6 +54,54 @@ pub struct NewRequest {
     pub inbox: DropId,
     pub recipient_key: RecipientKeyBlob,
     pub lifetime: Lifetime,
+}
+
+/// What a storing step files, which decides how much of the room it may
+/// use: the cheap kinds stop short of reserves kept for envelopes, so that a
+/// flood of one kind cannot refuse every secret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Filing {
+    /// A payload: a plain secret, an answer or a file manifest. It may use
+    /// every ceiling up to the top.
+    Envelope,
+    /// A chunk reservation: stops short of [`ENVELOPE_BYTES_RESERVE`],
+    /// [`DEPOSIT_RECORD_RESERVE`] and [`DEPOSIT_WRITES_RESERVE`].
+    Chunk,
+    /// A request: stops short of the record and write reserves, and has a
+    /// ceiling ([`REQUEST_RECORD_CEILING`]) and a daily budget
+    /// ([`REQUEST_ROWS_PER_DAY`]) of its own.
+    Request,
+}
+
+impl Filing {
+    /// Whether today's writes leave room for this kind.
+    fn writes_left(self, usage: &Usage) -> bool {
+        match self {
+            Self::Envelope => usage.writes < STORING_WRITES_PER_DAY,
+            Self::Chunk => usage.writes < STORING_WRITES_PER_DAY - DEPOSIT_WRITES_RESERVE,
+            Self::Request => {
+                usage.writes < STORING_WRITES_PER_DAY - DEPOSIT_WRITES_RESERVE
+                    && usage.request_writes < REQUEST_ROWS_PER_DAY
+            }
+        }
+    }
+
+    /// Whether `bytes` more in the object store and `records` more records
+    /// stay within what this kind may use.
+    fn fits(self, usage: &Usage, bytes: u64, records: u64) -> bool {
+        let byte_ceiling = match self {
+            Self::Chunk => OBJECT_BYTES_CEILING - ENVELOPE_BYTES_RESERVE,
+            Self::Envelope | Self::Request => OBJECT_BYTES_CEILING,
+        };
+        let record_ceiling = match self {
+            Self::Envelope => RECORD_CEILING,
+            Self::Chunk | Self::Request => RECORD_CEILING - DEPOSIT_RECORD_RESERVE,
+        };
+        let requests_fit = self != Self::Request || usage.requests.saturating_add(records) <= REQUEST_RECORD_CEILING;
+        usage.object_bytes.saturating_add(bytes) <= byte_ceiling
+            && usage.records.saturating_add(records) <= record_ceiling
+            && requests_fit
+    }
 }
 
 /// The custody rules on a [`KeyValue`] store.
@@ -104,6 +154,7 @@ impl<K: KeyValue> Ledger<K> {
         if usage.day != day(now) {
             usage.day = day(now);
             usage.writes = 0;
+            usage.request_writes = 0;
         }
         Ok(usage)
     }
@@ -123,32 +174,28 @@ impl<K: KeyValue> Ledger<K> {
         })
     }
 
-    fn fits(usage: &Usage, bytes: u64, records: u64) -> bool {
-        usage.object_bytes.saturating_add(bytes) <= OBJECT_BYTES_CEILING
-            && usage.records.saturating_add(records) <= RECORD_CEILING
-    }
-
     /// Inside a storing step: whether there is room for `bytes` more in the
-    /// object store and `records` more records, and writes left today.
-    fn ensure_room(usage: &Usage, bytes: u64, records: u64) -> Result<(), CustodyError> {
-        if usage.writes < STORING_WRITES_PER_DAY && Self::fits(usage, bytes, records) {
+    /// object store and `records` more records, and writes left today, for
+    /// what `filing` stores.
+    fn ensure_room(usage: &Usage, filing: Filing, bytes: u64, records: u64) -> Result<(), CustodyError> {
+        if filing.writes_left(usage) && filing.fits(usage, bytes, records) {
             Ok(())
         } else {
             Err(CustodyError::StorageFull)
         }
     }
 
-    /// Before a storing step: whether it can fit. If the ceiling is in the
+    /// Before a storing step: whether it can fit. If a ceiling is in the
     /// way, what expired goes first (in a step of its own, so it stays gone
     /// whatever the storing step decides). Writes nothing when there is room.
-    pub fn check_room(&self, now: UnixTime, bytes: u64, records: u64) -> Result<(), CustodyError> {
+    fn check_room(&self, now: UnixTime, filing: Filing, bytes: u64, records: u64) -> Result<(), CustodyError> {
         let usage = self.usage(now)?;
-        if usage.writes >= STORING_WRITES_PER_DAY {
+        if !filing.writes_left(&usage) {
             return Err(CustodyError::StorageFull);
         }
-        if !Self::fits(&usage, bytes, records) {
+        if !filing.fits(&usage, bytes, records) {
             self.purge_batch(now)?;
-            Self::ensure_room(&self.usage(now)?, bytes, records)?;
+            Self::ensure_room(&self.usage(now)?, filing, bytes, records)?;
         }
         Ok(())
     }
@@ -221,6 +268,8 @@ impl<K: KeyValue> Ledger<K> {
         self.delete(&keys::request(id))?;
         self.delete(&keys::expiry(record.expires_at, Kind::Request, id))?;
         usage.records = usage.records.saturating_sub(1);
+        // Saturating: requests filed before the counter existed are not in it.
+        usage.requests = usage.requests.saturating_sub(1);
         Ok(())
     }
 
@@ -273,9 +322,9 @@ impl<K: KeyValue> Ledger<K> {
     /// the garbage, so that if it is never filed it is still collected.
     pub fn reserve_payload(&self, now: UnixTime, stored: Stored) -> Result<(), CustodyError> {
         // Two records: the reservation now, the deposit once it is filed.
-        self.check_room(now, u64::from(stored.len), 2)?;
+        self.check_room(now, Filing::Envelope, u64::from(stored.len), 2)?;
         self.step(now, |usage| {
-            Self::ensure_room(usage, u64::from(stored.len), 2)?;
+            Self::ensure_room(usage, Filing::Envelope, u64::from(stored.len), 2)?;
             self.add_garbage(usage, stored, after(now, RESERVATION_SECONDS))?;
             usage.object_bytes += u64::from(stored.len);
             Ok(())
@@ -357,12 +406,12 @@ impl<K: KeyValue> Ledger<K> {
         if !takes(self.deposit_record(id)?) {
             return Ok(false);
         }
-        self.check_room(now, u64::from(len), 1)?;
+        self.check_room(now, Filing::Chunk, u64::from(len), 1)?;
         self.step(now, |usage| {
             if !takes(self.deposit_record(id)?) {
                 return Ok(false);
             }
-            Self::ensure_room(usage, u64::from(len), 1)?;
+            Self::ensure_room(usage, Filing::Chunk, u64::from(len), 1)?;
             self.add_garbage(usage, Stored { object: *object, len }, after(now, RESERVATION_SECONDS))?;
             usage.object_bytes += u64::from(len);
             Ok(true)
@@ -491,7 +540,7 @@ impl<K: KeyValue> Ledger<K> {
     }
 
     pub fn post_request(&self, now: UnixTime, request: &NewRequest) -> Result<UnixTime, CustodyError> {
-        self.check_room(now, 0, 1)?;
+        self.check_room(now, Filing::Request, 0, 1)?;
         self.step(now, |usage| {
             if let Some(old) = self.request_record(&request.id)? {
                 if old.expires_at > now {
@@ -499,13 +548,17 @@ impl<K: KeyValue> Ledger<K> {
                 }
                 self.remove_request(usage, &request.id, &old)?;
             }
-            Self::ensure_room(usage, 0, 1)?;
+            Self::ensure_room(usage, Filing::Request, 0, 1)?;
             let expires_at = after(now, request.lifetime.seconds());
             let record =
                 RequestRecord { expires_at, inbox: request.inbox, recipient_key: request.recipient_key.clone() };
             self.put(&keys::request(&request.id), &record.encode())?;
             self.put(&keys::expiry(expires_at, Kind::Request, &request.id), &[])?;
             usage.records += 1;
+            usage.requests += 1;
+            // Every row this step writes, the usage record's own included
+            // (as `step` counts it in `writes`).
+            usage.request_writes = usage.request_writes.saturating_add(self.writes.get() + 1);
             Ok(expires_at)
         })
     }

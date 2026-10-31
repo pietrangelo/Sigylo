@@ -212,6 +212,11 @@ impl GarbageEntry {
     }
 }
 
+/// The usage record's layout. Version 1 had no request counters; it still
+/// reads, with both at zero, and is written back as version 2.
+const USAGE_VERSION: u8 = 2;
+const USAGE_FIRST_VERSION: u8 = 1;
+
 /// What the vault holds, kept up to date by every write so that checking the
 /// ceiling never scans, and how many rows it wrote today.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -220,28 +225,41 @@ pub struct Usage {
     pub object_bytes: u64,
     /// Deposits, requests and garbage entries.
     pub records: u64,
-    /// The day (days since the epoch) `writes` counts.
+    /// The day (days since the epoch) `writes` and `request_writes` count.
     pub day: u32,
     pub writes: u32,
+    /// Live request records, out of `records`. Requests filed before this
+    /// counter existed are not in it, so it only ever decreases saturating.
+    pub requests: u64,
+    /// Rows written today by storing requests, out of `writes`.
+    pub request_writes: u32,
 }
 
 impl Usage {
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(25);
-        out.push(VERSION);
+        let mut out = Vec::with_capacity(37);
+        out.push(USAGE_VERSION);
         out.extend_from_slice(&self.object_bytes.to_be_bytes());
         out.extend_from_slice(&self.records.to_be_bytes());
         out.extend_from_slice(&self.day.to_be_bytes());
         out.extend_from_slice(&self.writes.to_be_bytes());
+        out.extend_from_slice(&self.requests.to_be_bytes());
+        out.extend_from_slice(&self.request_writes.to_be_bytes());
         out
     }
 
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         let mut r = Reader(bytes);
-        if r.byte()? != VERSION {
+        let version = r.byte()?;
+        if version != USAGE_VERSION && version != USAGE_FIRST_VERSION {
             return None;
         }
-        let usage = Self { object_bytes: r.u64()?, records: r.u64()?, day: r.u32()?, writes: r.u32()? };
+        let mut usage =
+            Self { object_bytes: r.u64()?, records: r.u64()?, day: r.u32()?, writes: r.u32()?, ..Self::default() };
+        if version == USAGE_VERSION {
+            usage.requests = r.u64()?;
+            usage.request_writes = r.u32()?;
+        }
         r.end()?;
         Some(usage)
     }
@@ -358,8 +376,30 @@ mod tests {
         assert_eq!(RequestRecord::decode(&request().encode()), Some(request()));
         let entry = GarbageEntry { due: UnixTime(12), len: 345 };
         assert_eq!(GarbageEntry::decode(&entry.encode()), Some(entry));
-        let usage = Usage { object_bytes: 1 << 40, records: 77, day: 20_000, writes: 99 };
+        let usage =
+            Usage { object_bytes: 1 << 40, records: 77, day: 20_000, writes: 99, requests: 5, request_writes: 15 };
         assert_eq!(Usage::decode(&usage.encode()), Some(usage));
+    }
+
+    /// The usage record as version 1 wrote it, before requests had counters
+    /// of their own. Production stores hold it until their next write.
+    fn first_version_usage() -> Vec<u8> {
+        let mut bytes = vec![1];
+        bytes.extend_from_slice(&(1u64 << 40).to_be_bytes());
+        bytes.extend_from_slice(&77u64.to_be_bytes());
+        bytes.extend_from_slice(&20_000u32.to_be_bytes());
+        bytes.extend_from_slice(&99u32.to_be_bytes());
+        bytes
+    }
+
+    #[test]
+    fn a_first_version_usage_record_reads_with_no_requests_counted() {
+        let usage = Usage::decode(&first_version_usage()).unwrap();
+        let expected =
+            Usage { object_bytes: 1 << 40, records: 77, day: 20_000, writes: 99, requests: 0, request_writes: 0 };
+        assert_eq!(usage, expected);
+        // Written back, it takes the current version.
+        assert_eq!(usage.encode()[0], 2);
     }
 
     #[test]
@@ -395,6 +435,15 @@ mod tests {
         assert_eq!(bytes.len(), 31 + 32 + 32 + 1 + 3 * (1 + 20));
         assert_eq!(request().encode().len(), 1 + 8 + 16 + 1216);
         assert_eq!(GarbageEntry { due: UnixTime(1), len: 2 }.encode(), [1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2]);
+        let usage = Usage { object_bytes: 1, records: 2, day: 3, writes: 4, requests: 5, request_writes: 6 }.encode();
+        assert_eq!(usage[0], 2);
+        assert_eq!(usage[1..9], 1u64.to_be_bytes());
+        assert_eq!(usage[9..17], 2u64.to_be_bytes());
+        assert_eq!(usage[17..21], 3u32.to_be_bytes());
+        assert_eq!(usage[21..25], 4u32.to_be_bytes());
+        assert_eq!(usage[25..33], 5u64.to_be_bytes());
+        assert_eq!(usage[33..37], 6u32.to_be_bytes());
+        assert_eq!(usage.len(), 37);
     }
 
     mod adversary {
@@ -415,6 +464,31 @@ mod tests {
             let usage = Usage::default().encode();
             assert_eq!(Usage::decode(&usage[..usage.len() - 1]), None);
             assert_eq!(GarbageEntry::decode(&[1, 0]), None);
+        }
+
+        #[test]
+        fn a_usage_record_must_be_exactly_the_length_of_its_version() {
+            let current = Usage::default().encode();
+            let first = first_version_usage();
+            for cut in 0..current.len() {
+                assert_eq!(Usage::decode(&current[..cut]), None, "version 2 cut to {cut}");
+            }
+            for cut in 0..first.len() {
+                assert_eq!(Usage::decode(&first[..cut]), None, "version 1 cut to {cut}");
+            }
+            // A version 1 record cannot pass for the longer layout, nor the
+            // other way round.
+            let mut longer = first.clone();
+            longer.push(0);
+            assert_eq!(Usage::decode(&longer), None);
+            let mut relabelled = current.clone();
+            relabelled[0] = 1;
+            assert_eq!(Usage::decode(&relabelled), None);
+            for version in [0, 3, 0xFF] {
+                let mut bad = current.clone();
+                bad[0] = version;
+                assert_eq!(Usage::decode(&bad), None, "version {version}");
+            }
         }
 
         #[test]
