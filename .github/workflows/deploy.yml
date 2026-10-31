@@ -58,7 +58,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # No cache, restored or saved: what gets published is built from the
+      # commit and the lock files alone, and this job, which runs every build
+      # script, never writes a cache a later run on main would restore.
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
         with:
           tool: wasm-bindgen@${{ env.WASM_BINDGEN_VERSION }}
@@ -66,10 +68,6 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            web/package-lock.json
-            worker/package-lock.json
       - run: npm ci && npm run build
         working-directory: web
       - run: npm ci --ignore-scripts
