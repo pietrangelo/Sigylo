@@ -117,7 +117,8 @@ mod runtime {
     }
 
     fn opaque_keys(env: &Env) -> std::result::Result<OpaqueKeys, AccessError> {
-        let secret = env.secret("OPAQUE_SERVER_SEED").map_err(|_| AccessError::NotConfigured)?.to_string();
+        let secret =
+            Zeroizing::new(env.secret("OPAQUE_SERVER_SEED").map_err(|_| AccessError::NotConfigured)?.to_string());
         let seed = Zeroizing::new(URL_SAFE_NO_PAD.decode(secret.trim()).map_err(|_| AccessError::NotConfigured)?);
         OpaqueKeys::from_seed(&seed)
     }
