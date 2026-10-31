@@ -15,6 +15,13 @@
 //!
 //! `realloc` is left to the default `GlobalAlloc` implementation (allocate,
 //! copy, free), so a large block abandoned by a reallocation is inspected too.
+//!
+//! Every block is handed out zeroed, even by `alloc`: reading a byte that was
+//! never initialised is undefined behaviour, volatile or not, and a large
+//! buffer may be freed before it is fully written. Small blocks are zeroed
+//! too, because `realloc` copies the whole of a small block, written or not,
+//! into the large one it grows into. Bytes the code never wrote then count as
+//! clean, which they are.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -50,13 +57,15 @@ impl WipeProbe {
     }
 }
 
-// SAFETY: every allocation and deallocation is forwarded unchanged to
-// `System`; the probe only reads a block before handing it back.
+// SAFETY: every allocation and deallocation is forwarded to `System`, each
+// allocation through `alloc_zeroed` (which satisfies `alloc`'s contract too);
+// the probe only reads a block before handing it back.
 #[allow(unsafe_code)]
 unsafe impl GlobalAlloc for WipeProbe {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: the caller upholds `GlobalAlloc::alloc`'s contract, which `System` shares.
-        unsafe { System.alloc(layout) }
+        // SAFETY: the caller upholds `GlobalAlloc::alloc`'s contract, which
+        // `System.alloc_zeroed` shares; a zeroed block is a valid answer to `alloc`.
+        unsafe { System.alloc_zeroed(layout) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
@@ -69,8 +78,16 @@ unsafe impl GlobalAlloc for WipeProbe {
             let mut dirty = 0;
             for i in 0..layout.size() {
                 // SAFETY: `ptr` is a live block of `layout.size()` bytes until
-                // the `System.dealloc` below. The read is volatile so that the
-                // compiler assumes nothing about bytes never written.
+                // the `System.dealloc` below, and every byte of it was
+                // initialised: zeroed when the block was allocated (`alloc`
+                // and `alloc_zeroed` above, which `realloc` goes through too,
+                // copying from a block zeroed the same way), then overwritten
+                // only by the code under test. That holds for the byte and
+                // integer buffers the probe is meant for; a typed write of a
+                // value with padding could leave its padding bytes
+                // uninitialised again, so blocks of such types are out of
+                // scope. The read is volatile so that the compiler assumes
+                // nothing about what the block holds.
                 if unsafe { ptr.add(i).read_volatile() } != 0 {
                     dirty += 1;
                 }
