@@ -112,8 +112,10 @@ mod runtime {
     }
 
     fn opaque_keys(env: &Env) -> std::result::Result<OpaqueKeys, AccessError> {
-        let secret =
-            Zeroizing::new(env.secret("OPAQUE_SERVER_SEED").map_err(|_| AccessError::NotConfigured)?.to_string());
+        // Straight from the JS string into the one `String` that is wiped:
+        // `to_string()` would go through `Display`, whose own copy is never wiped.
+        let binding = env.secret("OPAQUE_SERVER_SEED").map_err(|_| AccessError::NotConfigured)?;
+        let secret = Zeroizing::new(binding.as_ref().as_string().ok_or(AccessError::NotConfigured)?);
         let seed = Zeroizing::new(URL_SAFE_NO_PAD.decode(secret.trim()).map_err(|_| AccessError::NotConfigured)?);
         OpaqueKeys::from_seed(&seed)
     }
