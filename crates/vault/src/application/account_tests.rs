@@ -7,15 +7,16 @@
 
 use access::{
     AccessError, AccountId, Keyring, KeyringSnapshot, KeyringVersion, KeyringWrite, LOGIN_WINDOW_SECONDS, LoginHandle,
-    LoginState, MAX_SESSIONS, RegistrationRecord, SESSION_SECONDS, SessionDigest, UnixTime,
+    LoginState, MAX_KEYRING_LEN, MAX_SESSIONS, RegistrationRecord, SESSION_SECONDS, SessionDigest, UnixTime,
 };
 
 use super::fakes::{ManualClock, MemoryKv};
 use super::{AccountLedger, Clock, Scratch};
 use crate::core::{
     ACCOUNT_BYTES_CEILING, ACCOUNT_COST, ACCOUNT_TEARDOWN_ROWS_PER_DAY, AccountUsage, Class, ENROLLS_PER_DAY,
-    KEYRING_ROWS_PER_DAY, KeyringRecord, SECONDS_PER_DAY, SESSION_BYTES_CEILING, SESSION_COST, SESSION_ROWS_PER_DAY,
-    SessionRecord, account_keys as keys,
+    KEYRING_BYTES_CEILING, KEYRING_GROWTH_BYTES_PER_DAY, KEYRING_ROWS_PER_DAY, KeyringRecord, SECONDS_PER_DAY,
+    SESSION_BYTES_CEILING, SESSION_COST, SESSION_OPEN_ROWS, SESSION_ROWS_PER_DAY, SESSIONS_PER_DAY, SessionRecord,
+    account_keys as keys,
 };
 
 #[derive(Debug, Default)]
@@ -150,7 +151,7 @@ mod accounts {
         assert_eq!(ledger.enroll(&account(1), &record(1)), Ok(true));
         assert_eq!(ledger.enroll(&account(1), &record(2)), Ok(false));
         assert_eq!(ledger.record(&account(1)), Ok(Some(record(1))));
-        assert_eq!(desk.usage().stored, ACCOUNT_COST);
+        assert_eq!((desk.usage().accounts, desk.usage().keyrings), (ACCOUNT_COST, 0));
         assert_eq!(desk.usage().enrolls, 1);
     }
 
@@ -307,7 +308,7 @@ mod accounts {
         assert_eq!(desk.store(1, &ring(20, 3), 1), Ok(KeyringWrite::Stored(KeyringVersion(2))));
         let written = KeyringSnapshot { keyring: Some(ring(20, 3)), version: KeyringVersion(2) };
         assert_eq!(desk.ledger().keyring(&digest(1)), Ok(Some(written)));
-        assert_eq!(desk.usage().stored, ACCOUNT_COST + 20);
+        assert_eq!((desk.usage().accounts, desk.usage().keyrings), (ACCOUNT_COST, 20));
     }
 
     #[test]
@@ -356,7 +357,8 @@ mod accounts {
         ];
         left.sort();
         assert_eq!(desk.kv.keys(), left);
-        assert_eq!((desk.usage().stored, desk.usage().sessions), (ACCOUNT_COST, SESSION_COST));
+        let usage = desk.usage();
+        assert_eq!((usage.accounts, usage.keyrings, usage.sessions), (ACCOUNT_COST, 0, SESSION_COST));
         // The name is free again, and nothing of the old account comes with it.
         assert_eq!(ledger.enroll(&account(1), &record(5)), Ok(true));
         assert!(ledger.open_session(&digest(20), &account(1), &record(5), 1000).unwrap().is_some());
@@ -442,7 +444,7 @@ mod accounts {
         };
         let ledger = desk.ledger();
         assert_eq!(rows(&|| assert!(ledger.enroll(&account(1), &record(1)).unwrap())), 2);
-        assert_eq!(rows(&|| assert!(desk.open(1, 1, 1000).is_some())), 4);
+        assert_eq!(rows(&|| assert!(desk.open(1, 1, 1000).is_some())), u64::from(SESSION_OPEN_ROWS));
         assert_eq!(rows(&|| assert!(desk.store(1, &ring(10, 1), 0).is_ok())), 2);
         assert_eq!(rows(&|| assert!(desk.live(1))), 0);
         assert_eq!(rows(&|| assert!(ledger.record(&account(1)).unwrap().is_some())), 0);
@@ -454,7 +456,8 @@ mod accounts {
         for d in 1..=MAX_SESSIONS {
             desk.open(1, d, 1000);
         }
-        assert_eq!(rows(&|| assert!(desk.open(1, 17, 1000).is_some())), 4 + 3, "one session evicted");
+        let evicting = u64::from(SESSION_OPEN_ROWS) + 3;
+        assert_eq!(rows(&|| assert!(desk.open(1, 17, 1000).is_some())), evicting, "one session evicted");
         assert_eq!(rows(&|| assert!(ledger.close_sessions(&digest(17)).unwrap())), 1 + 3 * 16);
         desk.open(1, 1, 10);
         desk.open(1, 2, 10);
@@ -474,24 +477,38 @@ mod account_ceilings {
     use super::*;
 
     #[test]
-    fn accounts_and_keyrings_fill_the_store_at_their_weight() {
+    fn accounts_and_keyrings_each_fill_their_own_ceiling() {
         let desk = Desk::default();
         desk.enrolled(1);
         desk.open(1, 1, 1000);
         desk.store(1, &ring(1000, 1), 0).unwrap();
-        assert_eq!(desk.usage().stored, ACCOUNT_COST + 1000);
-        desk.pretend(|u| u.stored = ACCOUNT_BYTES_CEILING - ACCOUNT_COST);
+        assert_eq!((desk.usage().accounts, desk.usage().keyrings), (ACCOUNT_COST, 1000));
+        desk.pretend(|u| u.accounts = ACCOUNT_BYTES_CEILING - ACCOUNT_COST);
         assert_eq!(desk.ledger().enroll(&account(2), &record(2)), Ok(true), "exactly fits");
         assert_eq!(desk.ledger().enroll(&account(3), &record(3)), Err(AccessError::StorageFull));
         assert_eq!(desk.ledger().record(&account(3)), Ok(None));
-        assert_eq!(desk.usage().stored, ACCOUNT_BYTES_CEILING);
+        assert_eq!(desk.usage().accounts, ACCOUNT_BYTES_CEILING);
+        assert_eq!(desk.store(1, &ring(2000, 2), 1), Ok(KeyringWrite::Stored(KeyringVersion(2))), "keyrings grow");
+        assert_eq!(desk.usage().keyrings, 2000);
+    }
+
+    #[test]
+    fn a_full_keyring_store_never_stops_registration() {
+        let desk = Desk::default();
+        desk.enrolled(1);
+        desk.open(1, 1, 1000);
+        desk.pretend(|u| u.keyrings = KEYRING_BYTES_CEILING);
+        assert_eq!(desk.store(1, &ring(1, 1), 0), Err(AccessError::StorageFull));
+        assert_eq!(desk.ledger().enroll(&account(2), &record(2)), Ok(true));
+        assert!(desk.open(2, 2, 1000).is_some(), "and the newcomer signs in");
+        assert_eq!(desk.usage().keyrings, KEYRING_BYTES_CEILING);
     }
 
     #[test]
     fn a_taken_name_stays_taken_when_the_store_is_full() {
         let desk = Desk::default();
         desk.enrolled(1);
-        desk.pretend(|u| u.stored = ACCOUNT_BYTES_CEILING);
+        desk.pretend(|u| u.accounts = ACCOUNT_BYTES_CEILING);
         assert_eq!(desk.ledger().enroll(&account(1), &record(2)), Ok(false));
         assert_eq!(desk.ledger().enroll(&account(2), &record(2)), Err(AccessError::StorageFull));
     }
@@ -502,15 +519,16 @@ mod account_ceilings {
         desk.enrolled(1);
         desk.open(1, 1, 1000);
         desk.store(1, &ring(1000, 1), 0).unwrap();
-        desk.pretend(|u| u.stored = ACCOUNT_BYTES_CEILING);
+        desk.pretend(|u| u.keyrings = KEYRING_BYTES_CEILING);
         assert_eq!(desk.store(1, &ring(1000, 2), 1), Ok(KeyringWrite::Stored(KeyringVersion(2))));
         assert_eq!(desk.store(1, &ring(400, 3), 2), Ok(KeyringWrite::Stored(KeyringVersion(3))));
-        assert_eq!(desk.usage().stored, ACCOUNT_BYTES_CEILING - 600);
+        assert_eq!(desk.usage().keyrings, KEYRING_BYTES_CEILING - 600);
         assert_eq!(desk.store(1, &ring(1000, 4), 3), Ok(KeyringWrite::Stored(KeyringVersion(4))), "fits exactly");
         assert_eq!(desk.store(1, &ring(1001, 5), 4), Err(AccessError::StorageFull));
         let kept = KeyringSnapshot { keyring: Some(ring(1000, 4)), version: KeyringVersion(4) };
         assert_eq!(desk.ledger().keyring(&digest(1)), Ok(Some(kept)));
-        assert_eq!(desk.usage().stored, ACCOUNT_BYTES_CEILING);
+        assert_eq!(desk.usage().keyrings, KEYRING_BYTES_CEILING);
+        assert_eq!(desk.ledger().enroll(&account(2), &record(2)), Ok(true), "registration goes on");
     }
 
     #[test]
@@ -518,9 +536,59 @@ mod account_ceilings {
         let desk = Desk::default();
         desk.enrolled(1);
         desk.open(1, 1, 1000);
-        desk.pretend(|u| u.stored = ACCOUNT_BYTES_CEILING);
+        desk.pretend(|u| {
+            u.keyrings = KEYRING_BYTES_CEILING;
+            u.keyring_growth = KEYRING_GROWTH_BYTES_PER_DAY;
+        });
         assert_eq!(desk.store(1, &ring(5000, 1), 7), Ok(KeyringWrite::Stale));
         assert_eq!(desk.store(1, &ring(5000, 1), 0), Err(AccessError::StorageFull));
+    }
+
+    #[test]
+    fn keyrings_grow_by_at_most_the_days_budget_and_other_writes_are_exempt() {
+        let desk = Desk::default();
+        desk.enrolled(1);
+        desk.enrolled(2);
+        desk.open(1, 1, SESSION_SECONDS);
+        desk.open(2, 2, SESSION_SECONDS);
+        assert_eq!(desk.store(1, &ring(1000, 1), 0), Ok(KeyringWrite::Stored(KeyringVersion(1))));
+        assert_eq!(desk.usage().keyring_growth, 1000, "a new keyring grows by its length");
+        assert_eq!(desk.store(1, &ring(1500, 2), 1), Ok(KeyringWrite::Stored(KeyringVersion(2))));
+        assert_eq!(desk.usage().keyring_growth, 1500, "a larger one by the difference");
+        desk.store(1, &ring(1500, 3), 2).unwrap();
+        desk.store(1, &ring(10, 4), 3).unwrap();
+        assert_eq!(desk.usage().keyring_growth, 1500, "the same size or smaller costs nothing");
+        // Shrinking gives nothing back: the budget counts growth, not bytes held.
+        desk.pretend(|u| u.keyring_growth = KEYRING_GROWTH_BYTES_PER_DAY - 100);
+        assert_eq!(desk.store(2, &ring(100, 1), 0), Ok(KeyringWrite::Stored(KeyringVersion(1))), "exactly fits");
+        assert_eq!(desk.store(1, &ring(11, 5), 4), Err(AccessError::StorageFull), "one byte more");
+        assert_eq!(desk.store(1, &ring(10, 5), 4), Ok(KeyringWrite::Stored(KeyringVersion(5))), "no growth");
+        assert_eq!(desk.store(2, &ring(50, 2), 1), Ok(KeyringWrite::Stored(KeyringVersion(2))), "shrinking");
+        assert_eq!(desk.usage().keyring_growth, KEYRING_GROWTH_BYTES_PER_DAY);
+        assert!(desk.open(1, 3, 1000).is_some(), "sign-in goes on");
+        assert_eq!(desk.ledger().enroll(&account(3), &record(3)), Ok(true), "and registration");
+        desk.next_day();
+        desk.open(1, 4, 1000);
+        assert_eq!(desk.store(4, &ring(11, 6), 5), Ok(KeyringWrite::Stored(KeyringVersion(6))), "a new day");
+        assert_eq!(desk.usage().keyring_growth, 1);
+    }
+
+    #[test]
+    fn a_fresh_account_signs_in_while_others_hold_every_session_two_days_allow() {
+        // Sessions live 12 hours, so the live ones were opened over two UTC
+        // days at most: while today's session rows are not spent, the ceiling
+        // still has room for one more.
+        assert!(SESSION_BYTES_CEILING >= 2 * u64::from(SESSIONS_PER_DAY) * SESSION_COST);
+        let desk = Desk::default();
+        desk.enrolled(1);
+        desk.pretend(|u| {
+            u.sessions = (2 * u64::from(SESSIONS_PER_DAY) - 1) * SESSION_COST;
+            u.session_rows = SESSION_ROWS_PER_DAY - SESSION_OPEN_ROWS;
+        });
+        assert!(desk.open(1, 1, SESSION_SECONDS).is_some());
+        assert!(desk.usage().sessions <= SESSION_BYTES_CEILING);
+        let opened = desk.ledger().open_session(&digest(2), &account(1), &record(1), 1000);
+        assert_eq!(opened, Err(AccessError::StorageFull), "the day's rows stop sign-in first");
     }
 
     #[test]
@@ -614,6 +682,7 @@ mod account_ceilings {
             u.session_rows = u32::MAX;
             u.keyring_rows = u32::MAX;
             u.enrolls = u32::MAX;
+            u.keyring_growth = u32::MAX;
         });
         assert_eq!(desk.ledger().close_session(&digest(1)), Ok(()));
         assert!(!desk.live(1));
@@ -621,7 +690,8 @@ mod account_ceilings {
         assert!(!desk.live(3));
         assert_eq!(desk.ledger().close_account(&digest(4)), Ok(true));
         assert_eq!(desk.ledger().record(&account(2)), Ok(None));
-        assert_eq!((desk.usage().stored, desk.usage().sessions), (ACCOUNT_COST, 0));
+        let usage = desk.usage();
+        assert_eq!((usage.accounts, usage.keyrings, usage.sessions), (ACCOUNT_COST, 0, 0));
     }
 
     #[test]
@@ -667,12 +737,11 @@ mod account_ceilings {
             desk.advance(next(60));
         }
         let held = desk.kv.snapshot();
-        let mut stored = 0;
-        let mut sessions = 0;
+        let (mut accounts, mut keyrings, mut sessions) = (0, 0, 0);
         for (key, value) in &held {
             match key.as_bytes()[0] {
-                b'a' => stored += ACCOUNT_COST,
-                b'k' => stored += KeyringRecord::decode(value).unwrap().keyring.as_bytes().len() as u64,
+                b'a' => accounts += ACCOUNT_COST,
+                b'k' => keyrings += KeyringRecord::decode(value).unwrap().keyring.as_bytes().len() as u64,
                 b's' => {
                     sessions += SESSION_COST;
                     let session = SessionRecord::decode(value).unwrap();
@@ -689,8 +758,9 @@ mod account_ceilings {
         }
         let indexed = desk.keys_starting('m').len();
         assert_eq!((indexed, desk.keys_starting('e').len()), (desk.keys_starting('s').len(), indexed));
-        assert!(stored > ACCOUNT_COST && sessions > SESSION_COST, "the run kept something");
-        assert_eq!((desk.usage().stored, desk.usage().sessions), (stored, sessions));
+        assert!(accounts > ACCOUNT_COST && keyrings > 0 && sessions > SESSION_COST, "the run kept something");
+        let usage = desk.usage();
+        assert_eq!((usage.accounts, usage.keyrings, usage.sessions), (accounts, keyrings, sessions));
     }
 }
 
@@ -709,6 +779,77 @@ mod account_adversary {
         assert_eq!(ledger.take_login(&handle(1)), Ok(None));
         assert_eq!(ledger.close_account(&digest(1)), Ok(true));
         assert_eq!(ledger.take_login(&handle(2)), Ok(None));
+    }
+
+    #[test]
+    fn a_flood_of_largest_keyrings_stops_at_the_days_growth_and_never_stops_registration() {
+        // When accounts and keyrings shared one ceiling, 904 accounts with
+        // the largest keyring filled it, far under a day's registrations, and
+        // no name could register again. The day's growth stops them first.
+        let desk = Desk::default();
+        let flood = (64 * 1024 * 1024 / (ACCOUNT_COST + MAX_KEYRING_LEN as u64)) as u32 + 1;
+        assert_eq!(flood, 904);
+        for n in 0..flood {
+            desk.enrolled(n);
+            assert!(desk.open(n, n, SESSION_SECONDS).is_some());
+        }
+        let largest = ring(MAX_KEYRING_LEN, 7);
+        let per_day = KEYRING_GROWTH_BYTES_PER_DAY / MAX_KEYRING_LEN as u32;
+        let mut stored = 0;
+        for n in 0..flood {
+            match desk.store(n, &largest, 0) {
+                Ok(KeyringWrite::Stored(_)) => stored += 1,
+                refused => {
+                    assert_eq!(refused, Err(AccessError::StorageFull), "account {n}");
+                    // Every later write is refused alike: a few stand for the rest.
+                    if n > per_day + 8 {
+                        break;
+                    }
+                }
+            }
+        }
+        assert_eq!(stored, per_day, "one day's growth, no more");
+        assert!(desk.usage().keyrings * 13 <= KEYRING_BYTES_CEILING, "under a thirteenth of the ceiling");
+        assert_eq!(desk.ledger().enroll(&account(flood), &record(flood)), Ok(true), "a fresh name still registers");
+        assert!(desk.open(flood, flood, 1000).is_some(), "and signs in");
+        // A member whose keyring was written rewrites it at the same size.
+        assert_eq!(desk.store(0, &largest, 1), Ok(KeyringWrite::Stored(KeyringVersion(2))));
+        desk.next_day();
+        for n in per_day..=2 * per_day {
+            assert!(desk.open(n, flood + 1 + n, SESSION_SECONDS).is_some());
+            let written = desk.store(flood + 1 + n, &largest, 0).is_ok();
+            assert_eq!(written, n < 2 * per_day, "the budget is daily: account {n}");
+        }
+    }
+
+    #[test]
+    fn a_version_one_usage_on_disk_never_undercounts_and_never_underflows() {
+        let desk = Desk::default();
+        desk.enrolled(1);
+        desk.open(1, 1, 1000);
+        desk.store(1, &ring(1000, 1), 0).unwrap();
+        // What version 1 wrote for this store: one weight for both.
+        let usage = desk.usage();
+        let mut old = vec![1];
+        old.extend_from_slice(&(ACCOUNT_COST + 1000).to_be_bytes());
+        old.extend_from_slice(&usage.sessions.to_be_bytes());
+        for count in [usage.day, usage.rows, usage.session_rows, usage.keyring_rows, usage.enrolls] {
+            old.extend_from_slice(&count.to_be_bytes());
+        }
+        desk.kv.tamper(keys::ACCOUNT_USAGE, old);
+        let read = desk.usage();
+        assert_eq!((read.accounts, read.keyrings), (ACCOUNT_COST + 1000, ACCOUNT_COST + 1000));
+        assert_eq!(read.keyring_growth, 0);
+        desk.store(1, &ring(1500, 2), 1).unwrap();
+        assert_eq!(desk.usage().keyrings, ACCOUNT_COST + 1500, "each counter is over by what the other held");
+        assert_eq!(desk.ledger().close_account(&digest(1)), Ok(true));
+        let usage = desk.usage();
+        assert_eq!((usage.accounts, usage.keyrings), (1000, ACCOUNT_COST), "never below what is held");
+        desk.enrolled(2);
+        desk.open(2, 2, 1000);
+        desk.pretend(|u| (u.accounts, u.keyrings) = (0, 0));
+        assert_eq!(desk.ledger().close_account(&digest(2)), Ok(true));
+        assert_eq!((desk.usage().accounts, desk.usage().keyrings), (0, 0), "saturates at zero");
     }
 
     /// Two accounts, one at its session limit with a keyring, and one
