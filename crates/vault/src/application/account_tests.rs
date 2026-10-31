@@ -556,21 +556,28 @@ mod account_ceilings {
         assert_eq!(desk.store(1, &ring(1500, 2), 1), Ok(KeyringWrite::Stored(KeyringVersion(2))));
         assert_eq!(desk.usage().keyring_growth, 1500, "a larger one by the difference");
         desk.store(1, &ring(1500, 3), 2).unwrap();
+        assert_eq!(desk.usage().keyring_growth, 1500, "the same size costs nothing");
         desk.store(1, &ring(10, 4), 3).unwrap();
-        assert_eq!(desk.usage().keyring_growth, 1500, "the same size or smaller costs nothing");
-        // Shrinking gives nothing back: the budget counts growth, not bytes held.
+        assert_eq!(desk.usage().keyring_growth, 10, "a smaller one gives back what it shrank by");
+        // The budget counts net growth: what one keyring gives back, another
+        // may grow by.
         desk.pretend(|u| u.keyring_growth = KEYRING_GROWTH_BYTES_PER_DAY - 100);
         assert_eq!(desk.store(2, &ring(100, 1), 0), Ok(KeyringWrite::Stored(KeyringVersion(1))), "exactly fits");
         assert_eq!(desk.store(1, &ring(11, 5), 4), Err(AccessError::StorageFull), "one byte more");
         assert_eq!(desk.store(1, &ring(10, 5), 4), Ok(KeyringWrite::Stored(KeyringVersion(5))), "no growth");
         assert_eq!(desk.store(2, &ring(50, 2), 1), Ok(KeyringWrite::Stored(KeyringVersion(2))), "shrinking");
+        assert_eq!(desk.usage().keyring_growth, KEYRING_GROWTH_BYTES_PER_DAY - 50);
+        assert_eq!(desk.store(1, &ring(60, 6), 5), Ok(KeyringWrite::Stored(KeyringVersion(6))), "what was given back");
+        assert_eq!(desk.store(1, &ring(61, 7), 6), Err(AccessError::StorageFull), "and no more");
         assert_eq!(desk.usage().keyring_growth, KEYRING_GROWTH_BYTES_PER_DAY);
         assert!(desk.open(1, 3, 1000).is_some(), "sign-in goes on");
         assert_eq!(desk.ledger().enroll(&account(3), &record(3)), Ok(true), "and registration");
         desk.next_day();
         desk.open(1, 4, 1000);
-        assert_eq!(desk.store(4, &ring(11, 6), 5), Ok(KeyringWrite::Stored(KeyringVersion(6))), "a new day");
+        assert_eq!(desk.store(4, &ring(61, 7), 6), Ok(KeyringWrite::Stored(KeyringVersion(7))), "a new day");
         assert_eq!(desk.usage().keyring_growth, 1);
+        assert_eq!(desk.store(4, &ring(10, 8), 7), Ok(KeyringWrite::Stored(KeyringVersion(8))));
+        assert_eq!(desk.usage().keyring_growth, 0, "bytes grown on an earlier day give nothing back today");
     }
 
     #[test]
@@ -820,6 +827,62 @@ mod account_adversary {
             let written = desk.store(flood + 1 + n, &largest, 0).is_ok();
             assert_eq!(written, n < 2 * per_day, "the budget is daily: account {n}");
         }
+    }
+
+    /// Whether a fresh account can still store the largest keyring today.
+    fn a_fresh_account_grows_the_largest_keyring(desk: &Desk, n: u32) -> bool {
+        desk.enrolled(n);
+        assert!(desk.open(n, n, SESSION_SECONDS).is_some());
+        desk.store(n, &ring(MAX_KEYRING_LEN, 9), 0).is_ok()
+    }
+
+    #[test]
+    fn one_keyring_shrinking_and_growing_all_day_leaves_the_budget_unspent() {
+        // When shrinking gave nothing back, about 71 rounds of 10 B to the
+        // largest keyring and back spent the day's growth for every account.
+        let desk = Desk::default();
+        desk.enrolled(1);
+        desk.open(1, 1, SESSION_SECONDS);
+        let rounds = 2 * KEYRING_GROWTH_BYTES_PER_DAY / MAX_KEYRING_LEN as u32;
+        let mut version = 0;
+        for _ in 0..rounds {
+            for len in [10, MAX_KEYRING_LEN, 10] {
+                assert!(desk.store(1, &ring(len, 1), version).is_ok(), "version {version}");
+                version += 1;
+            }
+        }
+        assert_eq!(desk.usage().keyring_growth, 10, "only what is held more than this morning");
+        assert!(a_fresh_account_grows_the_largest_keyring(&desk, 2), "another account still grows");
+    }
+
+    #[test]
+    fn closing_an_account_gives_its_keyring_length_back() {
+        let desk = Desk::default();
+        desk.enrolled(1);
+        desk.open(1, 1, SESSION_SECONDS);
+        desk.store(1, &ring(1000, 1), 0).unwrap();
+        desk.enrolled(2);
+        desk.open(2, 2, SESSION_SECONDS);
+        desk.store(2, &ring(300, 1), 0).unwrap();
+        assert_eq!(desk.usage().keyring_growth, 1300);
+        assert_eq!(desk.ledger().close_account(&digest(1)), Ok(true));
+        assert_eq!(desk.usage().keyring_growth, 300);
+        desk.next_day();
+        desk.open(2, 3, SESSION_SECONDS);
+        assert_eq!(desk.ledger().close_account(&digest(3)), Ok(true));
+        assert_eq!(desk.usage().keyring_growth, 0, "never below zero on a later day");
+    }
+
+    #[test]
+    fn registering_growing_and_closing_in_a_loop_cannot_exhaust_the_budget() {
+        let desk = Desk::default();
+        let rounds = 2 * KEYRING_GROWTH_BYTES_PER_DAY / MAX_KEYRING_LEN as u32;
+        for n in 0..rounds {
+            assert!(a_fresh_account_grows_the_largest_keyring(&desk, n), "round {n}");
+            assert_eq!(desk.ledger().close_account(&digest(n)), Ok(true));
+        }
+        assert_eq!(desk.usage().keyring_growth, 0);
+        assert!(a_fresh_account_grows_the_largest_keyring(&desk, rounds));
     }
 
     #[test]

@@ -18,8 +18,11 @@ pub const ACCOUNT_BYTES_CEILING: u64 = 64 * 1024 * 1024;
 pub const KEYRING_BYTES_CEILING: u64 = 64 * 1024 * 1024;
 /// Bytes keyrings may grow by in one day (UTC), all accounts together, past
 /// which no keyring grows until the next: filling [`KEYRING_BYTES_CEILING`]
-/// for good takes 13 days or more. A keyring is charged only what it grows
-/// by; a write that does not grow it is free.
+/// for good takes 13 days or more. The day counts net growth: a keyring is
+/// charged what it grows by, and what it shrinks by, or its length when its
+/// account closes, is given back (down to zero), so keyrings held never grow
+/// by more than this in a day, and one account shrinking and growing its
+/// keyring again cannot spend the day for everyone.
 pub const KEYRING_GROWTH_BYTES_PER_DAY: u32 = (KEYRING_BYTES_CEILING / 13) as u32;
 
 /// What a session weighs in [`SESSION_BYTES_CEILING`].
