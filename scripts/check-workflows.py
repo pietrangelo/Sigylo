@@ -3,7 +3,10 @@ that no lock pins, or when a workflow grants more than it needs.
 
 A job holds such a credential when it has an `environment` (the Cloudflare
 token lives in `production`, CLAUDE.md §6), reads a secret, or may write to
-the repository. Such a job builds nothing (CLAUDE.md §6, §5):
+the repository. It reads a secret when any of its strings names the `secrets`
+context, however spelled (`secrets.X`, `secrets['X']`, `toJSON(secrets)`), or
+when the workflow's own `env` or `defaults` do: every job inherits them. Such
+a job builds nothing (CLAUDE.md §6, §5):
 
 * its steps use only actions/checkout, actions/setup-node without a cache,
   and actions/download-artifact;
@@ -29,6 +32,10 @@ BUILDERS = re.compile(r"\b(cargo|rustup|rustc|worker-build|make|pip3?|yarn|pnpm|
 NPM = re.compile(r"\bnpm\b(.*)")
 NPX = re.compile(r"\bnpx\b(.*)")
 SEPARATORS = re.compile(r"&&|\|\||[;|&()`]")
+# An expression that reads the secrets context, in any spelling: the property
+# (`secrets.X`), the index (`secrets['X']`) or the whole context
+# (`toJSON(secrets)`). Expressions ignore case; one ends at `}}`.
+SECRET = re.compile(r"\$\{\{(?:(?!\}\}).)*?\bsecrets\b", re.IGNORECASE | re.DOTALL)
 
 
 def writes(permissions):
@@ -52,11 +59,18 @@ def strings(node):
             yield from strings(value)
 
 
-def holds_credential(job):
+def reads_secret(node):
+    return any("secrets." in text.lower() or SECRET.search(text) for text in strings(node))
+
+
+def holds_credential(job, inherited):
+    """Whether the job holds a credential; `inherited` when the workflow-wide
+    `env` or `defaults` already hand every job a secret."""
     return (
-        "environment" in job
+        inherited
+        or "environment" in job
         or bool(writes(job.get("permissions")))
-        or any("secrets." in text for text in strings(job))
+        or reads_secret(job)
     )
 
 
@@ -82,6 +96,7 @@ def problems(stem, workflow):
         return
     if writes(workflow.get("permissions", "write-all")):
         yield f"{stem}: the workflow-wide permissions must be read-only (and given)"
+    inherited = reads_secret([workflow.get("env"), workflow.get("defaults")])
     for name, job in workflow["jobs"].items():
         where = f"{stem}: jobs.{name}"
         if not isinstance(job, dict):
@@ -90,7 +105,7 @@ def problems(stem, workflow):
         extra = writes(job.get("permissions")) - WRITERS.get((stem, name), set())
         if extra:
             yield f"{where}: may not write {', '.join(sorted(extra))}"
-        if not holds_credential(job):
+        if not holds_credential(job, inherited):
             continue
         if "uses" in job:
             yield f"{where}: a reusable workflow next to a credential"

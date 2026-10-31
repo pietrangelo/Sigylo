@@ -56,7 +56,9 @@ jobs:
           done
       # The jobs that hold a credential (the Cloudflare token, a secret, a
       # write permission) build nothing and run no install script; no workflow
-      # writes as a whole (CLAUDE.md §5, §6).
+      # writes as a whole (CLAUDE.md §5, §6). The fixtures spell an expression
+      # as $%s{{ and the context as secret%ss, so that GitHub evaluates nothing
+      # here and this file does not trip the check.
       - name: Credentials never sit next to a build
         run: |
           set -euo pipefail
@@ -74,6 +76,9 @@ jobs:
           bad "$dir/action" "$head"'      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec\n'
           bad "$dir/npm-cache" "$head"'      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020\n        with:\n          cache: npm\n'
           bad "$dir/secret" 'permissions:\n  contents: read\njobs:\n  b:\n    steps:\n      - run: worker-build --release\n        env:\n          TOKEN: secret%ss.TOKEN\n'
+          bad "$dir/workflow-env" 'permissions:\n  contents: read\nenv:\n  TOKEN: $%s{{ secret%ss.TOKEN }}\njobs:\n  b:\n    steps:\n      - run: cargo build --release\n'
+          bad "$dir/secret-index" 'permissions:\n  contents: read\njobs:\n  b:\n    steps:\n      - run: worker-build --release\n        env:\n          TOKEN: $%s{{ secret%ss[\047TOKEN\047] }}\n'
+          bad "$dir/secret-json" 'permissions:\n  contents: read\njobs:\n  b:\n    steps:\n      - run: worker-build --release\n        env:\n          ALL: $%s{{ toJSON(secret%ss) }}\n'
           bad "$dir/reusable" 'permissions:\n  contents: read\njobs:\n  d:\n    environment: production\n    uses: ./.github/workflows/w.yml\n'
           for fixture in "$dir"/*; do
             if python3 -I scripts/check-workflows.py "$fixture" > /dev/null; then
