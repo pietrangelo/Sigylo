@@ -8,7 +8,10 @@
 //! registrations and for device logins, that overflow into Shared once
 //! full. Guessing a name fills only Shared, so registrations and the owners'
 //! devices keep their room; a device's pass holds one login at a time, so a
-//! stolen pass cannot fill the account's room either.
+//! stolen pass cannot fill the account's room either. An account charges the
+//! Device reserve from one of its device buckets at a time, its share; its
+//! other buckets are charged to Shared, so accounts an attacker registers
+//! hold one bucket each of the reserve, never their sixteen.
 //!
 //! Time comes in as an argument: no clock, no I/O, no randomness, and no
 //! call that can panic.
@@ -21,7 +24,7 @@ use access::{AccessError, AccountId, LoginHandle, LoginState, UnixTime};
 
 use crate::core::{
     ATTEMPT_LIMIT_CEILING, ATTEMPT_WINDOW_SECONDS, COUNTER_COST, Class, DEVICE_BUCKETS_PER_ACCOUNT, DEVICE_RESERVE,
-    PARKED_LOGIN_COST, REGISTRATION_RESERVE, SHARED_POOL,
+    DEVICE_SHARE_PER_ACCOUNT, PARKED_LOGIN_COST, REGISTRATION_RESERVE, SHARED_POOL,
 };
 
 /// Expired entries an admit or a park clears on its way.
@@ -31,6 +34,9 @@ const SWEEP_ON_THE_WAY: usize = 64;
 /// login, whether its counter already exists or not, so a refusal never
 /// tells whether someone else tried the name this minute.
 const ATTEMPT_AND_LOGIN: u64 = COUNTER_COST + PARKED_LOGIN_COST;
+// An account charges the Device reserve from one bucket at a time, which
+// holds one counter and one parked login at most: that is its share.
+const _: () = assert!(ATTEMPT_AND_LOGIN == DEVICE_SHARE_PER_ACCOUNT);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pool {
@@ -84,13 +90,13 @@ impl Used {
         pool.size().saturating_sub(used)
     }
 
-    /// The first pool of the class's chain with `units` free in one piece.
-    fn room(&self, class: Class, units: u64) -> Option<Pool> {
-        Pool::chain(class).iter().copied().find(|pool| self.free(*pool) >= units)
+    /// The first pool of `chain` with `units` free in one piece.
+    fn room(&self, chain: &[Pool], units: u64) -> Option<Pool> {
+        chain.iter().copied().find(|pool| self.free(*pool) >= units)
     }
 
-    fn charge(&mut self, class: Class, units: u64) -> Option<Pool> {
-        let pool = self.room(class, units)?;
+    fn charge(&mut self, chain: &[Pool], units: u64) -> Option<Pool> {
+        let pool = self.room(chain, units)?;
         let used = self.of(pool);
         *used = used.saturating_add(units);
         Some(pool)
@@ -147,6 +153,11 @@ struct Inner {
     /// Device buckets each account holds: a bucket is held while its
     /// counter or its parked login lives, and counts once if both do.
     device_buckets: BTreeMap<[u8; 32], u8>,
+    /// The one device bucket each account may charge to the Device reserve,
+    /// and how many of its charges (its counter, its parked login) are
+    /// there: an account's share of the reserve is one bucket's worth,
+    /// [`DEVICE_SHARE_PER_ACCOUNT`]. Its other buckets are charged to Shared.
+    device_reserved: BTreeMap<[u8; 32], ([u8; 32], u8)>,
 }
 
 impl Inner {
@@ -161,18 +172,66 @@ impl Inner {
             self.by_bucket.remove(&bucket);
             self.release_bucket(&account, &bucket);
         }
-        self.used.refund(parked.charged, PARKED_LOGIN_COST);
+        let device = parked.bucket.map(|bucket| (account, bucket));
+        self.refund(parked.charged, PARKED_LOGIN_COST, device.as_ref());
         Some(parked)
     }
 
     fn remove_counter(&mut self, key: &(Class, [u8; 32])) -> Option<Counter> {
         let counter = self.counters.remove(key)?;
         self.expiries.remove(&(counter.expires_at(), Slot::Counter(key.0, key.1)));
-        self.used.refund(counter.charged, COUNTER_COST);
+        let device = counter.device_of.map(|account| (account, key.1));
+        self.refund(counter.charged, COUNTER_COST, device.as_ref());
         if let Some(account) = counter.device_of {
             self.release_bucket(&account, &key.1);
         }
         Some(counter)
+    }
+
+    /// The pools a charge of `class` goes to. A device charge, which names
+    /// its account and bucket, goes to the Device reserve only from the
+    /// bucket that holds the account's share, or if none holds it yet: the
+    /// account's other buckets are charged to Shared, never refused for the
+    /// share. A device charge naming no bucket is a broken caller and gets
+    /// Shared only.
+    fn chain(&self, class: Class, device: Option<&([u8; 32], [u8; 32])>) -> &'static [Pool] {
+        match (class, device) {
+            (Class::Device, Some((account, bucket))) => match self.device_reserved.get(account) {
+                Some((reserved, _)) if reserved != bucket => &[Pool::Shared],
+                _ => Pool::chain(Class::Device),
+            },
+            (Class::Device, None) => &[Pool::Shared],
+            _ => Pool::chain(class),
+        }
+    }
+
+    /// Charges `units` to the first pool of the chain with room, and counts
+    /// a charge to the Device reserve in the account's share.
+    fn charge(&mut self, class: Class, device: Option<&([u8; 32], [u8; 32])>, units: u64) -> Option<Pool> {
+        let pool = self.used.charge(self.chain(class, device), units)?;
+        if pool == Pool::Device
+            && let Some((account, bucket)) = device
+        {
+            let share = self.device_reserved.entry(*account).or_insert((*bucket, 0));
+            share.1 = share.1.saturating_add(1);
+        }
+        Some(pool)
+    }
+
+    /// Gives `units` back to `pool`, and a charge to the Device reserve back
+    /// to the account's share, which is free once nothing is left in it.
+    fn refund(&mut self, pool: Pool, units: u64, device: Option<&([u8; 32], [u8; 32])>) {
+        self.used.refund(pool, units);
+        if pool == Pool::Device
+            && let Some((account, bucket)) = device
+            && let Some(share) = self.device_reserved.get_mut(account)
+            && share.0 == *bucket
+        {
+            share.1 = share.1.saturating_sub(1);
+            if share.1 == 0 {
+                self.device_reserved.remove(account);
+            }
+        }
     }
 
     /// Whether `account` holds device `bucket`: its counter or its parked
@@ -245,12 +304,14 @@ impl Inner {
     }
 
     /// The pool `units` would be charged to, sweeping everything expired
-    /// once if nothing has room at first.
-    fn room(&mut self, class: Class, units: u64, now: i64) -> Option<Pool> {
-        self.used.room(class, units).or_else(|| {
-            self.sweep(now, usize::MAX);
-            self.used.room(class, units)
-        })
+    /// once if nothing has room at first (which may free the account's
+    /// share, so the chain is asked again).
+    fn room(&mut self, class: Class, device: Option<&([u8; 32], [u8; 32])>, units: u64, now: i64) -> Option<Pool> {
+        if let Some(pool) = self.used.room(self.chain(class, device), units) {
+            return Some(pool);
+        }
+        self.sweep(now, usize::MAX);
+        self.used.room(self.chain(class, device), units)
     }
 
     fn device_tally(&self, account: &AccountId) -> u8 {
@@ -271,7 +332,8 @@ impl Scratch {
     /// Counts an attempt on `class`'s budget, filed under `bucket`, and says
     /// whether it is within `limit` for the window. A full pool, or a new
     /// device bucket past the account's [`DEVICE_BUCKETS_PER_ACCOUNT`],
-    /// refuses it uncounted. A `limit` outside 1 to
+    /// refuses it uncounted; a device bucket other than the one holding the
+    /// account's share of the Device reserve is charged to Shared. A `limit` outside 1 to
     /// [`ATTEMPT_LIMIT_CEILING`] is a broken caller: an error, which the
     /// throttle takes as a refusal.
     pub fn admit(
@@ -293,7 +355,9 @@ impl Scratch {
             Class::Registration => COUNTER_COST,
             Class::Login | Class::Device => ATTEMPT_AND_LOGIN,
         };
-        if inner.room(class, room, now).is_none() {
+        let device_of = (class == Class::Device).then_some(*account.as_bytes());
+        let device = device_of.map(|account| (account, *bucket));
+        if inner.room(class, device.as_ref(), room, now).is_none() {
             return Ok(false);
         }
         let key = (class, *bucket);
@@ -310,11 +374,10 @@ impl Scratch {
             counter.attempts = counter.attempts.saturating_add(1);
             return Ok(counter.attempts <= u32::from(limit));
         }
-        let device_of = (class == Class::Device).then_some(*account.as_bytes());
         if device_of.is_some() && !inner.may_hold(account, bucket, now) {
             return Ok(false);
         }
-        let Some(charged) = inner.used.charge(class, COUNTER_COST) else { return Ok(false) };
+        let Some(charged) = inner.charge(class, device.as_ref(), COUNTER_COST) else { return Ok(false) };
         if let Some(account) = device_of {
             inner.hold_bucket(&account, bucket);
         }
@@ -328,7 +391,9 @@ impl Scratch {
     /// that spent a device budget names its `bucket`, replaces the one the
     /// bucket held, and holds the bucket for its account until it leaves: a
     /// new bucket past the account's [`DEVICE_BUCKETS_PER_ACCOUNT`] is
-    /// refused. A shared one names none. Registrations park nothing.
+    /// refused, and one other than the bucket holding the account's share
+    /// of the Device reserve is charged to Shared. A shared one names none.
+    /// Registrations park nothing.
     #[allow(clippy::too_many_arguments)] // a login, whose, until when, under which budget, and the time now
     pub fn park(
         &self,
@@ -362,10 +427,11 @@ impl Scratch {
         {
             return Err(AccessError::StorageFull);
         }
-        if inner.room(class, PARKED_LOGIN_COST, now).is_none() {
+        let device = bucket.map(|bucket| (*account.as_bytes(), bucket));
+        if inner.room(class, device.as_ref(), PARKED_LOGIN_COST, now).is_none() {
             return Err(AccessError::StorageFull);
         }
-        let Some(charged) = inner.used.charge(class, PARKED_LOGIN_COST) else {
+        let Some(charged) = inner.charge(class, device.as_ref(), PARKED_LOGIN_COST) else {
             return Err(AccessError::StorageFull);
         };
         if let Some(bucket) = bucket {
@@ -421,6 +487,7 @@ impl fmt::Debug for Scratch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::ENROLLS_PER_DAY;
 
     const T0: i64 = 1_800_000_000;
 
@@ -500,12 +567,12 @@ mod tests {
         n - from
     }
 
-    /// Device logins of `accounts` accounts with 16 passes each, numbered from
-    /// `from`: returns how many went in.
-    fn devices(scratch: &Scratch, from: u32, accounts: u32) -> u32 {
+    /// Device logins of `accounts` accounts with `passes` passes each (16 at
+    /// most), numbered from `from`: returns how many went in.
+    fn devices(scratch: &Scratch, from: u32, accounts: u32, passes: u32) -> u32 {
         let mut parked = 0;
         for a in from..from + accounts {
-            for pass in 0..u32::from(DEVICE_BUCKETS_PER_ACCOUNT) {
+            for pass in 0..passes.min(u32::from(DEVICE_BUCKETS_PER_ACCOUNT)) {
                 let n = a * 16 + pass;
                 if file(scratch, &tagged(n, 0xC2), &account(a), Class::Device, &bucket(3_000_000 + n), 0) {
                     parked += 1;
@@ -513,6 +580,12 @@ mod tests {
             }
         }
         parked
+    }
+
+    /// The device bucket `account` charges to the Device reserve, and how
+    /// many of its charges (its counter, its login) are there.
+    fn share(scratch: &Scratch, account: &AccountId) -> Option<([u8; 32], u8)> {
+        scratch.0.borrow().device_reserved.get(account.as_bytes()).copied()
     }
 
     #[test]
@@ -619,6 +692,100 @@ mod tests {
         let inner = scratch.0.borrow();
         assert!(inner.logins.is_empty() && inner.counters.is_empty() && inner.expiries.is_empty());
         assert!(inner.by_bucket.is_empty() && inner.of_account.is_empty() && inner.device_buckets.is_empty());
+        assert!(inner.device_reserved.is_empty());
+    }
+
+    #[test]
+    fn an_accounts_second_device_bucket_goes_to_shared() {
+        let scratch = Scratch::default();
+        let (ada, bob) = (account(1), account(2));
+        assert!(attempt(&scratch, 1, &ada, Class::Device, &bucket(1), 0));
+        assert_eq!(units(&scratch), (0, 0, DEVICE_SHARE_PER_ACCOUNT), "the first bucket in the reserve");
+        assert!(attempt(&scratch, 2, &ada, Class::Device, &bucket(2), 0), "a second bucket is not refused");
+        assert_eq!(units(&scratch), (DEVICE_SHARE_PER_ACCOUNT, 0, DEVICE_SHARE_PER_ACCOUNT), "it goes to Shared");
+        assert!(attempt(&scratch, 3, &ada, Class::Device, &bucket(1), 1), "the first bucket again");
+        assert_eq!(units(&scratch), (DEVICE_SHARE_PER_ACCOUNT, 0, DEVICE_SHARE_PER_ACCOUNT), "its login replaced");
+        assert_eq!(share(&scratch, &ada), Some((bucket(1), 2)), "a counter and a login");
+        assert!(attempt(&scratch, 4, &bob, Class::Device, &bucket(3), 0));
+        assert_eq!(units(&scratch), (DEVICE_SHARE_PER_ACCOUNT, 0, 2 * DEVICE_SHARE_PER_ACCOUNT), "bob has his own");
+    }
+
+    #[test]
+    fn the_device_share_comes_back_once_on_every_way_out() {
+        let scratch = Scratch::default();
+        let ada = account(1);
+        let reserve = || units(&scratch).2;
+
+        // A counter swept at the end of its window.
+        assert_eq!(scratch.admit(&ada, &bucket(1), Class::Device, 10, at(0)), Ok(true));
+        assert_eq!((share(&scratch, &ada), reserve()), (Some((bucket(1), 1)), COUNTER_COST));
+        assert_eq!(scratch.sweep(at(60), usize::MAX), Ok(1));
+        assert_eq!((share(&scratch, &ada), reserve()), (None, 0));
+        assert_eq!(scratch.sweep(at(60), usize::MAX), Ok(0));
+
+        // A login taken, then its counter swept.
+        assert!(attempt(&scratch, 1, &ada, Class::Device, &bucket(2), 100));
+        assert_eq!(share(&scratch, &ada), Some((bucket(2), 2)));
+        assert_eq!(scratch.take(&handle(1), at(101)), Ok(Some((ada, state(1)))));
+        assert_eq!((share(&scratch, &ada), reserve()), (Some((bucket(2), 1)), COUNTER_COST));
+        assert_eq!(scratch.take(&handle(1), at(101)), Ok(None));
+        assert_eq!(share(&scratch, &ada), Some((bucket(2), 1)), "taken once, given back once");
+        assert_eq!(scratch.sweep(at(160), usize::MAX), Ok(1));
+        assert_eq!((share(&scratch, &ada), reserve()), (None, 0));
+
+        // A login replaced in its bucket: one given back, one charged.
+        assert!(attempt(&scratch, 2, &ada, Class::Device, &bucket(3), 200));
+        assert!(attempt(&scratch, 3, &ada, Class::Device, &bucket(3), 201));
+        assert_eq!((share(&scratch, &ada), reserve()), (Some((bucket(3), 2)), DEVICE_SHARE_PER_ACCOUNT));
+        assert_eq!(scratch.take(&handle(2), at(202)), Ok(None), "the replaced login is gone");
+        assert_eq!(share(&scratch, &ada), Some((bucket(3), 2)));
+        assert_eq!(scratch.sweep(at(260), usize::MAX), Ok(1));
+        assert_eq!(scratch.take(&handle(3), at(261)), Ok(Some((ada, state(1)))));
+        assert_eq!((share(&scratch, &ada), reserve()), (None, 0));
+
+        // A login expired, swept or taken late.
+        assert!(attempt(&scratch, 4, &ada, Class::Device, &bucket(4), 1000));
+        assert_eq!(scratch.sweep(at(1300), usize::MAX), Ok(2), "the counter and the login");
+        assert_eq!((share(&scratch, &ada), reserve()), (None, 0));
+        assert!(attempt(&scratch, 5, &ada, Class::Device, &bucket(5), 2000));
+        assert_eq!(scratch.sweep(at(2060), usize::MAX), Ok(1));
+        assert_eq!(scratch.take(&handle(5), at(2300)), Ok(None), "expired at 2300");
+        assert_eq!((share(&scratch, &ada), reserve()), (None, 0));
+
+        // An account forgotten: its counter keeps its part.
+        assert!(attempt(&scratch, 6, &ada, Class::Device, &bucket(6), 3000));
+        assert_eq!(scratch.forget_account(&ada), Ok(()));
+        assert_eq!((share(&scratch, &ada), reserve()), (Some((bucket(6), 1)), COUNTER_COST));
+        assert_eq!(scratch.sweep(at(3060), usize::MAX), Ok(1));
+        assert_eq!((share(&scratch, &ada), reserve()), (None, 0));
+
+        // Once given back, the share serves the account's next bucket.
+        assert!(attempt(&scratch, 7, &ada, Class::Device, &bucket(7), 4000));
+        assert_eq!(units(&scratch), (0, 0, DEVICE_SHARE_PER_ACCOUNT));
+        assert_eq!(share(&scratch, &ada), Some((bucket(7), 2)));
+    }
+
+    #[test]
+    fn a_bucket_charged_to_shared_gives_nothing_back_to_the_share() {
+        let scratch = Scratch::default();
+        let ada = account(1);
+        assert_eq!(scratch.admit(&ada, &bucket(1), Class::Device, 10, at(0)), Ok(true));
+        assert!(attempt(&scratch, 1, &ada, Class::Device, &bucket(2), 30), "in Shared");
+        assert_eq!(units(&scratch), (DEVICE_SHARE_PER_ACCOUNT, 0, COUNTER_COST));
+        assert_eq!(scratch.take(&handle(1), at(31)), Ok(Some((ada, state(1)))));
+        assert_eq!(share(&scratch, &ada), Some((bucket(1), 1)), "Shared's refund leaves the share alone");
+        assert_eq!(units(&scratch), (COUNTER_COST, 0, COUNTER_COST));
+        assert_eq!(scratch.sweep(at(60), usize::MAX), Ok(1));
+        assert_eq!(share(&scratch, &ada), None);
+        // The second bucket's counter lives on in Shared; its next login
+        // takes the free share.
+        assert!(attempt(&scratch, 2, &ada, Class::Device, &bucket(2), 61));
+        assert_eq!(units(&scratch), (COUNTER_COST, 0, PARKED_LOGIN_COST));
+        assert_eq!(share(&scratch, &ada), Some((bucket(2), 1)));
+        assert_eq!(scratch.sweep(at(90), usize::MAX), Ok(1), "the Shared counter");
+        assert_eq!(share(&scratch, &ada), Some((bucket(2), 1)));
+        assert_eq!(scratch.take(&handle(2), at(91)), Ok(Some((ada, state(1)))));
+        assert_eq!((share(&scratch, &ada), units(&scratch)), (None, (0, 0, 0)));
     }
 
     #[test]
@@ -696,8 +863,8 @@ mod tests {
         #[test]
         fn device_logins_overflow_into_shared_and_stop_when_both_are_full() {
             let scratch = Scratch::default();
-            let reserve = DEVICE_RESERVE / (COUNTER_COST + PARKED_LOGIN_COST);
-            assert_eq!(u64::from(devices(&scratch, 0, 1024)), reserve);
+            let reserve = DEVICE_RESERVE / DEVICE_SHARE_PER_ACCOUNT;
+            assert_eq!(u64::from(devices(&scratch, 0, reserve as u32, 1)), reserve, "one pass each");
             assert_eq!(units(&scratch), (0, 0, DEVICE_RESERVE));
             assert!(attempt(&scratch, 1, &account(5000), Class::Device, &bucket(1), 0));
             assert_eq!(units(&scratch), (COUNTER_COST + PARKED_LOGIN_COST, 0, DEVICE_RESERVE));
@@ -707,23 +874,32 @@ mod tests {
         }
 
         #[test]
-        fn sybil_devices_fill_their_reserve_and_a_fresh_account_still_parks() {
+        fn a_days_sybil_accounts_at_sixteen_passes_leave_the_device_reserve_room() {
+            // Each account may hold 16 device buckets: if each could put them
+            // all in the reserve, 1,024 self-registered accounts would fill
+            // it, and the owners' devices would fall into Shared, which
+            // guessing fills. One bucket each goes to the reserve, the rest
+            // to Shared.
             let scratch = Scratch::default();
-            assert_eq!(devices(&scratch, 0, 1280), 1280 * 16, "1,280 accounts, 16 passes each");
-            assert_eq!(units(&scratch).2, DEVICE_RESERVE);
-            assert!(units(&scratch).0 < SHARED_POOL);
-            assert!(attempt(&scratch, 1, &account(9000), Class::Device, &bucket(1), 0));
-            assert_eq!(scratch.take(&handle(1), at(1)), Ok(Some((account(9000), state(1)))));
+            let passes = u32::from(DEVICE_BUCKETS_PER_ACCOUNT);
+            let parked = devices(&scratch, 0, ENROLLS_PER_DAY, passes);
+            assert!(parked < ENROLLS_PER_DAY * passes, "Shared ran out");
+            let (shared, _, reserve) = units(&scratch);
+            assert_eq!(reserve, u64::from(ENROLLS_PER_DAY) * DEVICE_SHARE_PER_ACCOUNT, "one bucket each");
+            assert!(SHARED_POOL - shared < DEVICE_SHARE_PER_ACCOUNT, "the other fifteen filled Shared");
+            assert!(attempt(&scratch, 1, &account(900_000), Class::Device, &bucket(1), 0), "a fresh account");
+            assert_eq!(units(&scratch).2, reserve + DEVICE_SHARE_PER_ACCOUNT);
+            assert_eq!(scratch.take(&handle(1), at(1)), Ok(Some((account(900_000), state(1)))));
         }
 
         #[test]
         fn a_pass_parking_again_and_again_leaves_room_for_another_pass() {
             let scratch = Scratch::default();
             fill_shared(&scratch, 0);
-            let room = 2 * (COUNTER_COST + PARKED_LOGIN_COST);
+            let room = 3 * DEVICE_SHARE_PER_ACCOUNT;
             let mut n = 0;
             while units(&scratch).2 < DEVICE_RESERVE - room {
-                let filed = file(&scratch, &tagged(n, 0xC2), &account(10_000 + n / 16), Class::Device, &bucket(n), 0);
+                let filed = file(&scratch, &tagged(n, 0xC2), &account(10_000 + n), Class::Device, &bucket(n), 0);
                 assert!(filed);
                 n += 1;
             }
@@ -733,9 +909,13 @@ mod tests {
                 assert_eq!(scratch.admit(&ada, &stolen, Class::Device, ATTEMPT_LIMIT_CEILING, at(0)), Ok(true));
                 scratch.park(&handle(n), &ada, &state(1), at(300), Class::Device, Some(&stolen), at(0)).unwrap();
             }
-            assert_eq!(units(&scratch).2, DEVICE_RESERVE - room / 2, "one counter and one login");
-            assert!(attempt(&scratch, 50, &ada, Class::Device, &bucket(1_000_001), 0), "the owner's pass");
-            assert!(!attempt(&scratch, 51, &ada, Class::Device, &bucket(1_000_002), 0), "and now it is full");
+            assert_eq!(units(&scratch).2, DEVICE_RESERVE - 2 * DEVICE_SHARE_PER_ACCOUNT, "one counter and one login");
+            // The stolen pass holds ada's share: her other passes go to
+            // Shared, which guessing filled. Other accounts keep their room.
+            assert!(!attempt(&scratch, 50, &ada, Class::Device, &bucket(1_000_001), 0), "ada's share is held");
+            assert!(attempt(&scratch, 51, &account(2), Class::Device, &bucket(1_000_002), 0), "bob's pass");
+            assert!(attempt(&scratch, 52, &account(3), Class::Device, &bucket(1_000_003), 0), "carol's pass");
+            assert!(!attempt(&scratch, 53, &account(4), Class::Device, &bucket(1_000_004), 0), "and now it is full");
         }
 
         #[test]

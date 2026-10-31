@@ -134,7 +134,8 @@ pub struct AccountUsage {
     pub keyring_rows: u32,
     /// Accounts created today.
     pub enrolls: u32,
-    /// Bytes keyrings grew by today.
+    /// Bytes keyrings grew by today, net of what they shrank by or their
+    /// accounts' closing deleted (never below zero).
     pub keyring_growth: u32,
 }
 

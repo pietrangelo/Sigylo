@@ -18,8 +18,11 @@ pub const ACCOUNT_BYTES_CEILING: u64 = 64 * 1024 * 1024;
 pub const KEYRING_BYTES_CEILING: u64 = 64 * 1024 * 1024;
 /// Bytes keyrings may grow by in one day (UTC), all accounts together, past
 /// which no keyring grows until the next: filling [`KEYRING_BYTES_CEILING`]
-/// for good takes 13 days or more. A keyring is charged only what it grows
-/// by; a write that does not grow it is free.
+/// for good takes 13 days or more. The day counts net growth: a keyring is
+/// charged what it grows by, and what it shrinks by, or its length when its
+/// account closes, is given back (down to zero), so keyrings held never grow
+/// by more than this in a day, and one account shrinking and growing its
+/// keyring again cannot spend the day for everyone.
 pub const KEYRING_GROWTH_BYTES_PER_DAY: u32 = (KEYRING_BYTES_CEILING / 13) as u32;
 
 /// What a session weighs in [`SESSION_BYTES_CEILING`].
@@ -75,12 +78,20 @@ pub const SHARED_POOL: u64 = 16 * 1024 * 1024;
 /// stop registrations.
 pub const REGISTRATION_RESERVE: u64 = 1024 * 1024;
 /// Memory for device logins and their counters first, so a flood of guesses
-/// does not lock the owners' devices out.
+/// does not lock the owners' devices out. Each account holds at most
+/// [`DEVICE_SHARE_PER_ACCOUNT`] of it.
 pub const DEVICE_RESERVE: u64 = 8 * 1024 * 1024;
 /// Device buckets one account may hold at once, a bucket held while its
 /// counter or its parked login lives: a stolen pass takes one of them, never
 /// all, and an account rotating passes holds at most this many parked logins.
 pub const DEVICE_BUCKETS_PER_ACCOUNT: u8 = 16;
+/// What one account may hold of [`DEVICE_RESERVE`]: one device bucket's
+/// worth, its counter and its parked login. The account's other buckets are
+/// charged to [`SHARED_POOL`], so accounts an attacker registers hold one
+/// bucket each of the reserve, never sixteen, and a day of registrations
+/// ([`ENROLLS_PER_DAY`]) cannot fill it.
+pub const DEVICE_SHARE_PER_ACCOUNT: u64 = COUNTER_COST + PARKED_LOGIN_COST;
+const _: () = assert!(DEVICE_RESERVE / DEVICE_SHARE_PER_ACCOUNT > ENROLLS_PER_DAY as u64);
 
 /// How long an attempt counter counts.
 pub const ATTEMPT_WINDOW_SECONDS: u32 = 60;
