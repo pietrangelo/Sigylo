@@ -26,7 +26,7 @@ On Linux the webview libraries are needed: `libwebkit2gtk-4.1-dev build-essentia
 
 ## Release
 
-`.github/workflows/app-release.yml` builds the installers for Linux, macOS (Apple silicon and Intel) and Windows and attaches them to a draft GitHub release, on an `app-v*` tag or by hand. The builds are unsigned: macOS and Windows will show a warning until the certificates (Apple Developer ID, Windows code signing) are added as repository secrets.
+`.github/workflows/app-release.yml` builds the installers for Linux, macOS (Apple silicon and Intel) and Windows and attaches them to a draft GitHub release, on an `app-v*` tag of a commit of `main` whose CI passed, or by hand from `main`. The builds (`cargo tauri build -- --locked`) get no write token; only the last job, which builds nothing, attaches their installers to the draft. The builds are unsigned: macOS and Windows will show a warning until the certificates (Apple Developer ID, Windows code signing) are added as repository secrets.
 
 The Windows build also gives `Sigylo_<version>.0_x64.msix` for the Microsoft Store (workflow artifact `sigylo-msix`, built by `msix/pack.ps1` from `msix/AppxManifest.xml`). It carries the identity Partner Center reserved for Sigylo and is uploaded there unsigned: the Store signs it. It is not attached to the release, since an unsigned MSIX does not install.
 
