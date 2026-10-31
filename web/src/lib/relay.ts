@@ -174,7 +174,8 @@ export class Relay {
     return this.call('GET', `/requests/${encode(id)}`, undefined, (json) => {
       const j = json as { recipient_key?: unknown; expires_at?: unknown } | null;
       const publicKey = typeof j?.recipient_key === 'string' ? decode(j.recipient_key) : null;
-      return publicKey !== null && typeof j?.expires_at === 'number' ? { publicKey, expiresAt: j.expires_at } : null;
+      const expiresAt = expiry(j?.expires_at);
+      return publicKey !== null && expiresAt !== null ? { publicKey, expiresAt } : null;
     });
   }
 
@@ -214,7 +215,8 @@ export class Relay {
       const j = json as { session?: unknown; expires_at?: unknown; pass?: unknown } | null;
       const token = typeof j?.session === 'string' ? decodeExact(j.session, 32) : null;
       const pass = typeof j?.pass === 'string' ? decodeExact(j.pass, PASS_LEN) : null;
-      return token !== null && typeof j?.expires_at === 'number' ? { token, expiresAt: j.expires_at, pass } : null;
+      const expiresAt = expiry(j?.expires_at);
+      return token !== null && expiresAt !== null ? { token, expiresAt, pass } : null;
     });
   }
 
@@ -255,10 +257,21 @@ function field(json: unknown, name: string): Uint8Array | null {
   return typeof value === 'string' ? decode(value) : null;
 }
 
+/**
+ * An expiry from the relay: whole Unix seconds after the epoch. Anything else
+ * (a fraction, a negative number, beyond 2^53) is refused here, because it
+ * would end up in the account keyring, whose strict parser would then refuse
+ * the whole keyring for good.
+ */
+function expiry(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
 function readReceipt(json: unknown): Receipt | null {
   const j = json as { id?: unknown; expires_at?: unknown } | null;
   const id = typeof j?.id === 'string' ? decodeExact(j.id, ID_LEN) : null;
-  return id !== null && typeof j?.expires_at === 'number' ? { id, expiresAt: j.expires_at } : null;
+  const expiresAt = expiry(j?.expires_at);
+  return id !== null && expiresAt !== null ? { id, expiresAt } : null;
 }
 
 function readRequestReceipt(json: unknown): RequestReceipt | null {

@@ -120,6 +120,28 @@ describe('legal', () => {
     }
   });
 
+  it('never claims there is no creation time: the expiry and the storage provider give it away', () => {
+    // The expiry is kept to the second and the interface offers a handful of
+    // lifetimes, so the sealing time follows; R2 and the Durable Objects'
+    // recovery history also date every write.
+    const absolute = {
+      it: /né orario di creazione|nessun orario di creazione/i,
+      en: /no creation time/i,
+      fr: /ni heure de création|aucune heure de création/i,
+      es: /ni hora de creación|ninguna hora de creación/i,
+      de: /keine Erstellungszeit/i,
+    };
+    const derived = { it: 'ricavare', en: 'worked out', fr: 'déduire', es: 'deducirse', de: 'ableiten' };
+    const at = legal.en.privacy.sections.findIndex((s) => s.heading === 'What we keep');
+    expect(at).toBeGreaterThanOrEqual(0);
+    for (const language of languages) {
+      expect(text(legal[language].privacy), language).not.toMatch(absolute[language]);
+      const kept = legal[language].privacy.sections[at]!.body.join('\n');
+      expect(kept, language).toContain(derived[language]);
+      expect(kept, language).toContain('Cloudflare');
+    }
+  });
+
   it('carries a real date of last update', () => {
     expect(LEGAL_UPDATED).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(Number.isNaN(Date.parse(LEGAL_UPDATED))).toBe(false);

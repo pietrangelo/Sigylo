@@ -14,7 +14,7 @@
 <div class="box">
   <label for={testid}>{label}</label>
   <div class="row">
-    <input id={testid} data-testid={testid} readonly {value} onfocus={(e) => e.currentTarget.select()} />
+    <input id={testid} data-testid={testid} readonly autocomplete="off" spellcheck="false" {value} onfocus={(e) => e.currentTarget.select()} />
     <button class="secondary" onclick={copy}>{copied ? t.copied : t.copy}</button>
   </div>
 </div>

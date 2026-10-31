@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { encode } from '../src/lib/base64url';
-import { inboxLink, leavingLoses, linkFragment, parseFragment, requestLink, revokeLink, secretLink } from '../src/lib/links';
+import { dropKeyFromAddress, inboxLink, leavingLoses, linkFragment, parseFragment, requestLink, revokeLink, secretLink } from '../src/lib/links';
 
 const id = Uint8Array.from({ length: 16 }, (_, i) => i);
 const key = Uint8Array.from({ length: 32 }, (_, i) => 255 - i);
@@ -124,6 +124,35 @@ describe('links', () => {
           expect(linkFragment(bad), bad).toBeNull();
         }
       });
+    });
+  });
+});
+
+describe('dropping the key from the address bar', () => {
+  it('replaces the entry with the root of the page, whatever path served it', () => {
+    const urls: (string | URL | null | undefined)[] = [];
+    expect(dropKeyFromAddress({ replaceState: (_data, _unused, url) => urls.push(url) })).toBe(true);
+    expect(urls).toEqual(['/']);
+  });
+
+  describe('adversary', () => {
+    it('a path that reads as another host still resolves to this origin, without a fragment', () => {
+      // The SPA fallback serves the page at //x.example/: replacing with the
+      // pathname would resolve to https://x.example/ and make replaceState throw.
+      const base = 'https://sigylo.net//x.example/#/s/AAAAAAAAAAAAAAAAAAAAAA/' + 'A'.repeat(43);
+      expect(new URL(new URL(base).pathname, base).origin).toBe('https://x.example');
+      let target = '';
+      dropKeyFromAddress({ replaceState: (_data, _unused, url) => (target = new URL(String(url), base).href) });
+      expect(target).toBe('https://sigylo.net/');
+    });
+
+    it('never throws, so a refusal can neither show an error nor hide the secret', () => {
+      const refusing = {
+        replaceState() {
+          throw new DOMException('cross-origin', 'SecurityError');
+        },
+      };
+      expect(dropKeyFromAddress(refusing)).toBe(false);
     });
   });
 });

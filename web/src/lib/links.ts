@@ -69,6 +69,23 @@ function link(origin: string, ...parts: string[]): string {
   return `${origin}/#/${parts.join('/')}`;
 }
 
+/**
+ * Drops the fragment, and the key in it, from the address bar and the current
+ * history entry, once the key has done its job. The page always lives at '/',
+ * so that is the new address: the path it was reached by is whatever the SPA
+ * fallback served, and one like `//x.example/` would resolve to another origin
+ * and make `replaceState` throw, leaving the key in place. Never throws: the
+ * caller has nothing to show for a refusal, and must not fail because of one.
+ */
+export function dropKeyFromAddress(history: Pick<History, 'replaceState'> = globalThis.history): boolean {
+  try {
+    history.replaceState(null, '', '/');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Pages whose content is gone once left: an opened secret, an inbox, an answer being written. */
 export function leavingLoses(route: Route): boolean {
   return route.kind === 'secret' || route.kind === 'inbox' || route.kind === 'answer';
