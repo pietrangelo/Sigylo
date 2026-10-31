@@ -75,12 +75,20 @@ pub const SHARED_POOL: u64 = 16 * 1024 * 1024;
 /// stop registrations.
 pub const REGISTRATION_RESERVE: u64 = 1024 * 1024;
 /// Memory for device logins and their counters first, so a flood of guesses
-/// does not lock the owners' devices out.
+/// does not lock the owners' devices out. Each account holds at most
+/// [`DEVICE_SHARE_PER_ACCOUNT`] of it.
 pub const DEVICE_RESERVE: u64 = 8 * 1024 * 1024;
 /// Device buckets one account may hold at once, a bucket held while its
 /// counter or its parked login lives: a stolen pass takes one of them, never
 /// all, and an account rotating passes holds at most this many parked logins.
 pub const DEVICE_BUCKETS_PER_ACCOUNT: u8 = 16;
+/// What one account may hold of [`DEVICE_RESERVE`]: one device bucket's
+/// worth, its counter and its parked login. The account's other buckets are
+/// charged to [`SHARED_POOL`], so accounts an attacker registers hold one
+/// bucket each of the reserve, never sixteen, and a day of registrations
+/// ([`ENROLLS_PER_DAY`]) cannot fill it.
+pub const DEVICE_SHARE_PER_ACCOUNT: u64 = COUNTER_COST + PARKED_LOGIN_COST;
+const _: () = assert!(DEVICE_RESERVE / DEVICE_SHARE_PER_ACCOUNT > ENROLLS_PER_DAY as u64);
 
 /// How long an attempt counter counts.
 pub const ATTEMPT_WINDOW_SECONDS: u32 = 60;
