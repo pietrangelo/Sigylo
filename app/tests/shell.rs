@@ -103,7 +103,7 @@ mod adversary {
         let (scheme, host) = APP.split_once("://").unwrap();
         for url in [
             format!("{APP}:1/"),
-            format!("{APP}:80/"),
+            format!("{APP}:8080/"),
             format!("{scheme}://user@{host}/"),
             format!("{scheme}://user:pass@{host}/"),
             format!("blob:{APP}:1/0b6e8f4a"),
@@ -112,6 +112,15 @@ mod adversary {
             assert!(!allowed(&url), "{url}");
             assert!(!saved(&url), "{url}");
         }
+    }
+
+    /// `tauri:` has no default port, so `:80` is another origin; `http:`
+    /// drops its default `:80` when parsed, so there it is the app itself.
+    #[cfg(not(any(windows, target_os = "android")))]
+    #[test]
+    fn the_app_origin_on_port_80_is_refused() {
+        assert!(!allowed(&format!("{APP}:80/")));
+        assert!(!saved(&format!("blob:{APP}:80/0b6e8f4a")));
     }
 
     #[test]
