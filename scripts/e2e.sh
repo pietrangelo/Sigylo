@@ -6,7 +6,7 @@
 #   bash scripts/e2e.sh
 #
 # Needs Rust with wasm32-unknown-unknown, wasm-bindgen-cli and worker-build at
-# the pinned versions, Node 22.
+# the pinned versions, Node 22. Wrangler comes from worker/package-lock.json.
 set -euo pipefail
 # Chromium writes downloads with names in the locale's charset: without UTF-8
 # a file called "caffè.txt" would be saved as "download".
@@ -21,10 +21,12 @@ cleanup() {
 trap cleanup EXIT
 
 (cd "$root/web" && npm ci --no-fund --no-audit && npm run build)
-# Own process group, so cleanup stops npx, wrangler and workerd together.
+# The wrangler of worker/package-lock.json, without install scripts.
+(cd "$root/worker" && npm ci --ignore-scripts --no-fund --no-audit)
+# Own process group, so cleanup stops wrangler and workerd together.
 # R2 and the Durable Objects live locally in "$tmp/state"; the suite runs the
 # cron (purge and garbage collection) through wrangler's local explorer API.
-(cd "$root/worker" && exec setsid npx --yes wrangler@4.151.1 dev --var VAULT_PLACEMENT:local \
+(cd "$root/worker" && exec setsid ./node_modules/.bin/wrangler dev --var VAULT_PLACEMENT:local \
     --var OPAQUE_SERVER_SEED:e2e-only-not-a-secret-AAAAAAAAAAAAAAAAAAAAA \
     --var OPAQUE_CANARY:voB1TN7wcGcZY8Ms-nY-RlT9xSOkkNM1KZPxcTdw61k \
     --persist-to "$tmp/state" --ip 127.0.0.1 --port 8787 >"$tmp/wrangler.log" 2>&1) &
