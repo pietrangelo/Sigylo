@@ -48,6 +48,16 @@ fn the_version_comes_from_tauri_conf_at_pack_time() {
     assert!(pack.contains("\"$version.0\""));
 }
 
+/// The Store sees the version of tauri.conf.json; the binary reports the
+/// crate's. A bump of one without the other ships a package that lies about
+/// what it holds.
+#[test]
+fn the_crate_and_the_package_carry_the_same_version() {
+    let conf: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(format!("{DIR}/tauri.conf.json")).unwrap()).unwrap();
+    assert_eq!(conf["version"], env!("CARGO_PKG_VERSION"));
+}
+
 #[test]
 fn the_package_starts_the_app_as_a_desktop_program() {
     assert_eq!(attributes("Executable"), ["Sigylo.exe"]);

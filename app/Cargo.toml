@@ -1,7 +1,7 @@
 [package]
 name = "sigylo-app"
 description = "Tauri shell: the web client and its Wasm engine bundled in an installable app that talks only to the sigylo.net relay"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/pietrangelo/Sigylo"
