@@ -40,11 +40,11 @@ WORKDIR /src
 ARG CARGO_BUILD_JOBS=4
 
 # Every crate (both workspaces, all targets), every npm package, Chromium for Playwright and the
-# wrangler that scripts/e2e.sh runs.
+# wrangler that scripts/e2e.sh runs: the one worker/package-lock.json pins, without install scripts.
 RUN cargo fetch --locked \
     && (cd app && cargo fetch --locked) \
     && (cd web && npm ci --no-fund --no-audit && npx playwright install --with-deps chromium) \
-    && npx --yes wrangler@4.151.1 --version
+    && (cd worker && npm ci --ignore-scripts --no-fund --no-audit && ./node_modules/.bin/wrangler --version)
 
 # Native workspace and its tests, the Wasm engine and the web client, the Worker bundle, the desktop
 # shell. A step that fails fails the build, and primary_contact gets the log.
