@@ -93,7 +93,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -I scripts/check-npm.py --lock worker/package-lock.json --lock web/package-lock.json \
-            .github/workflows/*.y*ml scripts/*
+            .github/workflows/*.y*ml scripts/* .oss-scanner/Dockerfile
           dir="$(mktemp -d)"
           printf '{"lockfileVersion": 3, "packages": {"": {}, "node_modules/a": {"version": "1.0.0", "resolved": "https://registry.npmjs.org/a/-/a-1.0.0.tgz"}}}' > "$dir/no-integrity.json"
           printf '{"lockfileVersion": 3, "packages": {"": {}, "node_modules/a": {"version": "1.0.0", "resolved": "https://evil.example/a.tgz", "integrity": "sha512-AAAA"}}}' > "$dir/elsewhere.json"

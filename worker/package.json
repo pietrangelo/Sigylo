@@ -6,6 +6,6 @@
   "description": "The exact wrangler, and the esbuild worker-build bundles with, for building, running and deploying the Worker. Install with: npm ci --ignore-scripts",
   "devDependencies": {
     "esbuild": "0.28.2",
-    "wrangler": "4.151.1"
+    "wrangler": "4.156.0"
   }
 }
