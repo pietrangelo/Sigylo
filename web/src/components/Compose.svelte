@@ -57,7 +57,7 @@
         }
         const contents = new Uint8Array(await file.arrayBuffer());
         try {
-          const sealed = engine.sealFileForLink(fileName(file.name), contents, pass);
+          const sealed = engine.sealFileForLink(textBytes(fileName(file.name)), contents, pass);
           ({ key, envelope } = sealed);
           chunks = sealed.chunks as Uint8Array[];
           sealed.free();

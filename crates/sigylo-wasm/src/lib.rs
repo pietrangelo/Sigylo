@@ -26,7 +26,7 @@ use access::{
     AccessError, CredentialResponse, Member, Password, PendingLogin, PendingRegistration, RegistrationResponse,
 };
 use access_adapters::{HkdfKeyringKdf, OpaqueDevice};
-use js_sys::{Array, Uint8Array};
+use js_sys::{Array, JsString, Uint8Array};
 use sealing::{
     Envelope, FileBytes, FileManifest, FileName, Fingerprint, LinkKey, Passphrase, Plaintext, RecipientPublicKey,
     RecipientSeed, SealError, SealedChunk, SealedFile, Sealer, SenderCode, SenderPin, SenderSeed,
@@ -542,7 +542,9 @@ impl SealedFileForRecipient {
 #[wasm_bindgen]
 #[derive(Debug)]
 pub struct FileInfo {
-    name: String,
+    /// A JS string made straight from the wiped manifest: a Rust `String`
+    /// here would be freed without wiping, like any field of an exported struct.
+    name: JsString,
     size: u32,
     chunks: u32,
 }
@@ -550,7 +552,7 @@ pub struct FileInfo {
 #[wasm_bindgen]
 impl FileInfo {
     #[wasm_bindgen(getter)]
-    pub fn name(&self) -> String {
+    pub fn name(&self) -> JsString {
         self.name.clone()
     }
 
@@ -569,8 +571,18 @@ fn chunk_array(chunks: Vec<SealedChunk>) -> Array {
     chunks.into_iter().map(|chunk| JsValue::from(Uint8Array::from(chunk.as_bytes()))).collect()
 }
 
-fn file_parts(name: String, mut contents: Zeroizing<Vec<u8>>) -> Result<(FileName, FileBytes), SealError> {
+/// The name arrives as UTF-8 bytes, like every other sealed argument: a JS
+/// string goes through a buffer the glue may grow and move, which leaves a
+/// copy of the name behind, and the name is sealed with the file.
+fn file_parts(
+    mut name_utf8: Zeroizing<Vec<u8>>,
+    mut contents: Zeroizing<Vec<u8>>,
+) -> Result<(FileName, FileBytes), SealError> {
     let contents = FileBytes::new(release(&mut contents))?;
+    let name = String::from_utf8(release(&mut name_utf8)).map_err(|refused| {
+        drop(Zeroizing::new(refused.into_bytes()));
+        SealError::InvalidFileName
+    })?;
     Ok((FileName::new(name)?, contents))
 }
 
@@ -580,16 +592,17 @@ fn manifest(plaintext: Vec<u8>) -> Result<Option<FileManifest>, SealError> {
     FileManifest::recognize(&Plaintext::new(plaintext)?)
 }
 
-/// `name` must be NFC-normalized by the caller.
+/// `name_utf8` must be NFC-normalized by the caller.
 #[wasm_bindgen(js_name = sealFileForLink)]
 pub fn seal_file_for_link(
-    name: String,
+    name_utf8: Vec<u8>,
     contents: Vec<u8>,
     passphrase_utf8: Option<Vec<u8>>,
 ) -> Result<SealedFileLink, JsError> {
     scrubbed(|| {
-        let (contents, passphrase_utf8) = (guarded(contents), passphrase_utf8.map(guarded));
-        let (name, contents) = file_parts(name, contents).map_err(js_error)?;
+        let (name_utf8, contents, passphrase_utf8) =
+            (guarded(name_utf8), guarded(contents), passphrase_utf8.map(guarded));
+        let (name, contents) = file_parts(name_utf8, contents).map_err(js_error)?;
         let passphrase = passphrase(passphrase_utf8).map_err(js_error)?;
         let (file, key) = sealer().seal_file_for_link(name, &contents, passphrase.as_ref()).map_err(js_error)?;
         let SealedFile { manifest, chunks } = file;
@@ -599,7 +612,7 @@ pub fn seal_file_for_link(
 
 #[wasm_bindgen(js_name = sealFileForRecipient)]
 pub fn seal_file_for_recipient(
-    name: String,
+    name_utf8: Vec<u8>,
     contents: Vec<u8>,
     public_key: &[u8],
     fingerprint: &[u8],
@@ -608,9 +621,9 @@ pub fn seal_file_for_recipient(
     expected_sender: Option<Vec<u8>>,
 ) -> Result<SealedFileForRecipient, JsError> {
     scrubbed(|| {
-        let (contents, passphrase_utf8, sender_seed) =
-            (guarded(contents), passphrase_utf8.map(guarded), sender_seed.map(guarded));
-        let (name, contents) = file_parts(name, contents).map_err(js_error)?;
+        let (name_utf8, contents, passphrase_utf8, sender_seed) =
+            (guarded(name_utf8), guarded(contents), passphrase_utf8.map(guarded), sender_seed.map(guarded));
+        let (name, contents) = file_parts(name_utf8, contents).map_err(js_error)?;
         let public_key = RecipientPublicKey::from_slice(public_key).map_err(js_error)?;
         let fingerprint = Fingerprint::from_slice(fingerprint).map_err(js_error)?;
         let passphrase = passphrase(passphrase_utf8).map_err(js_error)?;
@@ -637,7 +650,7 @@ pub fn seal_file_for_recipient(
 pub fn file_info(plaintext: Vec<u8>) -> Result<Option<FileInfo>, JsError> {
     scrubbed(|| {
         Ok(manifest(plaintext).map_err(js_error)?.map(|m| FileInfo {
-            name: m.name().as_str().to_owned(),
+            name: JsString::from(m.name().as_str()),
             // MAX_FILE_LEN fits in u32.
             size: m.size().bytes() as u32,
             chunks: m.size().chunk_count(),
