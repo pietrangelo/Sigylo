@@ -9,10 +9,11 @@ use std::collections::{BTreeMap, HashMap};
 
 use custody::{
     ChunkStore, ClaimDigest, ClaimToken, CustodyError, DropId, IdSource, ObjectName, RevocationDigest, RevocationToken,
-    SealedChunk, SealedPayload, TokenDigest, UnixTime, Vault,
+    SealedChunk, SealedPayload, TokenDigest, UnixTime,
 };
 
 use super::accounts::AccountLedger;
+use super::ledger_vault::LedgerVault;
 use super::ports::{Clock, KeyValue, Link, PayloadStore};
 use super::remote::serve;
 use super::remote_accounts::serve_accounts;
@@ -193,6 +194,86 @@ impl ChunkStore for &MemoryBucket {
     }
 }
 
+/// A [`MemoryBucket`] whose calls can be held in flight, as a read or a
+/// write to R2 is while the Durable Object serves other requests: a held
+/// call waits at its gate (`Pending`) and touches the bucket only once the
+/// gate opens. Driven by hand with [`poll_once`], it lets a test run other
+/// calls, the cron's included, in the middle of an open or an upload.
+#[derive(Debug, Default)]
+pub struct GatedBucket {
+    pub bucket: MemoryBucket,
+    /// Reads wait while this is set.
+    pub hold_reads: Cell<bool>,
+    /// A held read takes the bytes before it waits (the object is read and
+    /// the answer is on its way), not after (the read is slow to start).
+    pub reads_land_first: Cell<bool>,
+    /// Writes wait while this is set.
+    pub hold_writes: Cell<bool>,
+    /// Deletions wait while this is set.
+    pub hold_deletes: Cell<bool>,
+}
+
+impl GatedBucket {
+    async fn read(&self, object: &ObjectName) -> Result<Option<Vec<u8>>, CustodyError> {
+        if self.reads_land_first.get() {
+            let bytes = self.bucket.fetch(object);
+            Gate(&self.hold_reads).await;
+            bytes
+        } else {
+            Gate(&self.hold_reads).await;
+            self.bucket.fetch(object)
+        }
+    }
+}
+
+/// Ready once its switch is off. It never registers a waker: only a
+/// test polling by hand drives it.
+struct Gate<'a>(&'a Cell<bool>);
+
+impl Future for Gate<'_> {
+    type Output = ();
+
+    fn poll(self: core::pin::Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
+        if self.0.get() { Poll::Pending } else { Poll::Ready(()) }
+    }
+}
+
+impl PayloadStore for GatedBucket {
+    async fn put(&self, object: &ObjectName, payload: &SealedPayload) -> Result<(), CustodyError> {
+        Gate(&self.hold_writes).await;
+        self.bucket.store(object, payload.as_bytes())
+    }
+
+    async fn get(&self, object: &ObjectName) -> Result<Option<SealedPayload>, CustodyError> {
+        self.read(object).await?.map(SealedPayload::new).transpose()
+    }
+
+    async fn delete(&self, objects: &[ObjectName]) -> Result<(), CustodyError> {
+        Gate(&self.hold_deletes).await;
+        self.bucket.remove(objects)
+    }
+}
+
+impl ChunkStore for &GatedBucket {
+    async fn put(&self, object: &ObjectName, chunk: &SealedChunk) -> Result<(), CustodyError> {
+        Gate(&self.hold_writes).await;
+        self.bucket.store(object, chunk.as_bytes())
+    }
+
+    async fn get(&self, object: &ObjectName) -> Result<Option<SealedChunk>, CustodyError> {
+        self.read(object).await?.map(SealedChunk::new).transpose()
+    }
+
+    async fn delete(&self, objects: &[ObjectName]) -> Result<(), CustodyError> {
+        self.bucket.remove(objects)
+    }
+}
+
+/// Polls a future once, with a waker that does nothing.
+pub fn poll_once<F: Future>(future: core::pin::Pin<&mut F>) -> Poll<F::Output> {
+    future.poll(&mut Context::from_waker(Waker::noop()))
+}
+
 #[derive(Debug)]
 pub struct ManualClock(pub Cell<i64>);
 
@@ -282,10 +363,12 @@ impl<V> Loopback<V> {
     }
 }
 
-impl<V: Vault> Link for Loopback<V> {
+impl<K: KeyValue, P: PayloadStore, I: IdSource, C: Clock> Link for Loopback<LedgerVault<K, P, I, C>> {
     async fn call(&self, call: Vec<u8>) -> Result<Vec<u8>, CustodyError> {
         self.calls.set(self.calls.get() + 1);
         let reply = serve(&self.vault, &call).await;
+        // As the Durable Object does once its reply is on its way.
+        self.vault.settle().await;
         Ok(self.garble.borrow().clone().unwrap_or(reply))
     }
 }

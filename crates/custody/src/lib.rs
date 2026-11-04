@@ -17,4 +17,4 @@ pub use crate::core::{
     RecipientKeyBlob, Request, RequestReceipt, Retention, RevocationDigest, RevocationToken, SealedChunk,
     SealedPayload, UnixTime,
 };
-pub use application::{Answer, ChunkStore, Custodian, IdSource, TokenDigest, Vault};
+pub use application::{Answer, ChunkStore, Custodian, IdSource, Released, TokenDigest, Vault};

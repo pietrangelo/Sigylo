@@ -212,6 +212,19 @@ impl Link for DurableLink {
     }
 }
 
+/// `work` as a promise to hand to the runtime's `waitUntil`, of a Durable
+/// Object (`state.as_raw().wait_until`) or of a request
+/// (`ctx.as_ref().wait_until`), so it runs after the reply has gone out.
+/// The raw calls return the runtime's error instead of unwrapping it, as the
+/// workers-rs wrappers do: neither shell may panic. The work starts at once
+/// either way; `waitUntil` only keeps its host alive until it ends.
+pub fn after_reply(work: impl core::future::Future<Output = ()> + 'static) -> js_sys::Promise {
+    js_sys::futures::future_to_promise(async move {
+        work.await;
+        Ok(JsValue::UNDEFINED)
+    })
+}
+
 /// The Workers runtime's clock (frozen within one request, as Cloudflare
 /// keeps it, which is all the vault needs).
 #[derive(Debug, Clone, Copy, Default)]

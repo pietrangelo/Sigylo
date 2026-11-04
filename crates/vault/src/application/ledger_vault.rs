@@ -2,7 +2,12 @@
 //! the [`PayloadStore`] the sealed payloads. Every read of a payload happens
 //! between two steps of the ledger (find, read, commit), so a failing object
 //! store loses nothing and two concurrent reads never both burn.
+//!
+//! What an open burns leaves the store only in [`LedgerVault::settle`], which
+//! the Durable Object runs once its reply is on its way: a burned secret is
+//! lost if its reply is, so the reply waits for nothing it does not need.
 
+use core::cell::RefCell;
 use core::slice;
 
 use custody::{
@@ -23,11 +28,25 @@ pub struct LedgerVault<K, P, I, C> {
     payloads: P,
     ids: I,
     clock: C,
+    /// Objects burned by this request's opens, in the garbage already, to
+    /// leave the store in [`LedgerVault::settle`].
+    burned: RefCell<Vec<ObjectName>>,
 }
 
 impl<K: KeyValue, P: PayloadStore, I: IdSource, C: Clock> LedgerVault<K, P, I, C> {
     pub fn new(kv: K, payloads: P, ids: I, clock: C) -> Self {
-        Self { ledger: Ledger::new(kv), payloads, ids, clock }
+        Self { ledger: Ledger::new(kv), payloads, ids, clock, burned: RefCell::new(Vec::new()) }
+    }
+
+    /// Deletes from the store what this request's opens burned, and forgets
+    /// it once the store did. Run after the reply: if it never runs (the
+    /// object restarts first) or the store fails, the objects wait in the
+    /// garbage for the collector, as anything burned does.
+    pub async fn settle(&self) {
+        let burned = core::mem::take(&mut *self.burned.borrow_mut());
+        if !burned.is_empty() {
+            self.discard(&burned).await;
+        }
     }
 
     pub fn ledger(&self) -> &Ledger<K> {
@@ -93,7 +112,8 @@ impl<K: KeyValue, P: PayloadStore, I: IdSource, C: Clock> Vault for LedgerVault<
             return Ok(None);
         };
         if let Some(object) = committed.discard {
-            self.discard(slice::from_ref(&object)).await;
+            // Deleted once the reply is out (`settle`), not before it.
+            self.burned.borrow_mut().push(object);
         }
         Ok(Some(Opened { payload, burned: committed.burned, chunks: committed.chunks, claim: None }))
     }

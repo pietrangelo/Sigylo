@@ -21,15 +21,18 @@ pub mod api;
 
 #[cfg(target_arch = "wasm32")]
 mod runtime {
+    use std::rc::Rc;
+
     use access::{AccessError, AccountId, AccountStore, Budget, Gatekeeper, Throttle, UnixTime};
     use access_adapters::{OpaqueKeys, RandomTokens, throttle_bucket};
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 
-    use custody::{Custodian, CustodyError, Vault};
+    use custody::{Custodian, CustodyError, ObjectName, Vault};
     use custody_adapters::{R2ChunkStore, RandomIds, Sha256TokenDigest};
     use vault::{AccountLedger, LedgerVault, RemoteAccounts, RemoteVault, Scratch, VaultThrottle};
     use vault_adapters::{
         ACCOUNTS_BINDING, ACCOUNTS_NAME, DurableKv, DurableLink, Placement, R2Payloads, VAULT_BINDING, WorkerClock,
+        after_reply,
     };
     use worker::{
         Context, DurableObject, Env, Method, Request, Response, Result, ScheduleContext, ScheduledEvent, State,
@@ -179,10 +182,10 @@ mod runtime {
         })
     }
 
-    async fn execute(command: Command, env: &Env) -> std::result::Result<Reply, ApiError> {
+    async fn execute(command: Command, env: &Env, ctx: &Context) -> std::result::Result<Reply, ApiError> {
         match command {
             Command::Account(command) => account(command, env).await,
-            custody => safekeeping(custody, env).await,
+            custody => safekeeping(custody, env, ctx).await,
         }
     }
 
@@ -208,16 +211,36 @@ mod runtime {
             .map_err(|_| AccessError::StoreUnavailable)
     }
 
-    async fn safekeeping(command: Command, env: &Env) -> std::result::Result<Reply, ApiError> {
+    type RelayCustodian = Custodian<RemoteVault<DurableLink>, R2ChunkStore, Sha256TokenDigest, RandomIds>;
+
+    fn custodian(env: &Env) -> std::result::Result<RelayCustodian, CustodyError> {
         let store = chunk_store(env).map_err(|_| CustodyError::VaultUnavailable)?;
-        keep(command, &Custodian::new(remote_vault(env)?, store, Sha256TokenDigest, RandomIds)).await
+        Ok(Custodian::new(remote_vault(env)?, store, Sha256TokenDigest, RandomIds))
     }
 
+    async fn safekeeping(command: Command, env: &Env, ctx: &Context) -> std::result::Result<Reply, ApiError> {
+        let (reply, burned) = keep(command, &custodian(env)?).await?;
+        if let Some(object) = burned {
+            // A burned chunk leaves R2 once its reply is on its way, not
+            // before: the reply waits for nothing it does not need. If this
+            // never runs, the object waits in the garbage for the cron.
+            let env = env.clone();
+            let _ = ctx.as_ref().wait_until(&after_reply(async move {
+                if let Ok(custodian) = custodian(&env) {
+                    custodian.discard(&[object]).await;
+                }
+            }));
+        }
+        Ok(reply)
+    }
+
+    /// Runs a custody command; with the reply comes the object of a chunk it
+    /// burned, for the caller to delete once the reply is out.
     async fn keep<V: Vault>(
         command: Command,
         custodian: &Custodian<V, R2ChunkStore, Sha256TokenDigest, RandomIds>,
-    ) -> std::result::Result<Reply, ApiError> {
-        Ok(match command {
+    ) -> std::result::Result<(Reply, Option<ObjectName>), ApiError> {
+        let reply = match command {
             Command::Deposit(cmd) => {
                 let revocation = cmd.revocation.as_ref();
                 let receipt = match cmd.chunks {
@@ -238,7 +261,8 @@ mod runtime {
                 Reply::Json(201, "{}".into())
             }
             Command::OpenChunk(id, index, claim) => {
-                Reply::Chunk(custodian.open_chunk(&id, index, claim.as_ref()).await?.into_bytes())
+                let released = custodian.release_chunk(&id, index, claim.as_ref()).await?;
+                return Ok((Reply::Chunk(released.chunk.into_bytes()), released.burned));
             }
             Command::PostRequest(cmd) => Reply::Json(
                 201,
@@ -252,7 +276,8 @@ mod runtime {
                 Reply::Json(201, api::receipt_body(custodian.answer_request(id, answer).await?))
             }
             Command::Account(_) => return Err(ApiError::NotFound),
-        })
+        };
+        Ok((reply, None))
     }
 
     /// Sigylo's vault: one Durable Object (in the EU, by name, see
@@ -282,8 +307,14 @@ mod runtime {
             }
             let call = req.bytes().await?;
             let payloads = R2Payloads::new(self.env.bucket("CHUNKS")?);
-            let vault = LedgerVault::new(DurableKv::new(&self.state), payloads, RandomIds, WorkerClock);
-            Response::from_bytes(vault::serve(&vault, &call).await)
+            let vault = Rc::new(LedgerVault::new(DurableKv::new(&self.state), payloads, RandomIds, WorkerClock));
+            let reply = vault::serve(&*vault, &call).await;
+            // What an open burned leaves R2 once the reply is on its way
+            // (the output gate still holds the reply until the burn is
+            // durable); if the object restarts first, the cron collects it.
+            let later = Rc::clone(&vault);
+            let _ = self.state.as_raw().wait_until(&after_reply(async move { later.settle().await }));
+            Response::from_bytes(reply)
         }
     }
 
@@ -322,7 +353,7 @@ mod runtime {
     }
 
     #[event(fetch)]
-    async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
+    async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
         let method = req.method().to_string();
         let route = match api::route(&method, &req.path()) {
             Ok(route) => route,
@@ -356,7 +387,7 @@ mod runtime {
             Ok(command) => command,
             Err(error) => return fail(error),
         };
-        match execute(command, &env).await {
+        match execute(command, &env, &ctx).await {
             Ok(answer) => reply(answer),
             Err(error) => fail(error),
         }

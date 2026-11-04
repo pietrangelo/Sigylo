@@ -8,5 +8,5 @@ mod fakes;
 #[cfg(test)]
 mod tests;
 
-pub use custodian::{Answer, Custodian};
+pub use custodian::{Answer, Custodian, Released};
 pub use ports::{ChunkStore, IdSource, TokenDigest, Vault};
