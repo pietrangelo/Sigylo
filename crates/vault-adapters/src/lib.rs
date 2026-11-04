@@ -8,6 +8,7 @@
 //!   fetch per call, to the one Durable Object of each in the EU
 //!   jurisdiction.
 //! * [`WorkerClock`]: the vault's clock.
+//! * [`after_reply`]: work for `waitUntil`, once the reply is on its way.
 //!
 //! All but the object key need the Workers runtime (wasm32).
 
@@ -46,7 +47,7 @@ pub const JURISDICTION: &str = "eu";
 mod cloudflare;
 
 #[cfg(target_arch = "wasm32")]
-pub use cloudflare::{DurableKv, DurableLink, Placement, R2Payloads, WorkerClock};
+pub use cloudflare::{DurableKv, DurableLink, Placement, R2Payloads, WorkerClock, after_reply};
 
 #[cfg(test)]
 mod tests {

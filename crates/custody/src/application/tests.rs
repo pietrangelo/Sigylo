@@ -408,6 +408,48 @@ mod files {
     }
 
     #[test]
+    fn a_released_chunk_is_burned_at_once_and_leaves_the_store_when_discarded() {
+        let vault = FakeVault::default();
+        let c = custodian(&vault);
+        let id = deposit_file(&c, 2, Retention::BurnAfterReading);
+        upload_all(&c, &id, 2);
+        let claim = block_on(c.open(&id)).unwrap().claim.unwrap();
+        let released = block_on(c.release_chunk(&id, at(0), Some(&claim))).unwrap();
+        assert_eq!(released.chunk, chunk(0));
+        // Burned already, though the store holds it until it is discarded.
+        assert_eq!(block_on(c.open_chunk(&id, at(0), Some(&claim))), Err(CustodyError::NotFound));
+        assert_eq!(vault.store.objects(), 2);
+        let burned = released.burned.expect("a burned chunk names its object");
+        block_on(c.discard(&[burned]));
+        assert_eq!(vault.store.objects(), 1);
+        assert_eq!(vault.garbage(), 0, "discarded and forgotten");
+    }
+
+    #[test]
+    fn a_released_chunk_never_discarded_is_collected() {
+        let vault = FakeVault::default();
+        let c = custodian(&vault);
+        let id = deposit_file(&c, 2, Retention::BurnAfterReading);
+        upload_all(&c, &id, 2);
+        let claim = block_on(c.open(&id)).unwrap().claim.unwrap();
+        assert!(block_on(c.release_chunk(&id, at(0), Some(&claim))).unwrap().burned.is_some());
+        vault.advance(i64::from(GARBAGE_GRACE_SECONDS));
+        assert_eq!(block_on(c.collect_garbage(|| true)), Ok(1));
+        assert_eq!(vault.store.objects(), 1);
+    }
+
+    #[test]
+    fn a_chunk_kept_until_expiry_leaves_nothing_to_discard() {
+        let vault = FakeVault::default();
+        let c = custodian(&vault);
+        let id = deposit_file(&c, 1, Retention::UntilExpiry);
+        upload_all(&c, &id, 1);
+        let released = block_on(c.release_chunk(&id, at(0), None)).unwrap();
+        assert_eq!((released.chunk, released.burned), (chunk(0), None));
+        assert_eq!(vault.store.objects(), 1);
+    }
+
+    #[test]
     fn expired_files_leave_the_store_once_their_grace_is_over() {
         let vault = FakeVault::default();
         let c = custodian(&vault);

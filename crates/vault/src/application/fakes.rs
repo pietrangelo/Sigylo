@@ -9,10 +9,11 @@ use std::collections::{BTreeMap, HashMap};
 
 use custody::{
     ChunkStore, ClaimDigest, ClaimToken, CustodyError, DropId, IdSource, ObjectName, RevocationDigest, RevocationToken,
-    SealedChunk, SealedPayload, TokenDigest, UnixTime, Vault,
+    SealedChunk, SealedPayload, TokenDigest, UnixTime,
 };
 
 use super::accounts::AccountLedger;
+use super::ledger_vault::LedgerVault;
 use super::ports::{Clock, KeyValue, Link, PayloadStore};
 use super::remote::serve;
 use super::remote_accounts::serve_accounts;
@@ -208,6 +209,8 @@ pub struct GatedBucket {
     pub reads_land_first: Cell<bool>,
     /// Writes wait while this is set.
     pub hold_writes: Cell<bool>,
+    /// Deletions wait while this is set.
+    pub hold_deletes: Cell<bool>,
 }
 
 impl GatedBucket {
@@ -246,6 +249,7 @@ impl PayloadStore for GatedBucket {
     }
 
     async fn delete(&self, objects: &[ObjectName]) -> Result<(), CustodyError> {
+        Gate(&self.hold_deletes).await;
         self.bucket.remove(objects)
     }
 }
@@ -359,10 +363,12 @@ impl<V> Loopback<V> {
     }
 }
 
-impl<V: Vault> Link for Loopback<V> {
+impl<K: KeyValue, P: PayloadStore, I: IdSource, C: Clock> Link for Loopback<LedgerVault<K, P, I, C>> {
     async fn call(&self, call: Vec<u8>) -> Result<Vec<u8>, CustodyError> {
         self.calls.set(self.calls.get() + 1);
         let reply = serve(&self.vault, &call).await;
+        // As the Durable Object does once its reply is on its way.
+        self.vault.settle().await;
         Ok(self.garble.borrow().clone().unwrap_or(reply))
     }
 }

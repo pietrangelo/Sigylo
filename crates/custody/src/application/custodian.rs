@@ -19,6 +19,16 @@ pub struct Answer {
     pub chunks: Option<ChunkCount>,
 }
 
+/// A chunk handed out by [`Custodian::release_chunk`]. When it was burned,
+/// `burned` names its object, already in the garbage: whoever hands the
+/// chunk on deletes it with [`Custodian::discard`] once the chunk is on its
+/// way, or leaves it to the collector.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Released {
+    pub chunk: SealedChunk,
+    pub burned: Option<ObjectName>,
+}
+
 /// Keeps sealed envelopes on behalf of senders and recipients: in the vault,
 /// and a file's chunks in the chunk store.
 #[derive(Debug)]
@@ -101,7 +111,7 @@ impl<V: Vault, S: ChunkStore, D: TokenDigest, I: IdSource> Custodian<V, S, D, I>
     /// Delete objects whose chunks are gone from the store now, and forget
     /// them once it did. If the store fails they stay in the garbage, for
     /// the collector.
-    async fn discard(&self, objects: &[ObjectName]) {
+    pub async fn discard(&self, objects: &[ObjectName]) {
         if self.store.delete(objects).await.is_ok() {
             let _ = self.vault.forget_garbage(objects).await;
         }
@@ -128,17 +138,35 @@ impl<V: Vault, S: ChunkStore, D: TokenDigest, I: IdSource> Custodian<V, S, D, I>
         index: ChunkIndex,
         claim: Option<&ClaimToken>,
     ) -> Result<SealedChunk, CustodyError> {
+        let released = self.release_chunk(id, index, claim).await?;
+        if let Some(object) = released.burned {
+            self.discard(slice::from_ref(&object)).await;
+        }
+        Ok(released.chunk)
+    }
+
+    /// [`Custodian::open_chunk`] without the deletion: the chunk is burned,
+    /// and its object, named in [`Released::burned`], waits in the garbage.
+    /// The relay hands the chunk out first and deletes the object after, so
+    /// the reply does not wait for the store: a burned chunk is lost if its
+    /// reply is, and every wait before the reply widens that window.
+    pub async fn release_chunk(
+        &self,
+        id: &DropId,
+        index: ChunkIndex,
+        claim: Option<&ClaimToken>,
+    ) -> Result<Released, CustodyError> {
         let digest = claim.map(|claim| self.digest.digest_claim(claim));
         let found = self.vault.open_chunk(id, index, digest.as_ref()).await?.ok_or(CustodyError::NotFound)?;
         let chunk = self.store.get(&found.object).await?.ok_or(CustodyError::NotFound)?;
-        if found.burns {
-            let digest = digest.ok_or(CustodyError::NotFound)?;
-            if !self.vault.burn_chunk(id, index, &digest).await? {
-                return Err(CustodyError::NotFound);
-            }
-            self.discard(slice::from_ref(&found.object)).await;
+        if !found.burns {
+            return Ok(Released { chunk, burned: None });
         }
-        Ok(chunk)
+        let digest = digest.ok_or(CustodyError::NotFound)?;
+        if !self.vault.burn_chunk(id, index, &digest).await? {
+            return Err(CustodyError::NotFound);
+        }
+        Ok(Released { chunk, burned: Some(found.object) })
     }
 
     /// Delete from the store the objects whose chunks are gone (burned,

@@ -338,3 +338,62 @@ mod uploads {
         w.assert_empty();
     }
 }
+
+mod settling {
+    use super::*;
+    use custody::{ClaimDigest, Vault};
+
+    fn claim() -> ClaimDigest {
+        ClaimDigest::from_array([9; 32])
+    }
+
+    #[test]
+    fn a_burned_secret_is_handed_out_before_the_bucket_deletes_it() {
+        let w = World::default();
+        let id = deposit(&w.relay(), BURN, Lifetime::ONE_HOUR);
+        let vault = w.vault();
+        w.bucket.hold_deletes.set(true);
+        let claim = claim();
+        let mut open = pin!(vault.open(&id, &claim));
+        // The reply does not wait for the deletion, which is still to come.
+        let Poll::Ready(Ok(Some(opened))) = poll_once(open.as_mut()) else { panic!("the open waited for the bucket") };
+        assert_eq!(opened.payload, sealed(1));
+        assert!(w.holds(sealed(1).as_bytes()), "not deleted yet");
+        assert_eq!(block_on(vault.open(&id, &claim)), Ok(None), "but burned already");
+        let mut settle = pin!(vault.settle());
+        assert!(poll_once(settle.as_mut()).is_pending(), "settling deletes it");
+        w.bucket.hold_deletes.set(false);
+        finish(settle.as_mut());
+        assert!(!w.holds(sealed(1).as_bytes()));
+        assert_eq!(w.vault().ledger().usage_now(w.clock.now()).unwrap().object_bytes, 0, "and forgets it");
+        w.assert_empty();
+    }
+
+    #[test]
+    fn a_vault_that_stops_before_settling_leaves_the_burn_to_the_cron() {
+        let w = World::default();
+        let relay = w.relay();
+        let id = deposit(&relay, BURN, Lifetime::ONE_HOUR);
+        // The object restarts right after its reply: nothing settles.
+        assert!(block_on(w.vault().open(&id, &claim())).unwrap().is_some());
+        assert!(w.holds(sealed(1).as_bytes()));
+        assert_eq!(block_on(relay.open(&id)), Err(CustodyError::NotFound));
+        w.advance(GARBAGE_GRACE_SECONDS);
+        w.cron(&relay);
+        assert!(!w.holds(sealed(1).as_bytes()), "the collector took it");
+        w.assert_empty();
+    }
+
+    #[test]
+    fn settling_twice_or_with_nothing_burned_does_nothing() {
+        let w = World::default();
+        let relay = w.relay();
+        let id = deposit(&relay, KEEP, Lifetime::ONE_HOUR);
+        let vault = w.vault();
+        block_on(vault.settle());
+        assert!(block_on(vault.open(&id, &claim())).unwrap().is_some());
+        block_on(vault.settle());
+        assert!(w.holds(sealed(1).as_bytes()), "kept until expiry");
+        w.assert_empty();
+    }
+}
