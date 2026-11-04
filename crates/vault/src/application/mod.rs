@@ -15,6 +15,8 @@ mod account_tests;
 #[cfg(test)]
 mod fakes;
 #[cfg(test)]
+mod race_tests;
+#[cfg(test)]
 mod tests;
 
 pub use accounts::AccountLedger;
