@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { fileName } from '../src/lib/crypto';
+import { fileName, textBytes } from '../src/lib/crypto';
 import { downloadChunks, resumeUpload, startUpload } from '../src/lib/files';
 import { Relay, type RelayError } from '../src/lib/relay';
 import * as engine from '../src/lib/wasm/sigylo_wasm.js';
@@ -237,8 +237,8 @@ describe('fileName', () => {
   it('a macOS screenshot name seals once cleaned, and only then', () => {
     engine.initSync({ module: readFileSync(new URL('../src/lib/wasm/sigylo_wasm_bg.wasm', import.meta.url)) });
     const name = 'Screenshot 2026-10-20 at 6.04.55\u202FPM.png';
-    expect(() => engine.sealFileForLink(name, new Uint8Array(10).fill(7), undefined)).toThrow('InvalidFileName');
-    expect(() => engine.sealFileForLink(fileName(name), new Uint8Array(10).fill(7), undefined).free()).not.toThrow();
+    expect(() => engine.sealFileForLink(textBytes(name), new Uint8Array(10).fill(7), undefined)).toThrow('InvalidFileName');
+    expect(() => engine.sealFileForLink(textBytes(fileName(name)), new Uint8Array(10).fill(7), undefined).free()).not.toThrow();
   });
 
   it('leaves a run of spaces a run, for the engine to refuse', () => {

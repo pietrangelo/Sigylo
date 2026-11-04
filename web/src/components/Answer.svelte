@@ -72,7 +72,7 @@
         }
         const contents = new Uint8Array(await file.arrayBuffer());
         try {
-          const sealed = engine.sealFileForRecipient(fileName(file.name), contents, publicKey, fingerprint, pass, senderSeed.slice(), expectedSender ?? undefined);
+          const sealed = engine.sealFileForRecipient(textBytes(fileName(file.name)), contents, publicKey, fingerprint, pass, senderSeed.slice(), expectedSender ?? undefined);
           envelope = sealed.envelope;
           chunks = sealed.chunks as Uint8Array[];
           sealed.free();

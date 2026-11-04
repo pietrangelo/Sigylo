@@ -59,23 +59,26 @@ const FIXED_LEN: usize = MANIFEST_MAGIC.len() + 1 + FileKey::LEN + 8 + 1;
 /// marks that strike it through, and nothing Windows would refuse or rewrite
 /// on saving (`<>:"|?*`, a trailing dot or space, device names such as
 /// `CON`, `nul.txt`, `CON .txt` or `COM¹`).
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct FileName(String);
 
 impl FileName {
     /// The shell is expected to normalize to Unicode NFC before handing it over.
+    /// A refused name is wiped like an accepted one.
     pub fn new(name: String) -> Result<Self, SealError> {
+        let value = Self(name);
+        let name = value.0.as_str();
         let acceptable = !name.is_empty()
             && name.len() <= MAX_NAME_LEN
             && name != "."
             && name != ".."
             && !name.chars().any(forbidden)
-            && !has_blank_run(&name)
-            && !has_mark_pile(&name)
+            && !has_blank_run(name)
+            && !has_mark_pile(name)
             && !name.starts_with(' ')
             && !name.ends_with([' ', '.'])
-            && !is_device_name(&name);
-        if acceptable { Ok(Self(name)) } else { Err(SealError::InvalidFileName) }
+            && !is_device_name(name);
+        if acceptable { Ok(value) } else { Err(SealError::InvalidFileName) }
     }
 
     pub fn as_str(&self) -> &str {
@@ -358,9 +361,10 @@ impl fmt::Debug for SealedChunk {
 }
 
 /// What the recipient needs to fetch and open a file.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct FileManifest {
     key: FileKey,
+    #[zeroize(skip)]
     size: FileSize,
     name: FileName,
 }
@@ -507,6 +511,16 @@ mod tests {
 
     mod adversary {
         use super::*;
+
+        fn wipes_on_drop<T: ZeroizeOnDrop>() {}
+
+        #[test]
+        fn a_file_name_is_wiped_like_the_rest_of_the_manifest() {
+            // The name is sealed with the file key and can say as much as the
+            // file: in Wasm, where freed memory stays readable, it must go too.
+            wipes_on_drop::<FileName>();
+            wipes_on_drop::<FileManifest>();
+        }
 
         #[test]
         fn names_that_hide_or_traverse_are_refused() {

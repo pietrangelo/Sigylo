@@ -181,7 +181,7 @@ describe('adversary: Wasm memory after use', () => {
     const marker = text('contenuto riservato del file 4c1d');
     const contents = new Uint8Array(1024 * 1024 + 512 * 1024).fill(0x2e);
     for (const at of [0, 1024 * 1024 - 10, contents.length - marker.length]) contents.set(marker, at);
-    const sealed = engine.sealFileForLink('bilancio.xlsx', contents.slice(), passphrase.slice());
+    const sealed = engine.sealFileForLink(text('bilancio.xlsx'), contents.slice(), passphrase.slice());
     const key = sealed.key;
     const envelope = sealed.envelope;
     const chunks = sealed.chunks as Uint8Array[];
@@ -217,11 +217,11 @@ describe('adversary: Wasm memory after use', () => {
     const contents = new Uint8Array(64).fill(0x2e);
     const key = new Uint8Array(32).map((_, i) => 90 + i);
     const refused: [string, () => unknown][] = [
-      ['answer file with a refused name', () => engine.sealFileForRecipient('a  b.txt', contents.slice(), publicKey, fingerprint, pass.slice(), senderSeed.slice())],
-      ['answer file to a bad key', () => engine.sealFileForRecipient('a.txt', contents.slice(), new Uint8Array(5), fingerprint, pass.slice(), senderSeed.slice())],
+      ['answer file with a refused name', () => engine.sealFileForRecipient(text('a  b.txt'), contents.slice(), publicKey, fingerprint, pass.slice(), senderSeed.slice())],
+      ['answer file to a bad key', () => engine.sealFileForRecipient(text('a.txt'), contents.slice(), new Uint8Array(5), fingerprint, pass.slice(), senderSeed.slice())],
       ['answer to a bad fingerprint', () => engine.sealForRecipient(secret.slice(), publicKey, new Uint8Array(5), pass.slice(), senderSeed.slice())],
       ['empty answer', () => engine.sealForRecipient(new Uint8Array(0), publicKey, fingerprint, pass.slice(), senderSeed.slice())],
-      ['link file with a refused name', () => engine.sealFileForLink('a  b.txt', contents.slice(), pass.slice())],
+      ['link file with a refused name', () => engine.sealFileForLink(text('a  b.txt'), contents.slice(), pass.slice())],
       ['empty link secret', () => engine.sealForLink(new Uint8Array(0), pass.slice())],
       ['link open of a bad envelope', () => engine.openLink(new Uint8Array(5), key.slice(), pass.slice())],
       ['link open with a bad key', () => engine.openLink(new Uint8Array(5), new Uint8Array(5), pass.slice())],
@@ -239,11 +239,41 @@ describe('adversary: Wasm memory after use', () => {
     }
   });
 
+  it('keeps no file name once a file is sealed and its manifest read', () => {
+    // The name is sealed inside the manifest: it can say as much as the file
+    // ("diagnosi", a client's name). A non-ASCII one makes the JS glue grow
+    // and move its buffer, the case that left a copy behind.
+    for (const name of ['diagnosi-cliente-7f3a.pdf', 'relazione riservata è 7f3b.pdf']) {
+      const contents = new Uint8Array(512).fill(0x2e);
+      const sealed = engine.sealFileForLink(text(name), contents.slice(), undefined);
+      const key = sealed.key;
+      const envelope = sealed.envelope;
+      sealed.free();
+      expect(leftIn(text(name)), `name after sealing ${name}`).toBe(false);
+
+      const manifest = engine.openLink(envelope, key.slice(), undefined);
+      const info = engine.fileInfo(manifest.slice());
+      expect(info?.name).toBe(name);
+      info?.free();
+      manifest.fill(0);
+      expect(leftIn(text(name)), `name after reading ${name}`).toBe(false);
+    }
+  });
+
+  it('keeps no refused file name', () => {
+    const name = 'nome rifiutato\u202E 7f3c.exe';
+    expect(() => engine.sealFileForLink(text(name), new Uint8Array(64).fill(1), undefined)).toThrow('InvalidFileName');
+    expect(leftIn(text(name).subarray(0, 14)), 'refused name').toBe(false);
+    const broken = Uint8Array.of(...text('nome spezzato 7f3d'), 0xff, 0xfe);
+    expect(() => engine.sealFileForLink(broken.slice(), new Uint8Array(64).fill(1), undefined)).toThrow('InvalidFileName');
+    expect(leftIn(broken.subarray(0, 18)), 'name that is not UTF-8').toBe(false);
+  });
+
   it('wipes the file even when sealing it is refused', () => {
     const marker = text('file rifiutato per il nome 9e2b');
     const contents = new Uint8Array(4096).fill(0x2e);
     contents.set(marker, 100);
-    expect(() => engine.sealFileForLink('evil\u202Efdp.exe', contents.slice(), undefined)).toThrow('InvalidFileName');
+    expect(() => engine.sealFileForLink(text('evil\u202Efdp.exe'), contents.slice(), undefined)).toThrow('InvalidFileName');
     expect(leftIn(marker)).toBe(false);
   });
 });

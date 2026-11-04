@@ -16,9 +16,14 @@ ed25519-dalek = { version = "3.0.0", default-features = false, features = ["zero
 ml-dsa = { version = "0.1.1", default-features = false, features = ["alloc", "zeroize"] }
 chacha20poly1305 = { version = "0.11.0", features = ["zeroize"] }
 hkdf = "0.13.0"
-sha3 = "0.11.0"
+sha3 = { version = "0.11.0", features = ["zeroize"] }
 argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "zeroize"] }
 getrandom = "0.4.3"
+# Not used directly: declared so the hash states inside ed25519-dalek (SHA-512),
+# ml-dsa (SHAKE256) and argon2 (BLAKE2b) are wiped on drop (tests/zeroize_features.rs).
+sha2 = { version = "0.11.1", default-features = false, features = ["zeroize"] }
+shake = { version = "0.1.0", default-features = false, features = ["zeroize"] }
+blake2 = { version = "0.11.0", default-features = false, features = ["zeroize"] }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
