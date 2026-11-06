@@ -289,6 +289,31 @@ pub fn accounts_door(method: &str, path: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// How long the accounts object stays awake past the last attempt counter
+/// or parked login its memory holds, so that one timer covers a minute of
+/// new arrivals instead of one timer per call.
+pub const AWAKE_SLACK_SECONDS: i64 = 60;
+
+/// Longest a promise passed to `waitUntil` keeps a Durable Object in memory
+/// (Cloudflare's lifecycle documentation).
+const WAIT_UNTIL_CEILING_SECONDS: i64 = 15 * 60;
+// A login window plus the slack fits in one timer.
+const _: () = assert!(access::LOGIN_WINDOW_SECONDS as i64 + AWAKE_SLACK_SECONDS < WAIT_UNTIL_CEILING_SECONDS);
+
+/// Until when the accounts object must stay awake, given when the last thing
+/// its memory holds expires (`Scratch::holds_until`), the time it is already
+/// kept awake until, and the time now; `None` when that is far enough.
+///
+/// An idle Durable Object with nothing pending is put to sleep after about
+/// ten seconds and forgets its memory: attempt counters (a minute) and
+/// parked logins (five minutes) would go with it, so a guesser who waits for
+/// a quiet moment would get a fresh window every few seconds, and a device
+/// slow to compute KE3 would lose its login. A pending timer keeps it awake.
+pub fn stay_awake_until(holds_until: Option<i64>, awake_until: i64, now: i64) -> Option<i64> {
+    let until = holds_until.filter(|until| *until > now && *until > awake_until)?;
+    Some(until.saturating_add(AWAKE_SLACK_SECONDS).min(now.saturating_add(WAIT_UNTIL_CEILING_SECONDS - 1)))
+}
+
 fn decode(field: &str) -> Result<Vec<u8>, ApiError> {
     URL_SAFE_NO_PAD.decode(field).map_err(|_| ApiError::InvalidEncoding)
 }
@@ -732,6 +757,32 @@ mod tests {
     use custody::UnixTime;
 
     const ID: &str = "AAECAwQFBgcICQoLDA0ODw"; // bytes 0..16
+
+    #[test]
+    fn the_accounts_object_stays_awake_while_its_memory_holds_anything() {
+        const NOW: i64 = 1_800_000_000;
+        // Nothing held, or nothing still live: no timer.
+        assert_eq!(stay_awake_until(None, 0, NOW), None);
+        assert_eq!(stay_awake_until(Some(NOW), 0, NOW), None);
+        // A fresh counter: awake to its window's end and the slack.
+        assert_eq!(stay_awake_until(Some(NOW + 60), 0, NOW), Some(NOW + 60 + AWAKE_SLACK_SECONDS));
+        // Already awake past it: no new timer, so calls do not pile timers up.
+        assert_eq!(stay_awake_until(Some(NOW + 61), NOW + 120, NOW + 1), None);
+        assert_eq!(stay_awake_until(Some(NOW + 120), NOW + 120, NOW + 60), None);
+        // A parked login lives longer: the timer follows it.
+        let login = NOW + i64::from(access::LOGIN_WINDOW_SECONDS);
+        assert_eq!(stay_awake_until(Some(login), NOW + 120, NOW), Some(login + AWAKE_SLACK_SECONDS));
+    }
+
+    #[test]
+    fn a_timer_never_asks_for_more_than_wait_until_grants() {
+        const NOW: i64 = 1_800_000_000;
+        // Only a broken memory could hold something this far ahead; the
+        // timer still stays within what keeps an object in memory.
+        let until = stay_awake_until(Some(NOW + 86_400), 0, NOW).unwrap();
+        assert!(until - NOW < WAIT_UNTIL_CEILING_SECONDS);
+        assert_eq!(stay_awake_until(Some(i64::MAX), 0, NOW), Some(NOW + WAIT_UNTIL_CEILING_SECONDS - 1));
+    }
 
     /// The smallest envelope a sealer makes.
     fn envelope() -> Vec<u8> {

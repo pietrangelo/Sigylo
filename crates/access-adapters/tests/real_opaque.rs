@@ -194,6 +194,21 @@ mod adversary {
     }
 
     #[test]
+    fn a_ke2_replayed_into_another_login_is_refused_by_the_device() {
+        // Whoever recorded the relay's answer to one login replays it to
+        // another: the device must not finish, or a recorded KE2 would pass
+        // for the relay.
+        let keys = keys();
+        let ada = account(&keys, "ada");
+        let (record, _) = register(&keys, &ada, "correct horse battery");
+        let (recorded, _) = OpaqueDevice.begin_login(&pw("correct horse battery")).unwrap();
+        let (replayed, _) = keys.begin_login(&ada, Some(&record), &recorded).unwrap();
+        let (_, state) = OpaqueDevice.begin_login(&pw("correct horse battery")).unwrap();
+        let outcome = OpaqueDevice.finish_login(state, &pw("correct horse battery"), &replayed);
+        assert_eq!(outcome.err(), Some(AccessError::NotAuthentic));
+    }
+
+    #[test]
     fn ke3_from_one_login_does_not_finish_another() {
         let keys = keys();
         let ada = account(&keys, "ada");

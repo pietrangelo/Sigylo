@@ -1,7 +1,10 @@
 //! Logins in progress and attempt counters, kept only in the accounts
 //! object's memory: a flood of guesses writes no row, and nothing of it
 //! reaches the storage's recovery history. A restart forgets them, which
-//! costs a retried login and at most one more window of attempts.
+//! costs a retried login and at most one more window of attempts. The
+//! object stays awake while it holds any of them ([`Scratch::holds_until`]),
+//! so idleness never forgets them: only a deploy, a runtime restart or a
+//! crash does.
 //!
 //! Memory is counted in the units of the SQL rows these replace, in three
 //! pools: Shared for the shared login budget, and two reserves, for
@@ -470,6 +473,14 @@ impl Scratch {
     pub fn sweep(&self, now: UnixTime, limit: usize) -> Result<u64, AccessError> {
         Ok(self.inner()?.sweep(now.0, limit))
     }
+
+    /// When the last counter or parked login held here expires (`None` when
+    /// nothing is): until then forgetting this memory would hand a guesser a
+    /// fresh window while the old one still runs, so the object that holds
+    /// it must not go to sleep before.
+    pub fn holds_until(&self) -> Result<Option<UnixTime>, AccessError> {
+        Ok(self.inner()?.expiries.last().map(|(at, _)| UnixTime(*at)))
+    }
 }
 
 impl fmt::Debug for Scratch {
@@ -693,6 +704,21 @@ mod tests {
         assert!(inner.logins.is_empty() && inner.counters.is_empty() && inner.expiries.is_empty());
         assert!(inner.by_bucket.is_empty() && inner.of_account.is_empty() && inner.device_buckets.is_empty());
         assert!(inner.device_reserved.is_empty());
+    }
+
+    #[test]
+    fn holds_until_names_when_the_last_thing_held_expires() {
+        let scratch = Scratch::default();
+        let ada = account(1);
+        assert_eq!(scratch.holds_until(), Ok(None));
+        assert_eq!(scratch.admit(&ada, ada.as_bytes(), Class::Login, 10, at(0)), Ok(true));
+        assert_eq!(scratch.holds_until(), Ok(Some(at(60))), "a counter: the end of its window");
+        assert_eq!(scratch.park(&handle(1), &ada, &state(1), at(300), Class::Login, None, at(0)), Ok(()));
+        assert_eq!(scratch.holds_until(), Ok(Some(at(300))), "a parked login: the end of its window");
+        assert!(scratch.take(&handle(1), at(10)).unwrap().is_some());
+        assert_eq!(scratch.holds_until(), Ok(Some(at(60))), "a login taken holds nothing");
+        assert_eq!(scratch.sweep(at(60), usize::MAX), Ok(1));
+        assert_eq!(scratch.holds_until(), Ok(None));
     }
 
     #[test]
@@ -1022,6 +1048,30 @@ mod tests {
                 );
             }
             assert_eq!(units(&scratch), (0, 0, 0));
+        }
+
+        #[test]
+        fn nothing_held_outlives_holds_until() {
+            // The accounts object stays awake until then: a count or a login
+            // that outlived it could be dropped by an idle eviction and give a
+            // guesser a fresh window while the old one still runs.
+            let scratch = Scratch::default();
+            let classes = [Class::Login, Class::Registration, Class::Device];
+            for n in 0..300u32 {
+                let now = i64::from(n % 41);
+                attempt(&scratch, n, &account(n % 13), classes[n as usize % 3], &bucket(n % 31), now);
+                if n % 7 == 0 {
+                    let _ = scratch.take(&handle(n / 2), at(now));
+                }
+            }
+            let until = scratch.holds_until().unwrap().expect("something is held");
+            assert_eq!(scratch.sweep(UnixTime(until.0 - 1), usize::MAX).map(|_| ()), Ok(()));
+            assert_ne!(scratch.holds_until(), Ok(None), "the last one still lives a second before");
+            scratch.sweep(until, usize::MAX).unwrap();
+            assert_eq!(scratch.holds_until(), Ok(None));
+            assert_eq!(units(&scratch), (0, 0, 0));
+            let inner = scratch.0.borrow();
+            assert!(inner.logins.is_empty() && inner.counters.is_empty());
         }
     }
 }
