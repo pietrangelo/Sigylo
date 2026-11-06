@@ -67,6 +67,12 @@ try {
   await sleep(300);
   check('a pasted foreign link is refused', await run('return !!document.querySelector("[data-testid=paste-link] [role=alert]")'), true);
   check('and nothing navigated', await run('return location.hash'), '');
+  // A Sigylo link opens in memory: its key never enters the address, which
+  // a Chromium webview (WebView2 on Windows) records in a History file on disk.
+  await run(`const input = document.querySelector("#paste"); input.value = "https://sigylo.net/#/s/AAECAwQFBgcICQoLDA0ODw/AAECAwQFBgcICQoLDA0ODwABAgMEBQYHCAkKCwwNDg8"; input.dispatchEvent(new Event("input", { bubbles: true })); document.querySelector("[data-testid=paste-link] button").click();`);
+  await sleep(300);
+  check('a pasted Sigylo link opens in the app', await run('return !!document.querySelector("[data-testid=reveal]")'), true);
+  check('without its key ever entering the address', await url(), (u) => inBundle(u) && new URL(u).hash === '');
   // Saving an opened file: the page hands the webview an octet-stream blob,
   // exactly as files.ts saveFile does, and it must land in the downloads.
   await run(`const url = URL.createObjectURL(new Blob([new TextEncoder().encode("sealed bytes")], { type: "application/octet-stream" })); const a = document.createElement("a"); a.href = url; a.download = "smoke-check.bin"; a.rel = "noopener"; document.body.append(a); a.click(); a.remove();`);

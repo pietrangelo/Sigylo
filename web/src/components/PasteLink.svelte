@@ -1,19 +1,23 @@
 <script lang="ts">
   // Only in the app: a link someone sent opens here, with the engine that
   // ships with the app, instead of the code a server would hand a browser.
+  // The link opens in memory, never through the address, which the webview
+  // would keep on disk with its key (see openPasted).
   import { t } from '../lib/i18n';
-  import { linkFragment } from '../lib/links';
+  import { openPasted, type Route } from '../lib/links';
+
+  let { onopen }: { onopen: (route: Route) => void } = $props();
 
   let text = $state('');
   let invalid = $state(false);
 
   function open(event: SubmitEvent) {
     event.preventDefault();
-    const fragment = linkFragment(text);
-    invalid = fragment === null;
-    if (fragment === null) return;
+    const route = openPasted(text);
+    invalid = route === null;
+    if (route === null) return;
     text = '';
-    location.hash = fragment;
+    onopen(route);
   }
 </script>
 

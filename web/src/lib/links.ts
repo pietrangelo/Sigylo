@@ -127,3 +127,20 @@ export function linkFragment(text: string): string | null {
   const kind = parseFragment(url.hash).kind;
   return kind === 'secret' || kind === 'revoke' || kind === 'answer' || kind === 'inbox' ? url.hash : null;
 }
+
+/**
+ * Opens a link pasted into the app in memory: the route to show, or null for
+ * a link `linkFragment` refuses. The link is never written into the address.
+ * The app's webview on Windows is WebView2, that is Chromium, which records
+ * every address the page goes to, fragment and all, in a History database on
+ * disk, and `replaceState` adds a visit there without removing the old one:
+ * an address carrying the key would outlive the secret's opening on disk.
+ * The address goes to the root without a fragment instead, so a click on
+ * `#/` afterwards is a hashchange that leaves the opened page.
+ */
+export function openPasted(text: string, history: Pick<History, 'replaceState'> = globalThis.history): Route | null {
+  const fragment = linkFragment(text);
+  if (fragment === null) return null;
+  dropKeyFromAddress(history);
+  return parseFragment(fragment);
+}

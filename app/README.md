@@ -2,7 +2,7 @@
 
 **English** · [Italiano](README.it.md)
 
-The same interface as sigylo.net and the same Rust/Wasm engine, but installed on the device: while the app runs no code comes from a server, so whoever controls the hosting cannot serve a different page to app users. Links created in the app stay `https://sigylo.net/#/…` and open in any browser; a received link is pasted into the box at the top and opened with the app's engine.
+The same interface as sigylo.net and the same Rust/Wasm engine, but installed on the device: while the app runs no code comes from a server, so whoever controls the hosting cannot serve a different page to app users. Links created in the app stay `https://sigylo.net/#/…` and open in any browser; a received link is pasted into the box at the top and opened with the app's engine, in memory: its key never enters the webview's address, so the webview's history on disk never records it.
 
 ## What the page can do
 

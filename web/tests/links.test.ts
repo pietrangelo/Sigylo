@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { encode } from '../src/lib/base64url';
-import { dropKeyFromAddress, inboxLink, leavingLoses, linkFragment, parseFragment, requestLink, revokeLink, secretLink } from '../src/lib/links';
+import { dropKeyFromAddress, inboxLink, leavingLoses, linkFragment, openPasted, parseFragment, requestLink, revokeLink, secretLink } from '../src/lib/links';
 
 const id = Uint8Array.from({ length: 16 }, (_, i) => i);
 const key = Uint8Array.from({ length: 32 }, (_, i) => 255 - i);
@@ -153,6 +153,65 @@ describe('dropping the key from the address bar', () => {
         },
       };
       expect(dropKeyFromAddress(refusing)).toBe(false);
+    });
+  });
+});
+
+// Chromium writes every address the page goes to, fragment and all, into a
+// History database on disk, and replaceState adds a visit without removing
+// the old one (checked on Chromium 2026-11-06). WebView2, the app's webview on
+// Windows, is Chromium. So a link pasted into the app opens in memory only.
+describe('opening a link pasted into the app', () => {
+  const site = 'https://sigylo.net';
+  type Call = { method: string; url: string | URL | null | undefined };
+  function recorder(calls: Call[]): Pick<History, 'replaceState' | 'pushState'> {
+    return {
+      replaceState: (_data, _unused, url) => void calls.push({ method: 'replaceState', url }),
+      pushState: (_data, _unused, url) => void calls.push({ method: 'pushState', url }),
+    };
+  }
+
+  it('gives the route of the link, and leaves the address at the root without a fragment', () => {
+    const calls: Call[] = [];
+    expect(openPasted(secretLink(site, id, key, true), recorder(calls))).toEqual({ kind: 'secret', id, key, passphrase: true });
+    expect(openPasted(inboxLink(site, id, key, pin), recorder(calls))).toEqual({ kind: 'inbox', id, seed: key, expectedSender: pin });
+    // The root, without '#', so a click on '#/' afterwards is a hashchange.
+    expect(calls).toEqual([
+      { method: 'replaceState', url: '/' },
+      { method: 'replaceState', url: '/' },
+    ]);
+  });
+
+  describe('adversary', () => {
+    it('no kind of link ever puts its secret into the address or the history', () => {
+      for (const link of [secretLink(site, id, key, false), revokeLink(site, id, key), requestLink(site, id, key, pin), inboxLink(site, id, key)]) {
+        const calls: Call[] = [];
+        expect(openPasted(`  ${link}\n`, recorder(calls))).not.toBeNull();
+        for (const { url } of calls) {
+          expect(String(url), link).not.toContain('#');
+          expect(String(url), link).not.toContain(encode(key));
+        }
+      }
+    });
+
+    it('a link the app refuses opens nothing and leaves the address alone', () => {
+      for (const bad of [`https://evil.example/${fragmentOf(secretLink(site, id, key, false))}`, '#/s/x/y', '', 'javascript:alert(1)']) {
+        const calls: Call[] = [];
+        expect(openPasted(bad, recorder(calls)), bad).toBeNull();
+        expect(calls, bad).toEqual([]);
+      }
+    });
+
+    it('a history that refuses does not stop the link from opening', () => {
+      const refusing = {
+        replaceState() {
+          throw new DOMException('cross-origin', 'SecurityError');
+        },
+        pushState() {
+          throw new DOMException('cross-origin', 'SecurityError');
+        },
+      };
+      expect(openPasted(secretLink(site, id, key, false), refusing)).toEqual({ kind: 'secret', id, key, passphrase: false });
     });
   });
 });

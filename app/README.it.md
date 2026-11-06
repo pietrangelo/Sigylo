@@ -2,7 +2,7 @@
 
 [English](README.md) · **Italiano**
 
-La stessa interfaccia di sigylo.net e lo stesso motore Rust/Wasm, ma installati sul dispositivo: quando l'app gira nessun codice arriva da un server, quindi chi controlla l'hosting non può servire una pagina diversa a chi usa l'app. I link creati nell'app restano `https://sigylo.net/#/…` e si aprono in qualunque browser; un link ricevuto si incolla nel riquadro in cima e si apre con il motore dell'app.
+La stessa interfaccia di sigylo.net e lo stesso motore Rust/Wasm, ma installati sul dispositivo: quando l'app gira nessun codice arriva da un server, quindi chi controlla l'hosting non può servire una pagina diversa a chi usa l'app. I link creati nell'app restano `https://sigylo.net/#/…` e si aprono in qualunque browser; un link ricevuto si incolla nel riquadro in cima e si apre con il motore dell'app, in memoria: la sua chiave non entra mai nell'indirizzo della webview, quindi la cronologia della webview su disco non la registra.
 
 ## Cosa può fare la pagina
 
