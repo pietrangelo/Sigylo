@@ -2,9 +2,9 @@
 
 use access::{
     AccessError, AccountId, CredentialFinalization, CredentialResponse, ExportKey, KEYRING_INFO, KeyringKdf,
-    LoginState, OpaqueClient, OpaqueServer, Password, RegistrationRecord, RegistrationResponse, Username,
+    LoginState, OpaqueClient, OpaqueServer, Password, RegistrationRecord, RegistrationResponse, Tokens, Username,
 };
-use access_adapters::{HkdfKeyringKdf, OpaqueDevice, OpaqueKeys};
+use access_adapters::{HkdfKeyringKdf, OpaqueDevice, OpaqueKeys, RandomTokens};
 
 fn keys() -> OpaqueKeys {
     OpaqueKeys::from_seed(&[42; 32]).unwrap()
@@ -200,11 +200,14 @@ mod adversary {
         // for the relay.
         let keys = keys();
         let ada = account(&keys, "ada");
-        let (record, _) = register(&keys, &ada, "correct horse battery");
-        let (recorded, _) = OpaqueDevice.begin_login(&pw("correct horse battery")).unwrap();
+        // A password drawn at run time: the same one on both logins.
+        let password: String =
+            RandomTokens.login_handle().unwrap().expose().iter().map(|b| format!("{b:02x}")).collect();
+        let (record, _) = register(&keys, &ada, &password);
+        let (recorded, _) = OpaqueDevice.begin_login(&pw(&password)).unwrap();
         let (replayed, _) = keys.begin_login(&ada, Some(&record), &recorded).unwrap();
-        let (_, state) = OpaqueDevice.begin_login(&pw("correct horse battery")).unwrap();
-        let outcome = OpaqueDevice.finish_login(state, &pw("correct horse battery"), &replayed);
+        let (_, state) = OpaqueDevice.begin_login(&pw(&password)).unwrap();
+        let outcome = OpaqueDevice.finish_login(state, &pw(&password), &replayed);
         assert_eq!(outcome.err(), Some(AccessError::NotAuthentic));
     }
 
