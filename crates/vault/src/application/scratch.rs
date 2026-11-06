@@ -26,8 +26,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use access::{AccessError, AccountId, LoginHandle, LoginState, UnixTime};
 
 use crate::core::{
-    ATTEMPT_LIMIT_CEILING, ATTEMPT_WINDOW_SECONDS, COUNTER_COST, Class, DEVICE_BUCKETS_PER_ACCOUNT, DEVICE_RESERVE,
-    DEVICE_SHARE_PER_ACCOUNT, PARKED_LOGIN_COST, REGISTRATION_RESERVE, SHARED_POOL,
+    ATTEMPT_HOUR_SECONDS, ATTEMPT_LIMIT_CEILING, ATTEMPT_WINDOW_SECONDS, COUNTER_COST, Class,
+    DEVICE_BUCKETS_PER_ACCOUNT, DEVICE_RESERVE, DEVICE_SHARE_PER_ACCOUNT, HOURLY_TALLIES, LOGIN_ATTEMPTS_PER_HOUR,
+    PARKED_LOGIN_COST, REGISTRATION_RESERVE, SHARED_POOL,
 };
 
 /// Expired entries an admit or a park clears on its way.
@@ -136,11 +137,24 @@ impl Counter {
     }
 }
 
+/// Attempts on one account's shared login budget in the current hour.
+struct Hour {
+    start: i64,
+    attempts: u32,
+}
+
+impl Hour {
+    fn expires_at(&self) -> i64 {
+        self.start.saturating_add(i64::from(ATTEMPT_HOUR_SECONDS))
+    }
+}
+
 /// What an expiry names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Slot {
     Login([u8; 16]),
     Counter(Class, [u8; 32]),
+    Hour([u8; 32]),
 }
 
 #[derive(Default)]
@@ -151,6 +165,11 @@ struct Inner {
     /// Each account's logins, so closing an account drops them.
     of_account: BTreeSet<([u8; 32], [u8; 16])>,
     counters: BTreeMap<(Class, [u8; 32]), Counter>,
+    /// Hourly tallies of the shared login budget, by bucket, at most
+    /// [`HOURLY_TALLIES`], outside the pools: a fixed number, not units.
+    hours: BTreeMap<[u8; 32], Hour>,
+    /// The tallies by attempts, so a full set drops the one with the fewest.
+    hour_rank: BTreeSet<(u32, [u8; 32])>,
     expiries: BTreeSet<(i64, Slot)>,
     used: Used,
     /// Device buckets each account holds: a bucket is held while its
@@ -189,6 +208,41 @@ impl Inner {
             self.release_bucket(&account, &key.1);
         }
         Some(counter)
+    }
+
+    fn remove_hour(&mut self, bucket: &[u8; 32]) -> Option<Hour> {
+        let hour = self.hours.remove(bucket)?;
+        self.expiries.remove(&(hour.expires_at(), Slot::Hour(*bucket)));
+        self.hour_rank.remove(&(hour.attempts, *bucket));
+        Some(hour)
+    }
+
+    /// Whether `bucket`'s hourly tally, if it has a live one, is spent.
+    fn hour_spent(&self, bucket: &[u8; 32], now: i64) -> bool {
+        self.hours.get(bucket).is_some_and(|hour| hour.expires_at() > now && hour.attempts >= LOGIN_ATTEMPTS_PER_HOUR)
+    }
+
+    /// Counts an admitted attempt in `bucket`'s hourly tally, opening one
+    /// (and dropping the tally with the fewest attempts if all are taken).
+    fn count_hour(&mut self, bucket: &[u8; 32], now: i64) {
+        if self.hours.get(bucket).is_some_and(|hour| hour.expires_at() <= now) {
+            self.remove_hour(bucket);
+        }
+        if let Some(hour) = self.hours.get_mut(bucket) {
+            self.hour_rank.remove(&(hour.attempts, *bucket));
+            hour.attempts = hour.attempts.saturating_add(1);
+            self.hour_rank.insert((hour.attempts, *bucket));
+            return;
+        }
+        if self.hours.len() >= HOURLY_TALLIES
+            && let Some(&(_, fewest)) = self.hour_rank.first()
+        {
+            self.remove_hour(&fewest);
+        }
+        let hour = Hour { start: now, attempts: 1 };
+        self.expiries.insert((hour.expires_at(), Slot::Hour(*bucket)));
+        self.hour_rank.insert((hour.attempts, *bucket));
+        self.hours.insert(*bucket, hour);
     }
 
     /// The pools a charge of `class` goes to. A device charge, which names
@@ -298,6 +352,7 @@ impl Inner {
             let gone = match slot {
                 Slot::Login(handle) => self.remove_login(&handle).is_some(),
                 Slot::Counter(class, bucket) => self.remove_counter(&(class, bucket)).is_some(),
+                Slot::Hour(bucket) => self.remove_hour(&bucket).is_some(),
             };
             if gone {
                 removed = removed.saturating_add(1);
@@ -363,6 +418,10 @@ impl Scratch {
         if inner.room(class, device.as_ref(), room, now).is_none() {
             return Ok(false);
         }
+        let hourly = class == Class::Login;
+        if hourly && inner.hour_spent(bucket, now) {
+            return Ok(false);
+        }
         let key = (class, *bucket);
         if let Some(counter) = inner.counters.get_mut(&key) {
             let ended = counter.expires_at();
@@ -375,7 +434,11 @@ impl Scratch {
                 inner.expiries.insert((counter.expires_at(), Slot::Counter(class, *bucket)));
             }
             counter.attempts = counter.attempts.saturating_add(1);
-            return Ok(counter.attempts <= u32::from(limit));
+            let admitted = counter.attempts <= u32::from(limit);
+            if admitted && hourly {
+                inner.count_hour(bucket, now);
+            }
+            return Ok(admitted);
         }
         if device_of.is_some() && !inner.may_hold(account, bucket, now) {
             return Ok(false);
@@ -387,6 +450,9 @@ impl Scratch {
         let counter = Counter { window_start: now, attempts: 1, charged, device_of };
         inner.expiries.insert((counter.expires_at(), Slot::Counter(class, *bucket)));
         inner.counters.insert(key, counter);
+        if hourly {
+            inner.count_hour(bucket, now);
+        }
         Ok(true)
     }
 
@@ -498,7 +564,7 @@ impl fmt::Debug for Scratch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::ENROLLS_PER_DAY;
+    use crate::core::{ENROLLS_PER_DAY, HOURLY_TALLIES, LOGIN_ATTEMPTS_PER_HOUR};
 
     const T0: i64 = 1_800_000_000;
 
@@ -561,6 +627,11 @@ mod tests {
     /// A guess at a name, filed under the shared budget.
     fn guess(scratch: &Scratch, n: u32) -> bool {
         file(scratch, &tagged(n, 0xC1), &account(n), Class::Login, account(n).as_bytes(), 0)
+    }
+
+    /// Expiries of counters and logins, leaving out the hourly tallies.
+    fn minute_expiries(scratch: &Scratch) -> usize {
+        scratch.0.borrow().expiries.iter().filter(|(_, slot)| !matches!(slot, Slot::Hour(_))).count()
     }
 
     /// Units charged to Shared, the Registration reserve and the Device reserve.
@@ -647,13 +718,13 @@ mod tests {
         }
         assert_eq!(scratch.admit(&ada, ada.as_bytes(), Class::Login, 1, at(60)), Ok(true), "a new window");
         assert_eq!(scratch.0.borrow().counters.len(), 36 + 2, "swept on the way: 64 of the hundred, not ada's");
-        assert_eq!(scratch.0.borrow().expiries.len(), 36 + 2, "the old window's expiry goes with it");
+        assert_eq!(minute_expiries(&scratch), 36 + 2, "the old window's expiry goes with it");
         assert_eq!(units(&scratch), (COUNTER_COST * 37, COUNTER_COST, 0));
         assert_eq!(scratch.admit(&ada, ada.as_bytes(), Class::Login, 1, at(119)), Ok(false), "counted afresh");
         for now in [120, 180, 600] {
             both(now);
             assert_eq!(units(&scratch), (COUNTER_COST, COUNTER_COST, 0));
-            assert_eq!(scratch.0.borrow().expiries.len(), 2);
+            assert_eq!(minute_expiries(&scratch), 2);
         }
     }
 
@@ -669,6 +740,61 @@ mod tests {
             Err(AccessError::StorageFull)
         );
         assert_eq!(units(&scratch), (SHARED_POOL, 0, 0));
+    }
+
+    #[test]
+    fn keeping_shared_full_takes_over_seven_hundred_logins_a_second() {
+        // A parked login holds its room for the login window: the shorter
+        // the window, the faster a flood must park to keep Shared full.
+        let per_second = SHARED_POOL / PARKED_LOGIN_COST / u64::from(access::LOGIN_WINDOW_SECONDS);
+        assert!(per_second >= 700, "{per_second} a second");
+    }
+
+    #[test]
+    fn a_name_gets_at_most_an_hours_attempts_on_the_shared_budget() {
+        let scratch = Scratch::default();
+        let ada = account(1);
+        let mut admitted = 0;
+        for minute in 0..60 {
+            for _ in 0..12 {
+                if scratch.admit(&ada, ada.as_bytes(), Class::Login, 10, at(minute * 60)) == Ok(true) {
+                    admitted += 1;
+                }
+            }
+        }
+        assert_eq!(admitted, LOGIN_ATTEMPTS_PER_HOUR);
+        assert_eq!(scratch.admit(&ada, ada.as_bytes(), Class::Login, 10, at(3600)), Ok(true), "a new hour");
+        // Nine a minute never fill a window, and still count.
+        let bob = account(2);
+        let admitted = (0..60 * 9)
+            .filter(|n| scratch.admit(&bob, bob.as_bytes(), Class::Login, 10, at(n / 9 * 60)) == Ok(true))
+            .count();
+        assert_eq!(admitted, LOGIN_ATTEMPTS_PER_HOUR as usize);
+    }
+
+    #[test]
+    fn the_hourly_cap_spares_devices_and_registrations() {
+        let scratch = Scratch::default();
+        let ada = account(1);
+        for class in [Class::Device, Class::Registration] {
+            let admitted = (0..60)
+                .flat_map(|minute| [minute; 10])
+                .filter(|minute| scratch.admit(&ada, &bucket(7), class, 10, at(minute * 60)) == Ok(true))
+                .count();
+            assert_eq!(admitted, 600, "{class:?}");
+        }
+    }
+
+    #[test]
+    fn an_hourly_tally_holds_the_object_awake_and_goes_with_its_hour() {
+        let scratch = Scratch::default();
+        let ada = account(1);
+        assert_eq!(scratch.admit(&ada, ada.as_bytes(), Class::Login, 10, at(0)), Ok(true));
+        assert_eq!(scratch.holds_until(), Ok(Some(at(3600))));
+        assert_eq!(scratch.sweep(at(60), usize::MAX), Ok(1), "the minute's counter");
+        assert_eq!(scratch.holds_until(), Ok(Some(at(3600))), "the hour's tally stays");
+        assert_eq!(scratch.sweep(at(3600), usize::MAX), Ok(1));
+        assert_eq!(scratch.holds_until(), Ok(None));
     }
 
     #[test]
@@ -698,12 +824,13 @@ mod tests {
         assert_eq!(scratch.sweep(at(90), usize::MAX), Ok(1));
         assert_eq!(scratch.sweep(at(330), usize::MAX), Ok(3));
         assert_eq!(scratch.sweep(at(330), usize::MAX), Ok(0));
+        assert_eq!(scratch.sweep(at(3600), usize::MAX), Ok(1), "ada's hourly tally");
 
         assert_eq!(units(&scratch), (0, 0, 0));
         let inner = scratch.0.borrow();
         assert!(inner.logins.is_empty() && inner.counters.is_empty() && inner.expiries.is_empty());
         assert!(inner.by_bucket.is_empty() && inner.of_account.is_empty() && inner.device_buckets.is_empty());
-        assert!(inner.device_reserved.is_empty());
+        assert!(inner.device_reserved.is_empty() && inner.hours.is_empty() && inner.hour_rank.is_empty());
     }
 
     #[test]
@@ -711,7 +838,7 @@ mod tests {
         let scratch = Scratch::default();
         let ada = account(1);
         assert_eq!(scratch.holds_until(), Ok(None));
-        assert_eq!(scratch.admit(&ada, ada.as_bytes(), Class::Login, 10, at(0)), Ok(true));
+        assert_eq!(scratch.admit(&ada, &bucket(1), Class::Registration, 10, at(0)), Ok(true));
         assert_eq!(scratch.holds_until(), Ok(Some(at(60))), "a counter: the end of its window");
         assert_eq!(scratch.park(&handle(1), &ada, &state(1), at(300), Class::Login, None, at(0)), Ok(()));
         assert_eq!(scratch.holds_until(), Ok(Some(at(300))), "a parked login: the end of its window");
@@ -961,7 +1088,7 @@ mod tests {
 
         #[test]
         fn parked_device_logins_count_against_their_account_after_the_counters_go() {
-            // A counter lives 60 s, a parked login 300 s: if only counters
+            // A parked login may outlive its counter (here 300 s against 60): if only counters
             // counted, one account rotating passes would hold a parked login
             // for every pass it ever used, and fill the Device reserve alone.
             let scratch = Scratch::default();
@@ -1048,6 +1175,26 @@ mod tests {
                 );
             }
             assert_eq!(units(&scratch), (0, 0, 0));
+        }
+
+        #[test]
+        fn a_flood_of_new_names_cannot_push_out_a_names_full_hour() {
+            // The hourly tallies are a fixed number: when full, the one with
+            // the fewest attempts goes. A name guessed to its hourly cap
+            // outlasts any flood of names guessed less.
+            let scratch = Scratch::default();
+            let target = account(1);
+            for minute in 0..6 {
+                for _ in 0..10 {
+                    scratch.admit(&target, target.as_bytes(), Class::Login, 10, at(minute * 60)).unwrap();
+                }
+            }
+            for n in 0..HOURLY_TALLIES as u32 + 10 {
+                let other = AccountId::from_array(numbered(n, 0xD0));
+                scratch.admit(&other, other.as_bytes(), Class::Login, 10, at(400)).unwrap();
+            }
+            assert_eq!(scratch.0.borrow().hours.len(), HOURLY_TALLIES);
+            assert_eq!(scratch.admit(&target, target.as_bytes(), Class::Login, 10, at(420)), Ok(false));
         }
 
         #[test]

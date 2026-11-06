@@ -8,8 +8,11 @@ pub const MAX_KEYRING_LEN: usize = 72 * 1024;
 /// How long a session lasts. It lives in the tab's memory only, so a reload
 /// or a closed tab ends it sooner.
 pub const SESSION_SECONDS: u32 = 12 * 60 * 60;
-/// How long a login may take between its two round trips.
-pub const LOGIN_WINDOW_SECONDS: u32 = 5 * 60;
+/// How long a login may take between its two round trips: KE3 costs the
+/// device one Argon2id (seconds even on a slow phone), and every login in
+/// flight holds the relay's memory this long, so a flood must park this many
+/// times faster to keep that memory full.
+pub const LOGIN_WINDOW_SECONDS: u32 = 60;
 /// HKDF info that turns the export key into the keyring key.
 pub const KEYRING_INFO: &[u8] = b"sigylo/v1/keyring";
 

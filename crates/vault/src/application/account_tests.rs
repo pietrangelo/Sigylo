@@ -185,7 +185,7 @@ mod accounts {
     fn a_login_is_taken_once_and_an_expired_one_is_removed_unreturned() {
         let desk = Desk::default();
         let ledger = desk.ledger();
-        ledger.park_login(&handle(1), &account(1), &state(1), 300, Class::Login, None).unwrap();
+        ledger.park_login(&handle(1), &account(1), &state(1), 60, Class::Login, None).unwrap();
         assert_eq!(ledger.take_login(&handle(1)), Ok(Some((account(1), state(1)))));
         assert_eq!(ledger.take_login(&handle(1)), Ok(None));
         ledger.park_login(&handle(2), &account(1), &state(2), 10, Class::Device, Some(&bucket(1))).unwrap();
@@ -335,9 +335,9 @@ mod accounts {
         desk.open(2, 9, 1000);
         desk.store(1, &ring(100, 1), 0).unwrap();
         let ledger = desk.ledger();
-        desk.park(1, 1, 300);
-        ledger.park_login(&handle(2), &account(1), &state(2), 300, Class::Device, Some(&bucket(1))).unwrap();
-        desk.park(3, 2, 300);
+        desk.park(1, 1, 60);
+        ledger.park_login(&handle(2), &account(1), &state(2), 60, Class::Device, Some(&bucket(1))).unwrap();
+        desk.park(3, 2, 60);
         assert_eq!(ledger.close_account(&digest(2)), Ok(true));
         assert_eq!(ledger.record(&account(1)), Ok(None));
         for d in 1..=3 {
@@ -384,11 +384,12 @@ mod accounts {
         desk.open(1, 1, 100);
         desk.open(1, 2, 1000);
         desk.park(1, 1, 50);
-        desk.park(2, 1, 300);
         let ledger = desk.ledger();
         assert_eq!(ledger.admit(&account(1), account(1).as_bytes(), Class::Login, 10), Ok(true));
         assert_eq!(ledger.admit(&account(2), &bucket(2), Class::Registration, 10), Ok(true));
-        desk.advance(100);
+        desk.advance(45);
+        desk.park(2, 1, 60);
+        desk.advance(55);
         assert_eq!(ledger.purge_expired(), Ok(1 + 1 + 2));
         assert!(!desk.live(1));
         assert!(desk.live(2));
@@ -448,7 +449,7 @@ mod accounts {
         assert_eq!(rows(&|| assert!(desk.store(1, &ring(10, 1), 0).is_ok())), 2);
         assert_eq!(rows(&|| assert!(desk.live(1))), 0);
         assert_eq!(rows(&|| assert!(ledger.record(&account(1)).unwrap().is_some())), 0);
-        assert_eq!(rows(&|| desk.park(1, 1, 300)), 0);
+        assert_eq!(rows(&|| desk.park(1, 1, 60)), 0);
         assert_eq!(rows(&|| assert!(ledger.take_login(&handle(1)).unwrap().is_some())), 0);
         assert_eq!(rows(&|| assert!(ledger.admit(&account(1), &bucket(1), Class::Login, 10).unwrap())), 0);
         assert_eq!(rows(&|| ledger.close_session(&digest(1)).unwrap()), 4);
@@ -779,8 +780,8 @@ mod account_adversary {
         let desk = Desk::default();
         desk.enrolled(1);
         desk.open(1, 1, 1000);
-        desk.park(1, 1, 300);
-        desk.park(2, 1, 300);
+        desk.park(1, 1, 60);
+        desk.park(2, 1, 60);
         let ledger = desk.ledger();
         assert_eq!(ledger.take_login(&handle(1)), Ok(Some((account(1), state(1)))));
         assert_eq!(ledger.take_login(&handle(1)), Ok(None));
@@ -1115,7 +1116,7 @@ mod account_adversary {
             let name = account(n);
             assert_eq!(ledger.record(&name), Ok(None));
             assert_eq!(ledger.admit(&name, name.as_bytes(), Class::Login, 10), Ok(true));
-            assert_eq!(ledger.park_login(&handle(n), &name, &state(1), 300, Class::Login, None), Ok(()));
+            assert_eq!(ledger.park_login(&handle(n), &name, &state(1), 60, Class::Login, None), Ok(()));
         }
         assert_eq!(desk.kv.writes.get(), 0);
         assert_eq!(desk.kv.keys(), Vec::<String>::new());
@@ -1128,11 +1129,11 @@ mod account_adversary {
         let ledger = desk.ledger();
         let (secret, pass) = (state(0x77), bucket(0x0BAD));
         assert_eq!(ledger.admit(&account(1), &pass, Class::Device, 10), Ok(true));
-        ledger.park_login(&handle(1), &account(1), &secret, 300, Class::Device, Some(&pass)).unwrap();
+        ledger.park_login(&handle(1), &account(1), &secret, 60, Class::Device, Some(&pass)).unwrap();
         assert_eq!(ledger.take_login(&handle(1)), Ok(Some((account(1), secret.clone()))));
         desk.open(1, 1, 1000);
         desk.store(1, &ring(100, 1), 0).unwrap();
-        ledger.park_login(&handle(2), &account(1), &secret, 300, Class::Device, Some(&pass)).unwrap();
+        ledger.park_login(&handle(2), &account(1), &secret, 60, Class::Device, Some(&pass)).unwrap();
         for (key, value) in desk.kv.snapshot() {
             for held in [key.as_bytes(), value.as_slice()] {
                 assert!(!contains(held, secret.expose()), "{key}");
@@ -1241,7 +1242,7 @@ mod remote_accounts {
         assert_eq!(block_on(remote.record(&account(1))), Ok(Some(record(1))));
         assert_eq!(block_on(remote.record(&account(2))), Ok(None));
         requests(4);
-        assert_eq!(block_on(remote.park_login(&handle(1), &account(1), &state(1), 300, &Budget::Login)), Ok(()));
+        assert_eq!(block_on(remote.park_login(&handle(1), &account(1), &state(1), 60, &Budget::Login)), Ok(()));
         requests(5);
         assert_eq!(block_on(remote.take_login(&handle(1))), Ok(Some((account(1), state(1)))));
         assert_eq!(block_on(remote.take_login(&handle(1))), Ok(None));
@@ -1291,7 +1292,7 @@ mod remote_accounts {
         let link = link(&desk);
         let remote = RemoteAccounts::new(&link, toy_bucket);
         let park =
-            |h: u32, budget: &Budget| block_on(remote.park_login(&handle(h), &account(1), &state(1), 300, budget));
+            |h: u32, budget: &Budget| block_on(remote.park_login(&handle(h), &account(1), &state(1), 60, budget));
         let taken = |h: u32| block_on(remote.take_login(&handle(h))).unwrap().is_some();
         // A device's bucket holds one login in progress: a new one replaces it.
         park(1, &device(1)).unwrap();
@@ -1345,7 +1346,7 @@ mod remote_accounts {
         assert_eq!(ready(remote.record(&account(1))), Ok(Some(record(1))));
         assert!(ready(throttle.admit(&account(1), &device(1))));
         assert_eq!(ready(remote.admit(&account(1), &bucket(1), Class::Login, 10)), Ok(true));
-        assert_eq!(ready(remote.park_login(&handle(1), &account(1), &state(1), 300, &device(1))), Ok(()));
+        assert_eq!(ready(remote.park_login(&handle(1), &account(1), &state(1), 60, &device(1))), Ok(()));
         assert!(ready(remote.take_login(&handle(1))).unwrap().is_some());
         assert!(ready(remote.open_session(&digest(1), &account(1), &record(1), 1000)).unwrap().is_some());
         assert!(ready(remote.open_session(&digest(2), &account(1), &record(1), 1000)).unwrap().is_some());
@@ -1369,7 +1370,7 @@ mod remote_accounts {
         fn a_garbled_or_mismatched_reply_is_a_fault_and_never_an_answer() {
             let desk = Desk::default();
             desk.enrolled(1);
-            desk.park(1, 1, 300);
+            desk.park(1, 1, 60);
             let link = link(&desk);
             let remote = RemoteAccounts::new(&link, toy_bucket);
             let throttle = VaultThrottle::new(&remote, 10, toy_bucket);
@@ -1450,7 +1451,7 @@ mod remote_accounts {
             let desk = Desk::default();
             desk.enrolled(1);
             desk.open(1, 1, 1000);
-            desk.park(1, 1, 300);
+            desk.park(1, 1, 60);
             let link = link(&desk);
             let remote = RemoteAccounts::new(&link, toy_bucket);
             let ring = ring(10, 1);
@@ -1458,7 +1459,7 @@ mod remote_accounts {
             assert_eq!(block_on(remote.enroll(&account(2), &record(2))), unavailable());
             assert_eq!(block_on(remote.record(&account(1))), unavailable());
             assert_eq!(
-                block_on(remote.park_login(&handle(2), &account(1), &state(1), 300, &Budget::Login)),
+                block_on(remote.park_login(&handle(2), &account(1), &state(1), 60, &Budget::Login)),
                 unavailable()
             );
             assert_eq!(block_on(remote.take_login(&handle(1))), unavailable());

@@ -862,10 +862,12 @@ mod adversary {
             let mut world = World::default();
             let target = keys().account_of(&fresh_name());
             assert_eq!(admitted(&world, &target, 20).await, 10);
-            // The memory says how long it holds the count: the object stays
-            // awake that long, so only a deploy, a runtime restart or a crash
-            // (never idleness) can forget it.
-            assert_eq!(world.scratch.holds_until(), Ok(Some(UnixTime(world.now().0 + 60))));
+            // The memory says how long it holds the count (the hour's tally
+            // outlives the minute's): the object stays awake that long, so
+            // only a deploy, a runtime restart or a crash (never idleness)
+            // can forget it.
+            let hour = i64::from(vault::core::ATTEMPT_HOUR_SECONDS);
+            assert_eq!(world.scratch.holds_until(), Ok(Some(UnixTime(world.now().0 + hour))));
             world.advance(10);
             world.restart();
             assert_eq!(admitted(&world, &target, 20).await, 10, "the forgotten window, once");

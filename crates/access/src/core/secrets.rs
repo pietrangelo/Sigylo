@@ -69,7 +69,7 @@ secret_array!(
     DevicePass, 56
 );
 secret_array!(
-    /// Names a login between its two round trips. Single use, five minutes.
+    /// Names a login between its two round trips. Single use, one minute.
     LoginHandle, 16
 );
 
@@ -102,7 +102,7 @@ impl fmt::Debug for Password {
 /// The relay's half of a login between KE2 and KE3 (it holds the session
 /// key and the expected client MAC), sealed by the relay to the account it
 /// belongs to: 128 bytes of state, a 24-byte nonce and a 16-byte tag.
-/// Parked in the store for five minutes.
+/// Parked in the store for one minute.
 #[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct LoginState(Vec<u8>);
 

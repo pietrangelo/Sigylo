@@ -369,8 +369,16 @@ mod runtime {
             let holds_until = self.scratch.holds_until().ok().flatten().map(|until| until.0);
             let Some(until) = api::stay_awake_until(holds_until, self.awake_until.get(), now) else { return };
             self.awake_until.set(until);
-            let wait = Duration::from_secs(u64::try_from(until.saturating_sub(now)).unwrap_or(0));
-            self.state.wait_until(async move { worker::Delay::from(wait).await });
+            // A chain of timers, each started when the one before fires: one
+            // pending operation keeps the object awake 15 minutes at most.
+            let mut left = u64::try_from(until.saturating_sub(now)).unwrap_or(0);
+            self.state.wait_until(async move {
+                while left > 0 {
+                    let step = left.min(api::AWAKE_STEP_SECONDS);
+                    worker::Delay::from(Duration::from_secs(step)).await;
+                    left -= step;
+                }
+            });
         }
     }
 
