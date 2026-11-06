@@ -95,6 +95,20 @@ const _: () = assert!(DEVICE_RESERVE / DEVICE_SHARE_PER_ACCOUNT > ENROLLS_PER_DA
 
 /// How long an attempt counter counts.
 pub const ATTEMPT_WINDOW_SECONDS: u32 = 60;
+/// How long an hourly tally counts.
+pub const ATTEMPT_HOUR_SECONDS: u32 = 60 * 60;
+/// Attempts an account's shared login budget allows in an hour, on top of
+/// the limit per minute: guessing a name gets 1,440 tries a day, not 14,400.
+/// Device passes and registrations have only their limit per minute.
+pub const LOGIN_ATTEMPTS_PER_HOUR: u32 = 60;
+/// Hourly tallies the accounts object keeps at once. When full, the tally
+/// with the fewest attempts goes, so a flood of names guessed once cannot
+/// push out a name guessed to its cap: that takes this many names guessed
+/// as often, within the hour.
+pub const HOURLY_TALLIES: usize = 65_536;
+/// Parked logins hold their room for the login window: keeping Shared full
+/// takes this many new logins a second.
+const _: () = assert!(SHARED_POOL / PARKED_LOGIN_COST / access::LOGIN_WINDOW_SECONDS as u64 >= 700);
 /// Most attempts a window may allow; anything else is a broken caller.
 pub const ATTEMPT_LIMIT_CEILING: u16 = 1000;
 

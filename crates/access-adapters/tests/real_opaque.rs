@@ -2,9 +2,9 @@
 
 use access::{
     AccessError, AccountId, CredentialFinalization, CredentialResponse, ExportKey, KEYRING_INFO, KeyringKdf,
-    LoginState, OpaqueClient, OpaqueServer, Password, RegistrationRecord, RegistrationResponse, Username,
+    LoginState, OpaqueClient, OpaqueServer, Password, RegistrationRecord, RegistrationResponse, Tokens, Username,
 };
-use access_adapters::{HkdfKeyringKdf, OpaqueDevice, OpaqueKeys};
+use access_adapters::{HkdfKeyringKdf, OpaqueDevice, OpaqueKeys, RandomTokens};
 
 fn keys() -> OpaqueKeys {
     OpaqueKeys::from_seed(&[42; 32]).unwrap()
@@ -191,6 +191,24 @@ mod adversary {
         let (_, _, first, _) = parked(&keys, "ada");
         let (_, _, second, _) = parked(&keys, "bob");
         assert_ne!(first.expose(), second.expose());
+    }
+
+    #[test]
+    fn a_ke2_replayed_into_another_login_is_refused_by_the_device() {
+        // Whoever recorded the relay's answer to one login replays it to
+        // another: the device must not finish, or a recorded KE2 would pass
+        // for the relay.
+        let keys = keys();
+        let ada = account(&keys, "ada");
+        // A password drawn at run time: the same one on both logins.
+        let password: String =
+            RandomTokens.login_handle().unwrap().expose().iter().map(|b| format!("{b:02x}")).collect();
+        let (record, _) = register(&keys, &ada, &password);
+        let (recorded, _) = OpaqueDevice.begin_login(&pw(&password)).unwrap();
+        let (replayed, _) = keys.begin_login(&ada, Some(&record), &recorded).unwrap();
+        let (_, state) = OpaqueDevice.begin_login(&pw(&password)).unwrap();
+        let outcome = OpaqueDevice.finish_login(state, &pw(&password), &replayed);
+        assert_eq!(outcome.err(), Some(AccessError::NotAuthentic));
     }
 
     #[test]

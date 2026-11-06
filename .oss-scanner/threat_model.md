@@ -79,8 +79,9 @@ and `Uint8Array`s may persist in GC copies; malware or XSS in the sender's brows
 seed from `localStorage`; without an expected sender, whoever has the request link can answer first (it is
 detected by the sender code); registration reveals that a username is taken (`409`); OPAQUE/3DH are not
 post-quantum; a device that never saw an account cannot detect a rolled-back keyring; a restart of the
-accounts object drops logins in progress and resets attempt counters (at most one more window of 10
-attempts per account and budget); the per-class daily row thresholds of the accounts object stop that
+accounts object (a deploy, a runtime restart, a crash; never idleness, since the object stays awake while
+it holds a counter or a login) drops logins in progress and resets attempt counters (at most one more
+window of 10 attempts per account and budget, and one more hour's 60 on the shared login budget); the per-class daily row thresholds of the accounts object stop that
 class until midnight UTC. `VAULT_PLACEMENT=local` is a local-only setting that the deploy refuses. Do not
 test against sigylo.net: everything runs locally.
 

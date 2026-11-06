@@ -140,6 +140,12 @@ impl World {
         self.clock.0.set(self.clock.0.get() + i64::from(seconds));
     }
 
+    /// The object restarts (a deploy, a runtime restart): its storage stays,
+    /// its memory starts empty.
+    fn restart(&mut self) {
+        self.scratch = Scratch::default();
+    }
+
     fn ledger(&self) -> Ledger<'_> {
         AccountLedger::new(&self.kv, &self.scratch, &self.clock)
     }
@@ -333,6 +339,21 @@ async fn fill_with_registrations(store: &Remote<'_>) -> u64 {
         }
     }
     unreachable!()
+}
+
+/// Spends `tries` attempts of the shared login budget of `account` through
+/// a new link to the object, and says how many it admitted.
+async fn admitted(world: &World, account: &AccountId, tries: usize) -> usize {
+    let link = world.link();
+    let store = remote(&link);
+    let throttle = counter(&store, 10);
+    let mut admitted = 0;
+    for _ in 0..tries {
+        if throttle.admit(account, &Budget::Login).await {
+            admitted += 1;
+        }
+    }
+    admitted
 }
 
 /// Runs `call`, and says how many requests it made to the object.
@@ -832,6 +853,87 @@ mod adversary {
             }))
             .await;
             assert_eq!(outcomes.iter().filter(|admitted| **admitted).count(), 10);
+        });
+    }
+
+    #[test]
+    fn a_restart_grants_at_most_one_more_window_and_the_object_knows_how_long_to_stay_awake() {
+        block_on(async {
+            let mut world = World::default();
+            let target = keys().account_of(&fresh_name());
+            assert_eq!(admitted(&world, &target, 20).await, 10);
+            // The memory says how long it holds the count (the hour's tally
+            // outlives the minute's): the object stays awake that long, so
+            // only a deploy, a runtime restart or a crash (never idleness)
+            // can forget it.
+            let hour = i64::from(vault::core::ATTEMPT_HOUR_SECONDS);
+            assert_eq!(world.scratch.holds_until(), Ok(Some(UnixTime(world.now().0 + hour))));
+            world.advance(10);
+            world.restart();
+            assert_eq!(admitted(&world, &target, 20).await, 10, "the forgotten window, once");
+            assert_eq!(admitted(&world, &target, 20).await, 0);
+            world.advance(50);
+            assert_eq!(admitted(&world, &target, 20).await, 0, "the new window runs its whole minute");
+        });
+    }
+
+    #[test]
+    fn guesses_and_logins_in_progress_write_no_row() {
+        // Attempt counters and parked logins live in the object's memory
+        // only: a flood of guesses leaves nothing on disk, nor in the
+        // storage's recovery history.
+        block_on(async {
+            let world = World::default();
+            let link = world.link();
+            let store = remote(&link);
+            let relay = relay_with(&world, &store, counter(&store, 10));
+            let name = fresh_name();
+            register(&relay, &name).await;
+            let before = world.kv.entries();
+            for _ in 0..12 {
+                let (request, _) = device().begin_login(Password::new(b"a wrong guess".to_vec()).unwrap()).unwrap();
+                if let Ok(challenge) = relay.begin_login(&name, &request, None).await {
+                    let forged = access::CredentialFinalization::from_slice(&[7; 64]).unwrap();
+                    let _ = relay.finish_login(&challenge.handle, &forged).await;
+                }
+            }
+            assert!(admitted(&world, &keys().account_of(&fresh_name()), 3).await > 0);
+            assert_eq!(world.kv.entries(), before);
+            assert_ne!(world.memory(), (0, 0, 0), "they are in memory");
+        });
+    }
+
+    #[test]
+    fn a_login_cannot_skip_its_first_half() {
+        block_on(async {
+            world!(world, _link, _store, relay);
+            let name = fresh_name();
+            register(&relay, &name).await;
+            let (_, finalization) = challenge(&relay, &name).await;
+            // A genuine KE3 under a handle the relay never gave out.
+            let forged = RandomTokens.login_handle().unwrap();
+            assert_eq!(relay.finish_login(&forged, &finalization).await.unwrap_err(), AccessError::NotAuthentic);
+            assert_eq!(world.sessions(&keys().account_of(&name)), 0);
+        });
+    }
+
+    #[test]
+    fn a_ke3_on_another_logins_handle_opens_nothing_and_spends_that_login() {
+        block_on(async {
+            world!(world, _link, _store, relay);
+            let name = fresh_name();
+            register(&relay, &name).await;
+            let (first, first_ke3) = challenge(&relay, &name).await;
+            let (second, second_ke3) = challenge(&relay, &name).await;
+            // The same account, password and record: only the transcript differs.
+            assert_eq!(relay.finish_login(&second.handle, &first_ke3).await.unwrap_err(), AccessError::NotAuthentic);
+            assert_eq!(
+                relay.finish_login(&second.handle, &second_ke3).await.unwrap_err(),
+                AccessError::NotAuthentic,
+                "one try per handle"
+            );
+            assert!(relay.finish_login(&first.handle, &first_ke3).await.is_ok(), "the other login is untouched");
+            assert_eq!(world.sessions(&keys().account_of(&name)), 1);
         });
     }
 

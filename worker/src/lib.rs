@@ -21,7 +21,9 @@ pub mod api;
 
 #[cfg(target_arch = "wasm32")]
 mod runtime {
+    use std::cell::Cell;
     use std::rc::Rc;
+    use std::time::Duration;
 
     use access::{AccessError, AccountId, AccountStore, Budget, Gatekeeper, Throttle, UnixTime};
     use access_adapters::{OpaqueKeys, RandomTokens, throttle_bucket};
@@ -322,12 +324,15 @@ mod runtime {
     /// name, see `vault_adapters::DurableLink::named`) that runs every
     /// [`vault::AccountCall`] on its own storage, one synchronous step at a
     /// time. Logins in progress and attempt counters live only in its
-    /// memory ([`Scratch`]), never on disk. Only this Worker can reach it,
-    /// through its binding, and only with a POST to `/call`.
+    /// memory ([`Scratch`]), never on disk, and the object stays awake
+    /// while that memory holds any (see [`api::stay_awake_until`]). Only this
+    /// Worker can reach it, through its binding, and only with a POST to `/call`.
     #[durable_object(fetch)]
     pub struct SigyloAccounts {
         state: State,
         scratch: Scratch,
+        /// Until when a pending timer keeps the object awake.
+        awake_until: Cell<i64>,
     }
 
     impl core::fmt::Debug for SigyloAccounts {
@@ -338,7 +343,7 @@ mod runtime {
 
     impl DurableObject for SigyloAccounts {
         fn new(state: State, _env: Env) -> Self {
-            Self { state, scratch: Scratch::default() }
+            Self { state, scratch: Scratch::default(), awake_until: Cell::new(0) }
         }
 
         async fn fetch(&self, mut req: Request) -> Result<Response> {
@@ -348,7 +353,32 @@ mod runtime {
             let call = req.bytes().await?;
             // From here to the reply nothing awaits: one call, one step.
             let ledger = AccountLedger::new(DurableKv::new(&self.state), &self.scratch, WorkerClock);
-            Response::from_bytes(vault::serve_accounts(&ledger, &call))
+            let reply = vault::serve_accounts(&ledger, &call);
+            self.stay_awake();
+            Response::from_bytes(reply)
+        }
+    }
+
+    impl SigyloAccounts {
+        /// Keeps the object in memory while its memory holds an attempt
+        /// counter or a parked login: a pending timer passed to `waitUntil`
+        /// stops Cloudflare from putting an idle object to sleep, which
+        /// would forget them. It writes nothing.
+        fn stay_awake(&self) {
+            let now = now().0;
+            let holds_until = self.scratch.holds_until().ok().flatten().map(|until| until.0);
+            let Some(until) = api::stay_awake_until(holds_until, self.awake_until.get(), now) else { return };
+            self.awake_until.set(until);
+            // A chain of timers, each started when the one before fires: one
+            // pending operation keeps the object awake 15 minutes at most.
+            let mut left = u64::try_from(until.saturating_sub(now)).unwrap_or(0);
+            self.state.wait_until(async move {
+                while left > 0 {
+                    let step = left.min(api::AWAKE_STEP_SECONDS);
+                    worker::Delay::from(Duration::from_secs(step)).await;
+                    left -= step;
+                }
+            });
         }
     }
 

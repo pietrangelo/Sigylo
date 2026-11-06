@@ -12,7 +12,7 @@ export const operator = {
 } as const;
 
 /** Date of the last change to any of these texts (ISO 8601). */
-export const LEGAL_UPDATED = '2026-10-31';
+export const LEGAL_UPDATED = '2026-11-06';
 
 export interface LegalSection {
   heading: string;
@@ -116,7 +116,7 @@ const it: LegalTexts = {
         heading: `Account facoltativi`,
         body: [
           `Se crei un account conserviamo: un hash con chiave del tuo nome utente (non il nome), il record di registrazione OPAQUE (la tua password non ci arriva mai, nemmeno come hash) e il tuo portachiavi, cifrato sul tuo dispositivo con una chiave che non vediamo mai, con un contatore delle sue modifiche. Il portachiavi contiene i codici per distruggere i segreti che hai sigillato da connesso, non i link per aprirli.`,
-          `Mentre sei connesso conserviamo un'impronta con chiave (HMAC-SHA256) del codice di sessione e la sua scadenza, al massimo 12 ore; durante un accesso, per cinque minuti, lo stato del protocollo, solo in memoria e mai scritto su disco. L'account resta finché non lo elimini dalla pagina dell'account, che cancella tutto in una volta, salvo la cronologia di ripristino descritta più sotto.`,
+          `Mentre sei connesso conserviamo un'impronta con chiave (HMAC-SHA256) del codice di sessione e la sua scadenza, al massimo 12 ore; durante un accesso, per un minuto, lo stato del protocollo, solo in memoria e mai scritto su disco. L'account resta finché non lo elimini dalla pagina dell'account, che cancella tutto in una volta, salvo la cronologia di ripristino descritta più sotto.`,
           ],
         },
         {
@@ -136,7 +136,7 @@ const it: LegalTexts = {
         heading: `Dati di rete`,
         body: [
           `Per consegnare la pagina e proteggere il servizio, Cloudflare tratta il tuo indirizzo IP e i dati tecnici della richiesta. Sigylo usa l'indirizzo IP solo per limitare le richieste (30 scritture e 60 letture al minuto per indirizzo; per IPv6 per blocco /64, più 300 scritture e 600 letture al minuto per blocco /48), in memoria presso Cloudflare, senza salvarlo; i log del Worker sono disattivati. Cloudflare può conservare dati di sicurezza secondo la propria informativa.`,
-          `Per gli account limitiamo anche i tentativi di accesso (10 al minuto per account), legati all'hash dell'account e non al tuo indirizzo: li contiamo in memoria presso Cloudflare e nella memoria del nostro Durable Object, senza mai scriverli su disco: restano solo l'inizio del minuto in corso e il numero di tentativi, cancellati entro circa 15 minuti. Dopo ogni accesso il browser tiene nella memoria locale (localStorage) di sigylo.net un pass del dispositivo, sotto un hash del nome dell'account: ai prossimi accessi da questo dispositivo i tentativi si contano a parte, così chi prova password sul tuo nome non può chiuderti fuori. Da solo non apre nulla e sparisce quando cancelli i dati del sito.`,
+          `Per gli account limitiamo anche i tentativi di accesso (10 al minuto e 60 all'ora per account), legati all'hash dell'account e non al tuo indirizzo: li contiamo in memoria presso Cloudflare e nella memoria del nostro Durable Object, senza mai scriverli su disco: restano solo l'inizio del minuto e dell'ora in corso e il numero di tentativi, cancellati entro circa un'ora e un quarto. Dopo ogni accesso il browser tiene nella memoria locale (localStorage) di sigylo.net un pass del dispositivo, sotto un hash del nome dell'account: ai prossimi accessi da questo dispositivo i tentativi si contano a parte, così chi prova password sul tuo nome non può chiuderti fuori. Da solo non apre nulla e sparisce quando cancelli i dati del sito.`,
         ],
       },
       {
@@ -249,7 +249,7 @@ const en: LegalTexts = {
         heading: `Optional accounts`,
         body: [
           `If you create an account we keep: a keyed hash of your username (not the name itself), the OPAQUE registration record (your password never reaches us, not even as a hash) and your keyring, encrypted on your device with a key we never see, with a counter of its changes. The keyring holds the codes to destroy the secrets you sealed while signed in, not the links that open them.`,
-          `While you are signed in we keep a keyed digest (HMAC-SHA256) of your session code and its expiry, 12 hours at most; during a sign-in, for five minutes, the state of the protocol, in memory only and never written to disk. The account stays until you delete it from the account page, which erases everything at once, except for the recovery history described below.`,
+          `While you are signed in we keep a keyed digest (HMAC-SHA256) of your session code and its expiry, 12 hours at most; during a sign-in, for one minute, the state of the protocol, in memory only and never written to disk. The account stays until you delete it from the account page, which erases everything at once, except for the recovery history described below.`,
           ],
         },
         {
@@ -269,7 +269,7 @@ const en: LegalTexts = {
         heading: `Network data`,
         body: [
           `To deliver the page and protect the service, Cloudflare processes your IP address and the technical data of each request. Sigylo uses the IP address only to limit requests (30 writes and 60 reads per minute per address; for IPv6 per /64 block, plus 300 writes and 600 reads per minute per /48 block), in memory at Cloudflare, without storing it; Worker logs are switched off. Cloudflare may keep security data under its own privacy policy.`,
-          `For accounts we also limit sign-in attempts (10 per minute per account), tied to the account's hash rather than to your address: we count them in memory at Cloudflare and in the memory of our Durable Object, never writing them to disk: all that stays is the start of the current minute and the number of attempts, deleted within about 15 minutes. After each sign-in your browser keeps a device pass in the local storage (localStorage) of sigylo.net, under a hash of the account name: later sign-ins from this device are counted separately, so someone guessing passwords for your name cannot lock you out. On its own it opens nothing, and it goes when you clear the site data.`,
+          `For accounts we also limit sign-in attempts (10 per minute and 60 per hour per account), tied to the account's hash rather than to your address: we count them in memory at Cloudflare and in the memory of our Durable Object, never writing them to disk: all that stays is the start of the current minute and hour and the number of attempts, deleted within about an hour and a quarter. After each sign-in your browser keeps a device pass in the local storage (localStorage) of sigylo.net, under a hash of the account name: later sign-ins from this device are counted separately, so someone guessing passwords for your name cannot lock you out. On its own it opens nothing, and it goes when you clear the site data.`,
         ],
       },
       {
@@ -382,7 +382,7 @@ const fr: LegalTexts = {
         heading: `Comptes facultatifs`,
         body: [
           `Si vous créez un compte, nous conservons : un hachage à clé de votre nom d'utilisateur (pas le nom lui-même), l'enregistrement OPAQUE (votre mot de passe ne nous parvient jamais, pas même sous forme de hachage) et votre trousseau, chiffré sur votre appareil avec une clé que nous ne voyons jamais, avec un compteur de ses modifications. Le trousseau contient les codes pour détruire les secrets que vous avez scellés une fois connecté, pas les liens qui les ouvrent.`,
-          `Tant que vous êtes connecté, nous conservons une empreinte à clé (HMAC-SHA256) de votre code de session et son expiration, 12 heures au plus ; pendant une connexion, pendant cinq minutes, l'état du protocole, uniquement en mémoire et jamais écrit sur disque. Le compte reste jusqu'à ce que vous le supprimiez depuis la page du compte, ce qui efface tout en une fois, sauf l'historique de restauration décrit plus bas.`,
+          `Tant que vous êtes connecté, nous conservons une empreinte à clé (HMAC-SHA256) de votre code de session et son expiration, 12 heures au plus ; pendant une connexion, pendant une minute, l'état du protocole, uniquement en mémoire et jamais écrit sur disque. Le compte reste jusqu'à ce que vous le supprimiez depuis la page du compte, ce qui efface tout en une fois, sauf l'historique de restauration décrit plus bas.`,
           ],
         },
         {
@@ -402,7 +402,7 @@ const fr: LegalTexts = {
         heading: `Données réseau`,
         body: [
           `Pour délivrer la page et protéger le service, Cloudflare traite votre adresse IP et les données techniques de chaque requête. Sigylo n'utilise l'adresse IP que pour limiter les requêtes (30 écritures et 60 lectures par minute et par adresse ; en IPv6 par bloc /64, plus 300 écritures et 600 lectures par minute par bloc /48), en mémoire chez Cloudflare, sans la conserver ; les journaux du Worker sont désactivés. Cloudflare peut conserver des données de sécurité selon sa propre politique de confidentialité.`,
-          `Pour les comptes, nous limitons aussi les tentatives de connexion (10 par minute et par compte), liées au hachage du compte et non à votre adresse : nous les comptons en mémoire chez Cloudflare et dans la mémoire de notre Durable Object, sans jamais les écrire sur disque : il n'en reste que le début de la minute en cours et le nombre de tentatives, effacés en 15 minutes environ. Après chaque connexion, votre navigateur garde un laissez-passer de l'appareil dans le stockage local (localStorage) de sigylo.net, sous un hachage du nom du compte : les connexions suivantes depuis cet appareil sont comptées à part, si bien que quelqu'un qui essaie des mots de passe sur votre nom ne peut pas vous bloquer. Seul, il n'ouvre rien, et il disparaît quand vous effacez les données du site.`,
+          `Pour les comptes, nous limitons aussi les tentatives de connexion (10 par minute et 60 par heure et par compte), liées au hachage du compte et non à votre adresse : nous les comptons en mémoire chez Cloudflare et dans la mémoire de notre Durable Object, sans jamais les écrire sur disque : il n'en reste que le début de la minute et de l'heure en cours et le nombre de tentatives, effacés en une heure et quart environ. Après chaque connexion, votre navigateur garde un laissez-passer de l'appareil dans le stockage local (localStorage) de sigylo.net, sous un hachage du nom du compte : les connexions suivantes depuis cet appareil sont comptées à part, si bien que quelqu'un qui essaie des mots de passe sur votre nom ne peut pas vous bloquer. Seul, il n'ouvre rien, et il disparaît quand vous effacez les données du site.`,
         ],
       },
       {
@@ -515,7 +515,7 @@ const es: LegalTexts = {
         heading: `Cuentas opcionales`,
         body: [
           `Si creas una cuenta guardamos: un hash con clave de tu nombre de usuario (no el nombre), el registro OPAQUE (tu contraseña nunca nos llega, ni siquiera como hash) y tu llavero, cifrado en tu dispositivo con una clave que nunca vemos, con un contador de sus cambios. El llavero contiene los códigos para destruir los secretos que sellaste con la sesión iniciada, no los enlaces que los abren.`,
-          `Mientras tienes la sesión iniciada guardamos una huella con clave (HMAC-SHA256) de tu código de sesión y su vencimiento, 12 horas como máximo; durante un inicio de sesión, durante cinco minutos, el estado del protocolo, solo en memoria y nunca escrito en disco. La cuenta se mantiene hasta que la eliminas desde la página de la cuenta, que lo borra todo de una vez, salvo el historial de restauración descrito más abajo.`,
+          `Mientras tienes la sesión iniciada guardamos una huella con clave (HMAC-SHA256) de tu código de sesión y su vencimiento, 12 horas como máximo; durante un inicio de sesión, durante un minuto, el estado del protocolo, solo en memoria y nunca escrito en disco. La cuenta se mantiene hasta que la eliminas desde la página de la cuenta, que lo borra todo de una vez, salvo el historial de restauración descrito más abajo.`,
           ],
         },
         {
@@ -535,7 +535,7 @@ const es: LegalTexts = {
         heading: `Datos de red`,
         body: [
           `Para entregar la página y proteger el servicio, Cloudflare trata tu dirección IP y los datos técnicos de cada petición. Sigylo usa la dirección IP solo para limitar las peticiones (30 escrituras y 60 lecturas por minuto y dirección; en IPv6 por bloque /64, más 300 escrituras y 600 lecturas por minuto por bloque /48), en memoria en Cloudflare, sin guardarla; los registros del Worker están desactivados. Cloudflare puede conservar datos de seguridad según su propia política de privacidad.`,
-          `Para las cuentas limitamos también los intentos de inicio de sesión (10 por minuto y cuenta), ligados al hash de la cuenta y no a tu dirección: los contamos en memoria en Cloudflare y en la memoria de nuestro Durable Object, sin escribirlos nunca en disco: solo quedan el inicio del minuto en curso y el número de intentos, borrados en unos 15 minutos. Después de cada inicio de sesión, tu navegador guarda un pase del dispositivo en el almacenamiento local (localStorage) de sigylo.net, bajo un hash del nombre de la cuenta: los siguientes inicios de sesión desde este dispositivo se cuentan aparte, así quien prueba contraseñas con tu nombre no puede dejarte fuera. Por sí solo no abre nada y desaparece cuando borras los datos del sitio.`,
+          `Para las cuentas limitamos también los intentos de inicio de sesión (10 por minuto y 60 por hora y cuenta), ligados al hash de la cuenta y no a tu dirección: los contamos en memoria en Cloudflare y en la memoria de nuestro Durable Object, sin escribirlos nunca en disco: solo quedan el inicio del minuto y de la hora en curso y el número de intentos, borrados en una hora y cuarto aproximadamente. Después de cada inicio de sesión, tu navegador guarda un pase del dispositivo en el almacenamiento local (localStorage) de sigylo.net, bajo un hash del nombre de la cuenta: los siguientes inicios de sesión desde este dispositivo se cuentan aparte, así quien prueba contraseñas con tu nombre no puede dejarte fuera. Por sí solo no abre nada y desaparece cuando borras los datos del sitio.`,
         ],
       },
       {
@@ -648,7 +648,7 @@ const de: LegalTexts = {
         heading: `Optionale Konten`,
         body: [
           `Wenn du ein Konto erstellst, speichern wir: einen schlüsselbasierten Hash deines Benutzernamens (nicht den Namen selbst), den OPAQUE-Registrierungsdatensatz (dein Passwort erreicht uns nie, nicht einmal als Hash) und deinen Schlüsselbund, verschlüsselt auf deinem Gerät mit einem Schlüssel, den wir nie sehen, samt einem Zähler seiner Änderungen. Der Schlüsselbund enthält die Codes zum Vernichten der Geheimnisse, die du angemeldet versiegelt hast, nicht die Links, die sie öffnen.`,
-          `Solange du angemeldet bist, speichern wir einen Fingerabdruck mit Schlüssel (HMAC-SHA256) deines Sitzungscodes und seinen Ablauf, höchstens 12 Stunden; während einer Anmeldung fünf Minuten lang den Zustand des Protokolls, nur im Arbeitsspeicher und nie auf einen Datenträger geschrieben. Das Konto bleibt, bis du es auf der Kontoseite löschst; das löscht alles auf einmal, bis auf den weiter unten beschriebenen Wiederherstellungsverlauf.`,
+          `Solange du angemeldet bist, speichern wir einen Fingerabdruck mit Schlüssel (HMAC-SHA256) deines Sitzungscodes und seinen Ablauf, höchstens 12 Stunden; während einer Anmeldung eine Minute lang den Zustand des Protokolls, nur im Arbeitsspeicher und nie auf einen Datenträger geschrieben. Das Konto bleibt, bis du es auf der Kontoseite löschst; das löscht alles auf einmal, bis auf den weiter unten beschriebenen Wiederherstellungsverlauf.`,
           ],
         },
         {
@@ -668,7 +668,7 @@ const de: LegalTexts = {
         heading: `Netzwerkdaten`,
         body: [
           `Um die Seite auszuliefern und den Dienst zu schützen, verarbeitet Cloudflare deine IP-Adresse und die technischen Daten jeder Anfrage. Sigylo nutzt die IP-Adresse nur, um Anfragen zu begrenzen (30 Schreib- und 60 Lesevorgänge pro Minute und Adresse; bei IPv6 pro /64-Block, dazu 300 Schreib- und 600 Lesevorgänge pro Minute pro /48-Block), im Speicher bei Cloudflare, ohne sie zu speichern; die Worker-Protokolle sind abgeschaltet. Cloudflare kann Sicherheitsdaten nach seiner eigenen Datenschutzerklärung aufbewahren.`,
-          `Bei Konten begrenzen wir außerdem Anmeldeversuche (10 pro Minute und Konto), gebunden an den Hash des Kontos statt an deine Adresse: Wir zählen sie im Speicher bei Cloudflare und im Arbeitsspeicher unseres Durable Objects, ohne sie je auf einen Datenträger zu schreiben: Es bleiben nur der Beginn der laufenden Minute und die Zahl der Versuche, die binnen etwa 15 Minuten gelöscht werden. Nach jeder Anmeldung bewahrt dein Browser einen Gerätepass im lokalen Speicher (localStorage) von sigylo.net auf, unter einem Hash des Kontonamens: Spätere Anmeldungen von diesem Gerät werden getrennt gezählt, sodass niemand, der Passwörter für deinen Namen ausprobiert, dich aussperren kann. Allein öffnet er nichts, und er verschwindet, wenn du die Websitedaten löschst.`,
+          `Bei Konten begrenzen wir außerdem Anmeldeversuche (10 pro Minute und 60 pro Stunde und Konto), gebunden an den Hash des Kontos statt an deine Adresse: Wir zählen sie im Speicher bei Cloudflare und im Arbeitsspeicher unseres Durable Objects, ohne sie je auf einen Datenträger zu schreiben: Es bleiben nur der Beginn der laufenden Minute und Stunde und die Zahl der Versuche, die binnen etwa 75 Minuten gelöscht werden. Nach jeder Anmeldung bewahrt dein Browser einen Gerätepass im lokalen Speicher (localStorage) von sigylo.net auf, unter einem Hash des Kontonamens: Spätere Anmeldungen von diesem Gerät werden getrennt gezählt, sodass niemand, der Passwörter für deinen Namen ausprobiert, dich aussperren kann. Allein öffnet er nichts, und er verschwindet, wenn du die Websitedaten löschst.`,
         ],
       },
       {
