@@ -37,7 +37,7 @@
 
   {#key route}
     {#if route.kind === 'compose'}
-      {#if isApp}<PasteLink />{/if}
+      {#if isApp}<PasteLink onopen={(pasted) => (route = pasted)} />{/if}
       <Compose />
       <ul class="trust" aria-label={t.trustLabel}>
         <li><strong>{t.trustDeviceTitle}</strong>{t.trustDevice}</li>
